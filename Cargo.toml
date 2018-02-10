@@ -1,0 +1,9 @@
+[package]
+name = "burst"
+version = "0.1.0"
+authors = ["Jon Gjengset <jon@thesquareplanet.com>"]
+
+[dependencies]
+rusoto_core = "0.31.0"
+rusoto_ec2 = "0.31.0"
+ssh2 = "0.3.2"
