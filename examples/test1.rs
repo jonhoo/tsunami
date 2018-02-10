@@ -1,10 +1,10 @@
-extern crate burst;
+extern crate tsunami;
 
-use burst::{BurstBuilder, Machine, MachineSetup};
+use tsunami::{Machine, MachineSetup, TsunamiBuilder};
 use std::collections::HashMap;
 
 fn main() {
-    let mut b = BurstBuilder::default();
+    let mut b = TsunamiBuilder::default();
     b.add_set(
         "server",
         1,

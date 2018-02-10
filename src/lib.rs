@@ -33,21 +33,21 @@ impl MachineSetup {
     }
 }
 
-pub struct BurstBuilder {
+pub struct TsunamiBuilder {
     descriptors: HashMap<String, (MachineSetup, u32)>,
     max_duration: i64,
 }
 
-impl Default for BurstBuilder {
+impl Default for TsunamiBuilder {
     fn default() -> Self {
-        BurstBuilder {
+        TsunamiBuilder {
             descriptors: Default::default(),
             max_duration: 60,
         }
     }
 }
 
-impl BurstBuilder {
+impl TsunamiBuilder {
     pub fn add_set(&mut self, name: &str, number: u32, setup: MachineSetup) {
         // TODO: what if name is already in use?
         self.descriptors.insert(name.to_string(), (setup, number));
