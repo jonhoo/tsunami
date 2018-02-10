@@ -1,6 +1,6 @@
 use ssh2;
 use std::net::{self, TcpStream};
-use std::io;
+use failure::{Context, Error};
 
 pub struct Session {
     ssh: ssh2::Session,
@@ -8,24 +8,26 @@ pub struct Session {
 }
 
 impl Session {
-    pub(crate) fn connect<A: net::ToSocketAddrs>(addr: A) -> io::Result<Self> {
+    pub(crate) fn connect<A: net::ToSocketAddrs>(addr: A) -> Result<Self, Error> {
         let mut i = 0;
 
         let tcp = loop {
             match TcpStream::connect(&addr) {
                 Ok(s) => break s,
                 Err(_) if i <= 3 => i += 1,
-                Err(e) => return Err(e),
+                Err(e) => Err(Error::from(e).context("failed to connect to ssh port"))?,
             }
         };
 
-        let mut sess = ssh2::Session::new().unwrap();
+        let mut sess = ssh2::Session::new().ok_or(Context::new("libssh2 not available"))?;
         sess.handshake(&tcp)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(Error::from)
+            .map_err(|e| e.context("failed to perform ssh handshake"))?;
 
         // TODO
         sess.userauth_agent("ec2-user")
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(Error::from)
+            .map_err(|e| e.context("failed to authenticate ssh session"))?;
 
         Ok(Session {
             ssh: sess,
@@ -33,29 +35,36 @@ impl Session {
         })
     }
 
-    pub fn cmd(&mut self, cmd: &str) -> io::Result<String> {
+    pub fn cmd(&mut self, cmd: &str) -> Result<String, Error> {
         use std::io::Read;
 
         let mut channel = self.ssh
             .channel_session()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(Error::from)
+            .map_err(|e| {
+                e.context(format!(
+                    "failed to create ssh channel for command '{}'",
+                    cmd
+                ))
+            })?;
+
         channel
             .exec(cmd)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(Error::from)
+            .map_err(|e| e.context(format!("failed to execute command '{}'", cmd)))?;
+
         let mut s = String::new();
-        channel.read_to_string(&mut s)?;
+        channel
+            .read_to_string(&mut s)
+            .map_err(Error::from)
+            .map_err(|e| e.context(format!("failed to read results of command '{}'", cmd)))?;
+
         channel
             .wait_close()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(Error::from)
+            .map_err(|e| e.context(format!("command '{}' never completed", cmd)))?;
 
-        /*
-            println!(
-                "{}",
-                channel
-                    .exit_status()
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-            );
-            */
+        // TODO: check channel.exit_status()
         Ok(s)
     }
 }

@@ -30,5 +30,5 @@ fn main() {
             println!(" -> {}", c.private_ip);
         }
         Ok(())
-    });
+    }).unwrap();
 }

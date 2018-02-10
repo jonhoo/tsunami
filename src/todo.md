@@ -1,6 +1,8 @@
- - `failure` for getting rid of `unwrap` and propagating errors
  - `scopeguard` for ensuring teardown even for panics
  - `rayon` for parallel setup
+ - `slog` for logging
+ - set up new key and security group for cluster
+ - construct VPC for cluster
  - transient errors (e.g., API unreliable, DNS lookups, etc.)
  - nicer SSH interface
  - Cargo infrastructure (Travis, Cargo.toml meta)
