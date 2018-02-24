@@ -318,6 +318,7 @@ impl TsunamiBuilder {
             }
         }
 
+        /*
         // clean up security groups and keys
         let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
         req.group_id = Some(group_id);
@@ -327,6 +328,7 @@ impl TsunamiBuilder {
         req.key_name = key_name;
         ec2.delete_key_pair(&req)
             .context("failed to clean up key pair")?;
+            */
 
         Ok(())
     }
