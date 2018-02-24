@@ -1,5 +1,6 @@
 extern crate failure;
 extern crate rand;
+extern crate rayon;
 extern crate rusoto_core;
 extern crate rusoto_ec2;
 extern crate ssh2;
@@ -7,6 +8,7 @@ extern crate tempfile;
 
 use std::collections::HashMap;
 use failure::{Error, ResultExt};
+use rayon::prelude::*;
 use std::io::Write;
 
 mod ssh;
@@ -22,13 +24,13 @@ pub struct Machine {
 pub struct MachineSetup {
     instance_type: String,
     ami: String,
-    setup: Box<Fn(&mut ssh::Session) -> Result<(), Error>>,
+    setup: Box<Fn(&mut ssh::Session) -> Result<(), Error> + Sync>,
 }
 
 impl MachineSetup {
     pub fn new<F>(instance_type: &str, ami: &str, setup: F) -> Self
     where
-        F: Fn(&mut ssh::Session) -> Result<(), Error> + 'static,
+        F: Fn(&mut ssh::Session) -> Result<(), Error> + 'static + Sync,
     {
         MachineSetup {
             instance_type: instance_type.to_string(),
@@ -280,37 +282,45 @@ impl TsunamiBuilder {
 
         // TODO: assert here that #instances in each set is the same as requested
 
+        let mut errors = Vec::new();
         if all_active {
             //    - once an instance is ready, run setup closure
             for (name, machines) in &mut machines {
                 let f = &setup_fns[name];
-                // TODO: set up machines in parallel (rayon)
-                for machine in machines {
-                    use std::net::{IpAddr, SocketAddr};
-                    let mut sess = ssh::Session::connect(
-                        SocketAddr::new(
-                            machine
-                                .public_ip
-                                .parse::<IpAddr>()
-                                .context("machine ip is not an ip address")?,
-                            22,
-                        ),
-                        private_key_file.path(),
-                    ).context(format!(
-                        "failed to ssh to {} machine {}",
-                        name, machine.public_dns
-                    ))?;
+                errors.par_extend(
+                    machines
+                        .par_iter_mut()
+                        .map(|machine| -> Result<_, Error> {
+                            use std::net::{IpAddr, SocketAddr};
+                            let mut sess = ssh::Session::connect(
+                                SocketAddr::new(
+                                    machine
+                                        .public_ip
+                                        .parse::<IpAddr>()
+                                        .context("machine ip is not an ip address")?,
+                                    22,
+                                ),
+                                private_key_file.path(),
+                            ).context(format!(
+                                "failed to ssh to {} machine {}",
+                                name, machine.public_dns
+                            ))?;
 
-                    f(&mut sess).map_err(|e| {
-                        e.context(format!("setup procedure for {} machine failed", name))
-                    })?;
+                            f(&mut sess).map_err(|e| {
+                                e.context(format!("setup procedure for {} machine failed", name))
+                            })?;
 
-                    machine.ssh = Some(sess);
-                }
+                            machine.ssh = Some(sess);
+                            Ok(())
+                        })
+                        .filter_map(Result::err),
+                );
             }
 
-            // 5. invoke F with Machine descriptors
-            f(machines).map_err(|e| e.context("tsunami main routine failed"))?;
+            if errors.is_empty() {
+                // 5. invoke F with Machine descriptors
+                f(machines).map_err(|e| e.context("tsunami main routine failed"))?;
+            }
         }
 
         // 6. terminate all instances
@@ -337,6 +347,7 @@ impl TsunamiBuilder {
             .context("failed to clean up key pair")?;
             */
 
-        Ok(())
+        // TODO: this will only expose first setup error -- fix that
+        errors.into_iter().next().map(|e| Err(e)).unwrap_or(Ok(()))
     }
 }
