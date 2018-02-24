@@ -1,3 +1,53 @@
+//! `tsunami` provides an interface for running short-lived jobs and experiments on EC2 spot block
+//! instances. Most interaction with this library happens through
+//! [`TsunamiBuilder`](struct.TsunamiBuilder.html).
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! # use tsunami::{Machine, MachineSetup, TsunamiBuilder};
+//! # use std::collections::HashMap;
+//! let mut b = TsunamiBuilder::default();
+//! b.use_term_logger();
+//! b.add_set(
+//!     "server",
+//!     1,
+//!     MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
+//!         ssh.cmd("yum install nginx").map(|out| {
+//!             println!("{}", out);
+//!         })
+//!     }),
+//! );
+//! b.add_set(
+//!     "client",
+//!     3,
+//!     MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
+//!         ssh.cmd("yum install wget").map(|out| {
+//!             println!("{}", out);
+//!         })
+//!     }),
+//! );
+//!
+//! b.run(|vms: HashMap<String, Vec<Machine>>| {
+//!     println!("==> {}", vms["server"][0].private_ip);
+//!     for c in &vms["client"] {
+//!         println!(" -> {}", c.private_ip);
+//!     }
+//!     // ...
+//!     Ok(())
+//! }).unwrap();
+//! ```
+//!
+//! # Live-coding
+//!
+//! The crate is under development as part of a live-coding stream series intended for users who
+//! are already somewhat familiar with Rust, and who want to see something larger and more involved
+//! be built.
+//!
+//! You can find the recording of the first session at
+//! https://youtu.be/Zdudg5TV9i4.
+#![deny(missing_docs)]
+
 extern crate failure;
 extern crate rand;
 extern crate rayon;
@@ -18,15 +68,29 @@ use std::io::Write;
 use std::time;
 
 mod ssh;
+pub use ssh::Session;
 
+/// A handle to an instance currently running as part of a tsunami.
 pub struct Machine {
+    /// An established SSH session to this host.
     pub ssh: Option<ssh::Session>,
+
+    /// AWS EC2 instance type hosting this machine.
+    ///
+    /// See https://aws.amazon.com/ec2/instance-types/ for details.
     pub instance_type: String,
+
+    /// The private IP address of this host on its designated VPC.
     pub private_ip: String,
+
+    /// The publicly accessible hostname of this host.
     pub public_dns: String,
+
+    /// The publicly accessible IP address of this host.
     pub public_ip: String,
 }
 
+/// A template for a particular machine setup in a tsunami.
 pub struct MachineSetup {
     instance_type: String,
     ami: String,
@@ -34,6 +98,26 @@ pub struct MachineSetup {
 }
 
 impl MachineSetup {
+    /// Define a new template for a tsunami machine setup.
+    ///
+    /// The given AWS EC2 instance type will be used. Note that only [EC2 Defined Duration Spot
+    /// Instance types](https://aws.amazon.com/ec2/spot/pricing/) are allowed.
+    ///
+    /// The `setup` argument is called once for every spawned instances of this type with a handle
+    /// to the target machine. Use [`Machine::ssh`](struct.Machine.html#structfield.ssh) to issue
+    /// commands on the host in question.
+    ///
+    /// The new instance will start out in the state dictated by the Amazon Machine Image specified
+    /// in `ami`.
+    ///
+    /// ```rust
+    /// # use tsunami::MachineSetup;
+    /// MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
+    ///     ssh.cmd("cat /etc/hostname").map(|out| {
+    ///         println!("{}", out);
+    ///     })
+    /// });
+    /// ```
     pub fn new<F>(instance_type: &str, ami: &str, setup: F) -> Self
     where
         F: Fn(&mut ssh::Session) -> Result<(), Error> + 'static + Sync,
@@ -46,6 +130,13 @@ impl MachineSetup {
     }
 }
 
+/// Use this to prepare and execute a new tsunami.
+///
+/// A tsunami consists of one or more [`MachineSetup`](struct.MachineSetup.html)s that will be
+/// spawned as EC2 spot instances. See
+/// [`MachineSetup#add_set`](struct.TsunamiBuilder.html#method.add_set)) for how to construct a
+/// tsunami.
+#[must_use]
 pub struct TsunamiBuilder {
     descriptors: HashMap<String, (MachineSetup, u32)>,
     log: slog::Logger,
@@ -63,19 +154,58 @@ impl Default for TsunamiBuilder {
 }
 
 impl TsunamiBuilder {
+    /// Add a new (named) machine setup template, and set how many instances of that type should be
+    /// spawned as part of the tsunami.
+    ///
+    /// ```rust
+    /// # use tsunami::{TsunamiBuilder, MachineSetup};
+    /// let mut b = TsunamiBuilder::default();
+    /// b.add_set(
+    ///     "server",
+    ///     1,
+    ///     MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
+    ///         ssh.cmd("yum install nginx").map(|out| {
+    ///             println!("{}", out);
+    ///         })
+    ///     }),
+    /// );
+    /// b.add_set(
+    ///     "client",
+    ///     10,
+    ///     MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
+    ///         ssh.cmd("yum install wget").map(|out| {
+    ///             println!("{}", out);
+    ///         })
+    ///     }),
+    /// );
+    /// ```
     pub fn add_set(&mut self, name: &str, number: u32, setup: MachineSetup) {
         // TODO: what if name is already in use?
         self.descriptors.insert(name.to_string(), (setup, number));
     }
 
+    /// Set the maxium lifetime of spawned spot instances.
+    ///
+    /// EC2 spot instances are normally subject to termination at any point. This library instead
+    /// uses [defined
+    /// duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+    /// instances, which cost slightly more, but are never prematurely terminated. The lifetime of
+    /// such instances must be declared in advance (1-6 hours), and can be changed with this
+    /// method.
+    ///
+    /// The default duration is 1 hour.
     pub fn set_max_duration(&mut self, hours: u8) {
         self.max_duration = hours as i64 * 60;
     }
 
+    /// Set the logging target for this tsunami.
+    ///
+    /// By default, logging is disabled (i.e., the default logger is `slog::Discard`).
     pub fn set_logger(&mut self, log: slog::Logger) {
         self.log = log;
     }
 
+    /// Enable logging to terminal.
     pub fn use_term_logger(&mut self) {
         use slog::Drain;
         use std::sync::Mutex;
@@ -85,6 +215,23 @@ impl TsunamiBuilder {
         self.log = slog::Logger::root(drain, o!());
     }
 
+    /// Spin up a tsunami batching the defined machine sets in this builder.
+    ///
+    /// When all instances are up and running, the given closure will be called with a handle to
+    /// all spawned hosts. When the closure exits, the instances are all terminated automatically.
+    ///
+    /// ```rust,no_run
+    /// # use tsunami::{TsunamiBuilder, Machine};
+    /// # use std::collections::HashMap;
+    /// let mut b = TsunamiBuilder::default();
+    /// // ...
+    /// b.run(|vms: HashMap<String, Vec<Machine>>| {
+    ///     println!("==> {}", vms["server"][0].private_ip);
+    ///     for c in &vms["client"] {
+    ///         println!(" -> {}", c.private_ip);
+    ///     }
+    ///     Ok(())
+    /// }).unwrap();
     pub fn run<F>(self, f: F) -> Result<(), Error>
     where
         F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<(), Error>,

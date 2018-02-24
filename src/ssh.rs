@@ -6,6 +6,7 @@ use std::thread;
 use failure::ResultExt;
 use failure::{Context, Error};
 
+/// An established SSH session.
 pub struct Session {
     ssh: ssh2::Session,
     _stream: TcpStream,
@@ -37,6 +38,7 @@ impl Session {
         })
     }
 
+    /// Issue the given command and return the command standard output.
     pub fn cmd(&mut self, cmd: &str) -> Result<String, Error> {
         use std::io::Read;
 
