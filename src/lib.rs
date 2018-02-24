@@ -1,10 +1,13 @@
 extern crate failure;
+extern crate rand;
 extern crate rusoto_core;
 extern crate rusoto_ec2;
 extern crate ssh2;
+extern crate tempfile;
 
 use std::collections::HashMap;
 use failure::{Error, ResultExt};
+use std::io::Write;
 
 mod ssh;
 
@@ -76,6 +79,53 @@ impl TsunamiBuilder {
             Region::UsEast1,
         );
 
+        // set up network firewall for machines
+        use rand::Rng;
+        let mut group_name = String::from("tsunami_security_");
+        group_name.extend(rand::thread_rng().gen_ascii_chars().take(10));
+        let mut req = rusoto_ec2::CreateSecurityGroupRequest::default();
+        req.group_name = group_name;
+        req.description = "temporary access group for tsunami VMs".to_string();
+        let res = ec2.create_security_group(&req)
+            .context("failed to create security group for new machines")?;
+        let group_id = res.group_id
+            .expect("aws created security group with no group id");
+
+        let mut req = rusoto_ec2::AuthorizeSecurityGroupIngressRequest::default();
+        req.group_id = Some(group_id.clone());
+
+        // ssh access
+        req.ip_protocol = Some("tcp".to_string());
+        req.from_port = Some(22);
+        req.to_port = Some(22);
+        req.cidr_ip = Some("0.0.0.0/0".to_string());
+        let _ = ec2.authorize_security_group_ingress(&req)
+            .context("failed to fill in security group for new machines")?;
+
+        // cross-VM talk
+        req.from_port = Some(0);
+        req.to_port = Some(65535);
+        req.cidr_ip = Some("172.31.0.0/16".to_string());
+        let _ = ec2.authorize_security_group_ingress(&req)
+            .context("failed to fill in security group for new machines")?;
+
+        // construct keypair for ssh access
+        let mut req = rusoto_ec2::CreateKeyPairRequest::default();
+        let mut key_name = String::from("tsunami_key_");
+        key_name.extend(rand::thread_rng().gen_ascii_chars().take(10));
+        req.key_name = key_name.clone();
+        let res = ec2.create_key_pair(&req)
+            .context("failed to generate new key pair")?;
+
+        // write keypair to disk
+        let private_key = res.key_material
+            .expect("aws did not generate key material for new key");
+        let mut private_key_file =
+            tempfile::NamedTempFile::new().context("failed to create temporary file for keypair")?;
+        private_key_file
+            .write_all(private_key.as_bytes())
+            .context("could not write private key to file")?;
+
         let mut setup_fns = HashMap::new();
 
         // 1. issue spot requests
@@ -87,9 +137,9 @@ impl TsunamiBuilder {
             launch.instance_type = Some(setup.instance_type);
             setup_fns.insert(name.clone(), setup.setup);
 
-            // TODO
-            launch.security_groups = Some(vec!["hello".to_string()]);
-            launch.key_name = Some("x1c".to_string());
+            launch.security_group_ids = Some(vec![group_id.clone()]);
+            launch.key_name = Some(key_name.clone());
+
             // TODO: VPC
 
             let mut req = rusoto_ec2::RequestSpotInstancesRequest::default();
@@ -239,11 +289,13 @@ impl TsunamiBuilder {
                 let f = &setup_fns[name];
                 // TODO: set up machines in parallel (rayon)
                 for machine in machines {
-                    let mut sess = ssh::Session::connect(&format!("{}:22", machine.public_ip))
-                        .context(format!(
-                            "failed to ssh to {} machine {}",
-                            name, machine.public_dns
-                        })?;
+                    let mut sess = ssh::Session::connect(
+                        &format!("{}:22", machine.public_ip),
+                        private_key_file.path(),
+                    ).context(format!(
+                        "failed to ssh to {} machine {}",
+                        name, machine.public_dns
+                    ))?;
 
                     f(&mut sess).map_err(|e| {
                         e.context(format!("setup procedure for {} machine failed", name))
@@ -268,6 +320,16 @@ impl TsunamiBuilder {
                 Err(e).context("failed to terminate tsunami instances")?;
             }
         }
+
+        // clean up security groups and keys
+        let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
+        req.group_id = Some(group_id);
+        ec2.delete_security_group(&req)
+            .context("failed to clean up security group")?;
+        let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
+        req.key_name = key_name;
+        ec2.delete_key_pair(&req)
+            .context("failed to clean up key pair")?;
 
         Ok(())
     }

@@ -8,6 +8,8 @@ rusoto_core = "0.31.0"
 rusoto_ec2 = "0.31.0"
 ssh2 = "0.3.2"
 failure = "0.1.1"
+rand = "0.4"
+tempfile = "2.2.0"
 
 [profile.release]
 debug = true

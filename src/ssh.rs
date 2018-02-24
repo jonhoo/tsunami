@@ -1,5 +1,6 @@
 use ssh2;
 use std::net::{self, TcpStream};
+use std::path::Path;
 use failure::ResultExt;
 use failure::{Context, Error};
 
@@ -9,7 +10,7 @@ pub struct Session {
 }
 
 impl Session {
-    pub(crate) fn connect<A: net::ToSocketAddrs>(addr: A) -> Result<Self, Error> {
+    pub(crate) fn connect<A: net::ToSocketAddrs>(addr: A, key: &Path) -> Result<Self, Error> {
         let mut i = 0;
 
         let tcp = loop {
@@ -23,9 +24,7 @@ impl Session {
         let mut sess = ssh2::Session::new().ok_or(Context::new("libssh2 not available"))?;
         sess.handshake(&tcp)
             .context("failed to perform ssh handshake")?;
-
-        // TODO
-        sess.userauth_agent("ec2-user")
+        sess.userauth_pubkey_file("ec2-user", None, key, None)
             .context("failed to authenticate ssh session")?;
 
         Ok(Session {
