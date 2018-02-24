@@ -3,6 +3,11 @@ name = "tsunami"
 version = "0.1.0"
 authors = ["Jon Gjengset <jon@thesquareplanet.com>"]
 
+[features]
+# https://github.com/rust-lang/cargo/issues/633#issuecomment-368258261
+#debug = ["slog/max_level_trace", "slog/release_max_level_debug"]
+debug = ["slog/max_level_trace"]
+
 [dependencies]
 rusoto_core = "0.31.0"
 rusoto_ec2 = "0.31.0"
@@ -11,6 +16,8 @@ failure = "0.1.1"
 rand = "0.4"
 tempfile = "2.2.0"
 rayon = "1.0.0"
+slog-term = "2.3.0"
+slog = "2.1.1"
 
 [profile.release]
 debug = true

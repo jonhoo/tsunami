@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 fn main() {
     let mut b = TsunamiBuilder::default();
+    b.use_term_logger();
     b.add_set(
         "server",
         1,

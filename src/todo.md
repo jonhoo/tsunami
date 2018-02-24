@@ -1,5 +1,4 @@
  - `scopeguard` for ensuring teardown even for panics
- - `slog` for logging
  - construct VPC for cluster
  - nicer SSH interface
  - Cargo infrastructure (Travis, Cargo.toml meta)
