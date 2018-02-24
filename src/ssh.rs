@@ -18,7 +18,7 @@ impl Session {
         let tcp = loop {
             match TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
                 Ok(s) => break s,
-                Err(_) if start.elapsed() <= Duration::from_secs(60) => {
+                Err(_) if start.elapsed() <= Duration::from_secs(120) => {
                     thread::sleep(Duration::from_secs(1));
                 }
                 Err(e) => Err(Error::from(e).context("failed to connect to ssh port"))?,
