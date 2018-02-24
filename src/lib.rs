@@ -286,8 +286,15 @@ impl TsunamiBuilder {
                 let f = &setup_fns[name];
                 // TODO: set up machines in parallel (rayon)
                 for machine in machines {
+                    use std::net::{IpAddr, SocketAddr};
                     let mut sess = ssh::Session::connect(
-                        &format!("{}:22", machine.public_ip),
+                        SocketAddr::new(
+                            machine
+                                .public_ip
+                                .parse::<IpAddr>()
+                                .context("machine ip is not an ip address")?,
+                            22,
+                        ),
                         private_key_file.path(),
                     ).context(format!(
                         "failed to ssh to {} machine {}",

@@ -1,6 +1,8 @@
 use ssh2;
-use std::net::{self, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
+use std::time::{Duration, Instant};
+use std::thread;
 use failure::ResultExt;
 use failure::{Context, Error};
 
@@ -10,13 +12,14 @@ pub struct Session {
 }
 
 impl Session {
-    pub(crate) fn connect<A: net::ToSocketAddrs>(addr: A, key: &Path) -> Result<Self, Error> {
-        let mut i = 0;
-
+    pub(crate) fn connect(addr: SocketAddr, key: &Path) -> Result<Self, Error> {
+        let start = Instant::now();
         let tcp = loop {
-            match TcpStream::connect(&addr) {
+            match TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
                 Ok(s) => break s,
-                Err(_) if i <= 3 => i += 1,
+                Err(_) if start.elapsed() <= Duration::from_secs(60) => {
+                    thread::sleep(Duration::from_secs(1));
+                }
                 Err(e) => Err(Error::from(e).context("failed to connect to ssh port"))?,
             }
         };
