@@ -16,6 +16,7 @@ pub struct Machine {
     pub instance_type: String,
     pub private_ip: String,
     pub public_dns: String,
+    pub public_ip: String,
 }
 
 pub struct MachineSetup {
@@ -209,12 +210,14 @@ impl TsunamiBuilder {
                             instance_type: Some(instance_type),
                             private_ip_address: Some(private_ip),
                             public_dns_name: Some(public_dns),
+                            public_ip_address: Some(public_ip),
                             ..
                         } => {
                             let machine = Machine {
                                 ssh: None,
                                 instance_type,
                                 private_ip,
+                                public_ip,
                                 public_dns,
                             };
                             let name = id_to_name[&instance_id].clone();
@@ -236,7 +239,7 @@ impl TsunamiBuilder {
                 let f = &setup_fns[name];
                 // TODO: set up machines in parallel (rayon)
                 for machine in machines {
-                    let mut sess = ssh::Session::connect(&format!("{}:22", machine.public_dns))
+                    let mut sess = ssh::Session::connect(&format!("{}:22", machine.public_ip))
                         .context(format!(
                             "failed to ssh to {} machine {}",
                             name, machine.public_dns
