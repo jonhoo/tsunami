@@ -11,9 +11,6 @@ use std::io::Write;
 
 mod ssh;
 
-//#[derive(Debug, Fail)]
-//pub enum TsunamiError { }
-
 pub struct Machine {
     pub ssh: Option<ssh::Session>,
     pub instance_type: String,
