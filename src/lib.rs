@@ -3,8 +3,8 @@ extern crate rusoto_core;
 extern crate rusoto_ec2;
 extern crate ssh2;
 
-use failure::Error;
 use std::collections::HashMap;
+use failure::{Error, ResultExt};
 
 mod ssh;
 
@@ -70,9 +70,7 @@ impl TsunamiBuilder {
         use rusoto_ec2::Ec2;
 
         let ec2 = rusoto_ec2::Ec2Client::new(
-            default_tls_client()
-                .map_err(Error::from)
-                .map_err(|e| e.context("failed to create tls session for ec2 api client"))?,
+            default_tls_client().context("failed to create tls session for ec2 api client")?,
             EnvironmentProvider,
             Region::UsEast1,
         );
@@ -99,8 +97,7 @@ impl TsunamiBuilder {
             req.launch_specification = Some(launch);
 
             let res = ec2.request_spot_instances(&req)
-                .map_err(Error::from)
-                .map_err(|e| e.context(format!("failed to request spot instances for {}", name)))?;
+                .context(format!("failed to request spot instances for {}", name))?;
             let res = res.spot_instance_requests
                 .expect("request_spot_instances should always return spot instance requests");
             spot_req_ids.extend(
@@ -126,9 +123,9 @@ impl TsunamiBuilder {
                 if msg.contains("The spot instance request ID") && msg.contains("does not exist") {
                     continue;
                 } else {
-                    return Err(Error::from(e)
+                    return Err(e)
                         .context(format!("failed to describe spot instances"))
-                        .into());
+                        .map_err(|e| e.into());
                 }
             }
             let res = res.expect("Err checked above");
@@ -189,8 +186,7 @@ impl TsunamiBuilder {
             .take()
             .expect("we set this to Some above");
         ec2.cancel_spot_instance_requests(&cancel)
-            .map_err(Error::from)
-            .map_err(|e| e.context("failed to cancel spot instances"))?;
+            .context("failed to cancel spot instances")?;
 
         // 4. wait until all instances are up
         let mut machines = HashMap::new();
@@ -202,8 +198,7 @@ impl TsunamiBuilder {
             machines.clear();
 
             for reservation in ec2.describe_instances(&desc_req)
-                .map_err(Error::from)
-                .map_err(|e| e.context("failed to cancel spot instances"))?
+                .context("failed to cancel spot instances")?
                 .reservations
                 .unwrap_or_else(Vec::new)
             {
@@ -242,12 +237,9 @@ impl TsunamiBuilder {
                 // TODO: set up machines in parallel (rayon)
                 for machine in machines {
                     let mut sess = ssh::Session::connect(&format!("{}:22", machine.public_dns))
-                        .map_err(Error::from)
-                        .map_err(|e| {
-                            e.context(format!(
-                                "failed to ssh to {} machine {}",
-                                name, machine.public_dns
-                            ))
+                        .context(format!(
+                            "failed to ssh to {} machine {}",
+                            name, machine.public_dns
                         })?;
 
                     f(&mut sess).map_err(|e| {
@@ -270,7 +262,7 @@ impl TsunamiBuilder {
             if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
                 continue;
             } else {
-                Err(Error::from(e).context("failed to terminate tsunami instances"))?;
+                Err(e).context("failed to terminate tsunami instances")?;
             }
         }
 

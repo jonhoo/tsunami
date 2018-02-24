@@ -1,5 +1,6 @@
 use ssh2;
 use std::net::{self, TcpStream};
+use failure::ResultExt;
 use failure::{Context, Error};
 
 pub struct Session {
@@ -21,13 +22,11 @@ impl Session {
 
         let mut sess = ssh2::Session::new().ok_or(Context::new("libssh2 not available"))?;
         sess.handshake(&tcp)
-            .map_err(Error::from)
-            .map_err(|e| e.context("failed to perform ssh handshake"))?;
+            .context("failed to perform ssh handshake")?;
 
         // TODO
         sess.userauth_agent("ec2-user")
-            .map_err(Error::from)
-            .map_err(|e| e.context("failed to authenticate ssh session"))?;
+            .context("failed to authenticate ssh session")?;
 
         Ok(Session {
             ssh: sess,
