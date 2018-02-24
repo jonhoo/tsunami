@@ -2,8 +2,6 @@
    - at least make security group policy not be CIDR dependent
  - nicer SSH interface
    - shellwords
- - Cargo infrastructure (Travis, Cargo.toml meta)
- - documentation
  - async I/O instead of rayon (not compute heavy)
    - use https://docs.rs/thrussh/
  - allow arbitrary provider and region
