@@ -13,6 +13,7 @@ pub struct Session {
 
 impl Session {
     pub(crate) fn connect(addr: SocketAddr, key: &Path) -> Result<Self, Error> {
+        // TODO: instead of max time, keep trying as long as instance is still active
         let start = Instant::now();
         let tcp = loop {
             match TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {

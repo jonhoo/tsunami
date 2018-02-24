@@ -164,6 +164,7 @@ impl TsunamiBuilder {
         let mut id_to_name = HashMap::new();
         let mut spot_req_ids = Vec::new();
         debug!(log, "issuing spot requests");
+        // TODO: issue spot requests in parallel
         for (name, (setup, number)) in self.descriptors {
             let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
             launch.image_id = Some(setup.ami);
@@ -189,6 +190,7 @@ impl TsunamiBuilder {
                 res.into_iter()
                     .filter_map(|sir| sir.spot_instance_request_id)
                     .map(|sir| {
+                        // TODO: add more info if in parallel
                         trace!(log, "activated spot request"; "id" => &sir);
                         id_to_name.insert(sir.clone(), name.clone());
                         sir
