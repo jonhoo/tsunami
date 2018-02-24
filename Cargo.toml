@@ -1,7 +1,23 @@
 [package]
 name = "tsunami"
-version = "0.1.0"
+version = "0.5.0"
+
+description = "Toolkit for running short-lived jobs on EC2 spot instances"
+readme = "README.md"
+
 authors = ["Jon Gjengset <jon@thesquareplanet.com>"]
+
+documentation = "https://docs.rs/tsunami"
+homepage = "https://github.com/jonhoo/tsunami"
+repository = "https://github.com/jonhoo/tsunami.git"
+
+keywords = ["ec2", "aws", "spot instances", "distributed", "experiments", "benchmark"]
+categories = []
+
+license = "MIT/Apache-2.0"
+
+[badges]
+travis-ci = { repository = "jonhoo/tsunami" }
 
 [features]
 # https://github.com/rust-lang/cargo/issues/633#issuecomment-368258261
