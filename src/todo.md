@@ -4,3 +4,5 @@
  - nicer SSH interface
  - Cargo infrastructure (Travis, Cargo.toml meta)
  - documentation
+ - async I/O instead of rayon (not compute heavy)
+   - use https://docs.rs/thrussh/
