@@ -1,7 +1,3 @@
-#[macro_use]
-extern crate slog;
-extern crate slog_term;
-
 extern crate failure;
 extern crate rand;
 extern crate rayon;
@@ -9,6 +5,9 @@ extern crate rusoto_core;
 extern crate rusoto_ec2;
 #[macro_use]
 extern crate scopeguard;
+#[macro_use]
+extern crate slog;
+extern crate slog_term;
 extern crate ssh2;
 extern crate tempfile;
 
