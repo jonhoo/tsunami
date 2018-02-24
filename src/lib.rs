@@ -7,6 +7,8 @@ extern crate rand;
 extern crate rayon;
 extern crate rusoto_core;
 extern crate rusoto_ec2;
+#[macro_use]
+extern crate scopeguard;
 extern crate ssh2;
 extern crate tempfile;
 
@@ -276,7 +278,39 @@ impl TsunamiBuilder {
             }
         }
 
-        // TODO: this is where we'd create the ScopeGuard
+        let mut term_instances = instances.clone();
+        defer!{{
+            use std::mem;
+
+            // 6. terminate all instances
+            debug!(log, "terminating instances");
+            let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
+            termination_req.instance_ids = mem::replace(&mut term_instances, Vec::new());
+            while let Err(e) = ec2.terminate_instances(&termination_req) {
+                let msg = format!("{}", e);
+                if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
+                    trace!(log, "retrying instance termination");
+                    continue;
+                } else {
+                    warn!(log, "failed to terminate tsunami instances: {:?}", e);
+                }
+            }
+
+            /*
+            debug!(log, "cleaning up temporary resources");
+            trace!(log, "cleaning up temporary security group");
+            // clean up security groups and keys
+            let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
+            req.group_id = Some(group_id);
+            ec2.delete_security_group(&req)
+                .context("failed to clean up security group")?;
+            trace!(log, "cleaning up temporary keypair");
+            let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
+            req.key_name = key_name;
+            ec2.delete_key_pair(&req)
+            .context("failed to clean up key pair")?;
+            */
+        }};
 
         // 3. stop spot requests
         trace!(log, "terminating spot requests");
@@ -285,7 +319,11 @@ impl TsunamiBuilder {
             .take()
             .expect("we set this to Some above");
         ec2.cancel_spot_instance_requests(&cancel)
-            .context("failed to cancel spot instances")?;
+            .context("failed to cancel spot instances")
+            .map_err(|e| {
+                warn!(log, "failed to cancel spot instance request: {:?}", e);
+                e
+            })?;
 
         // 4. wait until all instances are up
         let mut machines = HashMap::new();
@@ -394,35 +432,6 @@ impl TsunamiBuilder {
                 info!(log, "the power of the tsunami was unleashed"; "duration" => start.elapsed().as_secs());
             }
         }
-
-        // 6. terminate all instances
-        debug!(log, "terminating instances");
-        let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
-        termination_req.instance_ids = desc_req.instance_ids.expect("set to Some further up");
-        while let Err(e) = ec2.terminate_instances(&termination_req) {
-            let msg = format!("{}", e);
-            if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
-                trace!(log, "retrying instance termination");
-                continue;
-            } else {
-                Err(e).context("failed to terminate tsunami instances")?;
-            }
-        }
-
-        /*
-        debug!(log, "cleaning up temporary resources");
-        trace!(log, "cleaning up temporary security group");
-        // clean up security groups and keys
-        let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
-        req.group_id = Some(group_id);
-        ec2.delete_security_group(&req)
-            .context("failed to clean up security group")?;
-        trace!(log, "cleaning up temporary keypair");
-        let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
-        req.key_name = key_name;
-        ec2.delete_key_pair(&req)
-            .context("failed to clean up key pair")?;
-            */
 
         debug!(log, "all done");
 

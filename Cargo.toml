@@ -18,6 +18,7 @@ tempfile = "2.2.0"
 rayon = "1.0.0"
 slog-term = "2.3.0"
 slog = "2.1.1"
+scopeguard = "0.3.3"
 
 [profile.release]
 debug = true

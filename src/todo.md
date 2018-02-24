@@ -1,4 +1,3 @@
- - `scopeguard` for ensuring teardown even for panics
  - construct VPC for cluster
    - at least make security group policy not be CIDR dependent
  - nicer SSH interface
