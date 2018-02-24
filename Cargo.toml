@@ -1,6 +1,6 @@
 [package]
 name = "tsunami"
-version = "0.5.0"
+version = "0.5.1"
 
 description = "Toolkit for running short-lived jobs on EC2 spot instances"
 readme = "README.md"
@@ -20,9 +20,7 @@ license = "MIT/Apache-2.0"
 travis-ci = { repository = "jonhoo/tsunami" }
 
 [features]
-# https://github.com/rust-lang/cargo/issues/633#issuecomment-368258261
-#debug = ["slog/max_level_trace", "slog/release_max_level_debug"]
-debug = ["slog/max_level_trace"]
+debug = ["slog/max_level_trace", "slog/release_max_level_debug"]
 
 [dependencies]
 rusoto_core = "0.31.0"
