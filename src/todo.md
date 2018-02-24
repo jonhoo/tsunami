@@ -7,3 +7,4 @@
    - use https://docs.rs/thrussh/
  - allow arbitrary provider and region
  - configurable connection timeout
+ - gathering statistics/results
