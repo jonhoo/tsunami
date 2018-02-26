@@ -48,5 +48,6 @@ The crate is under development as part of a live-coding stream series intended f
 are already somewhat familiar with Rust, and who want to see something larger and more involved
 be built.
 
-You can find the recording of the first session at
-https://youtu.be/Zdudg5TV9i4.
+You can find the recordings of past sessions below:
+- [Part 1](https://youtu.be/Zdudg5TV9i4)
+- [Part 2](https://youtu.be/66INYb73yXo)
