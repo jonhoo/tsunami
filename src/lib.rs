@@ -191,7 +191,8 @@ impl TsunamiBuilder {
     /// Set up the machines in a specific EC2
     /// [`Region`](http://rusoto.github.io/rusoto/rusoto_core/region/enum.Region.html).
     ///
-    /// The default region is us-east-1.
+    /// The default region is us-east-1. [Available regions are listed
+    /// here](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#concepts-available-regions)
     pub fn in_region(&mut self, region: Region) {
         self.region = region;
     }
