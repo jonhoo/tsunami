@@ -67,6 +67,7 @@ use failure::{Error, ResultExt};
 use rayon::prelude::*;
 use std::io::Write;
 use std::time;
+use rusoto_core::Region;
 
 mod ssh;
 pub use ssh::Session;
@@ -142,6 +143,7 @@ pub struct TsunamiBuilder {
     descriptors: HashMap<String, (MachineSetup, u32)>,
     log: slog::Logger,
     max_duration: i64,
+    region: Region,
 }
 
 impl Default for TsunamiBuilder {
@@ -150,6 +152,7 @@ impl Default for TsunamiBuilder {
             descriptors: Default::default(),
             log: slog::Logger::root(slog::Discard, o!()),
             max_duration: 60,
+            region: Region::UsEast1,
         }
     }
 }
@@ -183,6 +186,15 @@ impl TsunamiBuilder {
     pub fn add_set(&mut self, name: &str, number: u32, setup: MachineSetup) {
         // TODO: what if name is already in use?
         self.descriptors.insert(name.to_string(), (setup, number));
+    }
+
+    /// Set up the machines in a specific EC2
+    /// [`Region`](http://rusoto.github.io/rusoto/rusoto_core/region/enum.Region.html).
+    ///
+    /// The default region is us-east-1. [Available regions are listed
+    /// here](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#concepts-available-regions)
+    pub fn set_region(&mut self, region: Region) {
+        self.region = region;
     }
 
     /// Set the maxium lifetime of spawned spot instances.
@@ -237,7 +249,7 @@ impl TsunamiBuilder {
     where
         F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<(), Error>,
     {
-        use rusoto_core::{EnvironmentProvider, Region};
+        use rusoto_core::EnvironmentProvider;
         use rusoto_core::default_tls_client;
         use rusoto_ec2::Ec2;
 
@@ -248,7 +260,7 @@ impl TsunamiBuilder {
         let ec2 = rusoto_ec2::Ec2Client::new(
             default_tls_client().context("failed to create tls session for ec2 api client")?,
             EnvironmentProvider,
-            Region::UsEast1,
+            self.region,
         );
 
         info!(log, "spinning up tsunami");
