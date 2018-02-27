@@ -7,6 +7,13 @@ use failure::ResultExt;
 use failure::{Context, Error};
 
 /// An established SSH session.
+///
+/// See [`ssh2::Session`](https://docs.rs/ssh2/0.3/ssh2/struct.Session.html) in general, and
+/// [`ssh2::Session#session_channel`](https://docs.rs/ssh2/0.3/ssh2/struct.Session.html#method.channel_session)
+/// specifically, for how to execute commands on the remote host.
+///
+/// To execute a command and get its `STDOUT` output, use
+/// [`Session#cmd`](struct.Session.html#method.cmd).
 pub struct Session {
     ssh: ssh2::Session,
     _stream: TcpStream,
