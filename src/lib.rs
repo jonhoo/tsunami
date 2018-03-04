@@ -337,10 +337,15 @@ impl TsunamiBuilder {
 
             // TODO: VPC
 
-            let mut req = rusoto_ec2::RequestSpotInstancesRequest::default();
-            req.instance_count = Some(i64::from(number));
-            req.block_duration_minutes = Some(self.max_duration);
-            req.launch_specification = Some(launch);
+            let req = rusoto_ec2::RequestSpotInstancesRequest {
+                instance_count: Some(i64::from(number)),
+                block_duration_minutes: Some(self.max_duration),
+                launch_specification: Some(launch),
+                // one-time spot instances are only fulfilled once and therefore do not need to be
+                // cancelled.
+                type_: Some("one-time".into()),
+                ..Default::default()
+            };
 
             trace!(log, "issuing spot request for {}", name; "#" => number);
             let res = ec2.request_spot_instances(&req)
@@ -441,7 +446,7 @@ impl TsunamiBuilder {
         defer!{{
             use std::mem;
 
-            // 6. terminate all instances
+            // 5. terminate all instances
             debug!(log, "terminating instances");
             let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
             termination_req.instance_ids = mem::replace(&mut term_instances, Vec::new());
@@ -471,20 +476,7 @@ impl TsunamiBuilder {
             */
         }};
 
-        // 3. stop spot requests
-        trace!(log, "terminating spot requests");
-        let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
-        cancel.spot_instance_request_ids = req.spot_instance_request_ids
-            .take()
-            .expect("we set this to Some above");
-        ec2.cancel_spot_instance_requests(&cancel)
-            .context("failed to cancel spot instances")
-            .map_err(|e| {
-                warn!(log, "failed to cancel spot instance request: {:?}", e);
-                e
-            })?;
-
-        // 4. wait until all instances are up
+        // 3. wait until all instances are up
         let mut machines = HashMap::new();
         let mut desc_req = rusoto_ec2::DescribeInstancesRequest::default();
         desc_req.instance_ids = Some(instances);
@@ -579,7 +571,7 @@ impl TsunamiBuilder {
             }
 
             if errors.is_empty() {
-                // 5. invoke F with Machine descriptors
+                // 4. invoke F with Machine descriptors
                 let start = time::Instant::now();
                 info!(log, "quiet before the storm");
                 f(machines)
