@@ -136,7 +136,7 @@ impl MachineSetup {
 ///
 /// A tsunami consists of one or more [`MachineSetup`](struct.MachineSetup.html)s that will be
 /// spawned as EC2 spot instances. See
-/// [`MachineSetup#add_set`](struct.TsunamiBuilder.html#method.add_set)) for how to construct a
+/// [`TsunamiBuilder#add_set`](struct.TsunamiBuilder.html#method.add_set)) for how to construct a
 /// tsunami.
 #[must_use]
 pub struct TsunamiBuilder {
