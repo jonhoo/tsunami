@@ -317,7 +317,7 @@ impl TsunamiBuilder {
         private_key_file
             .write_all(private_key.as_bytes())
             .context("could not write private key to file")?;
-        trace!(log, "wrote keypair to file"; "filename" => ?private_key_file.path());
+        trace!(log, "wrote keypair to file"; "filename" => private_key_file.path().display());
 
         let mut setup_fns = HashMap::new();
 
