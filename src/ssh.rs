@@ -45,8 +45,8 @@ impl Session {
         })
     }
 
-    /// Issue the given command and return the command standard output.
-    pub fn cmd(&mut self, cmd: &str) -> Result<String, Error> {
+    /// Issue the given command and return the command's raw standard output.
+    pub fn cmd_raw(&mut self, cmd: &str) -> Result<Vec<u8>, Error> {
         use std::io::Read;
 
         let mut channel = self.ssh
@@ -69,20 +69,20 @@ impl Session {
             .map_err(Error::from)
             .map_err(|e| e.context(format!("failed to finish command '{}'", cmd)))?;
 
-        let mut stdout = String::new();
-        let mut stderr = String::new();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
         // NOTE: the loop is needed because libssh2 can return reads of size 0 without EOF
         // https://www.libssh2.org/libssh2_channel_read_ex.html
         // NOTE: we must read from *both* stdout and stderr. EOF is only sent when they're both
         // drained.
         while !channel.eof() {
             channel
-                .read_to_string(&mut stdout)
+                .read_to_end(&mut stdout)
                 .map_err(Error::from)
                 .map_err(|e| e.context(format!("failed to read stdout of command '{}'", cmd)))?;
             channel
                 .stderr()
-                .read_to_string(&mut stderr)
+                .read_to_end(&mut stderr)
                 .map_err(Error::from)
                 .map_err(|e| e.context(format!("failed to read stderr of command '{}'", cmd)))?;
         }
@@ -96,6 +96,11 @@ impl Session {
         // TODO: return stderr as well?
         drop(stderr);
         Ok(stdout)
+    }
+
+    /// Issue the given command and return the command's standard output.
+    pub fn cmd(&mut self, cmd: &str) -> Result<String, Error> {
+        Ok(String::from_utf8(self.cmd_raw(cmd)?)?)
     }
 }
 
