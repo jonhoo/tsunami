@@ -64,6 +64,11 @@ impl Session {
             .map_err(Error::from)
             .map_err(|e| e.context(format!("failed to execute command '{}'", cmd)))?;
 
+        channel
+            .send_eof()
+            .map_err(Error::from)
+            .map_err(|e| e.context(format!("failed to finish command '{}'", cmd)))?;
+
         let mut s = String::new();
         channel
             .read_to_string(&mut s)
