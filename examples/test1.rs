@@ -1,7 +1,7 @@
 extern crate tsunami;
 
-use tsunami::{Machine, MachineSetup, TsunamiBuilder};
 use std::collections::HashMap;
+use tsunami::{Machine, MachineSetup, TsunamiBuilder};
 
 fn main() {
     let mut b = TsunamiBuilder::default();

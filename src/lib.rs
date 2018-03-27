@@ -62,12 +62,12 @@ extern crate slog_term;
 extern crate ssh2;
 extern crate tempfile;
 
-use std::collections::HashMap;
 use failure::{Error, ResultExt};
 use rayon::prelude::*;
+use rusoto_core::Region;
+use std::collections::HashMap;
 use std::io::Write;
 use std::time;
-use rusoto_core::Region;
 
 mod ssh;
 pub use ssh::Session;

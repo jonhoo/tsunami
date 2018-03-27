@@ -1,10 +1,10 @@
+use failure::ResultExt;
+use failure::{Context, Error};
 use ssh2;
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
-use std::time::{Duration, Instant};
 use std::thread;
-use failure::ResultExt;
-use failure::{Context, Error};
+use std::time::{Duration, Instant};
 
 /// An established SSH session.
 ///
