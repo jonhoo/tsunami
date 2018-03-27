@@ -590,50 +590,47 @@ impl TsunamiBuilder {
             info!(log, "all machines instantiated; running setup");
 
             //    - once an instance is ready, run setup closure
-            for (name, machines) in &mut machines {
+            let usernames = &usernames;
+            let private_key_file = &private_key_file;
+            errors.par_extend(machines.par_iter_mut().flat_map(|(name, machines)| {
                 let f = &setup_fns[name];
-                errors.par_extend(
-                    machines
-                        .par_iter_mut()
-                        .map(|machine| -> Result<_, Error> {
-                            use std::net::{IpAddr, SocketAddr};
-                            let mut sess = ssh::Session::connect(
-                                &usernames[name],
-                                SocketAddr::new(
-                                    machine
-                                        .public_ip
-                                        .parse::<IpAddr>()
-                                        .context("machine ip is not an ip address")?,
-                                    22,
-                                ),
-                                private_key_file.path(),
-                            ).context(format!(
-                                "failed to ssh to {} machine {}",
-                                name, machine.public_dns
-                            ))
-                                .map_err(|e| {
-                                    error!(
-                                        log,
-                                        "failed to ssh to {}:{}", &name, &machine.public_ip
-                                    );
-                                    e
-                                })?;
+                machines
+                    .par_iter_mut()
+                    .map(move |machine| -> Result<_, Error> {
+                        use std::net::{IpAddr, SocketAddr};
+                        let mut sess = ssh::Session::connect(
+                            &usernames[name],
+                            SocketAddr::new(
+                                machine
+                                    .public_ip
+                                    .parse::<IpAddr>()
+                                    .context("machine ip is not an ip address")?,
+                                22,
+                            ),
+                            private_key_file.path(),
+                        ).context(format!(
+                            "failed to ssh to {} machine {}",
+                            name, machine.public_dns
+                        ))
+                            .map_err(|e| {
+                                error!(log, "failed to ssh to {}:{}", &name, &machine.public_ip);
+                                e
+                            })?;
 
-                            debug!(log, "setting up {} instance", name; "ip" => &machine.public_ip);
-                            f(&mut sess)
-                                .context(format!("setup procedure for {} machine failed", name))
-                                .map_err(|e| {
-                                    error!(log, "setup for {} machine failed", name);
-                                    e
-                                })?;
-                            info!(log, "finished setting up {} instance", name; "ip" => &machine.public_ip);
+                        debug!(log, "setting up {} instance", name; "ip" => &machine.public_ip);
+                        f(&mut sess)
+                            .context(format!("setup procedure for {} machine failed", name))
+                            .map_err(|e| {
+                                error!(log, "setup for {} machine failed", name);
+                                e
+                            })?;
+                        info!(log, "finished setting up {} instance", name; "ip" => &machine.public_ip);
 
-                            machine.ssh = Some(sess);
-                            Ok(())
-                        })
-                        .filter_map(Result::err),
-                );
-            }
+                        machine.ssh = Some(sess);
+                        Ok(())
+                    })
+                    .filter_map(Result::err)
+            }));
 
             if errors.is_empty() {
                 // 4. invoke F with Machine descriptors
