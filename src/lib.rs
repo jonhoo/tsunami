@@ -233,6 +233,12 @@ impl TsunamiBuilder {
     /// When all instances are up and running, the given closure will be called with a handle to
     /// all spawned hosts. When the closure exits, the instances are all terminated automatically.
     ///
+    /// This method uses the rusoto
+    /// [`EnvironmentProvider`](https://docs.rs/rusoto_credential/0.10.0/rusoto_credential/struct.EnvironmentProvider.html),
+    /// which uses standard [AWS environtment
+    /// variables](https://docs.aws.amazon.com/cli/latest/userguide/cli-environment.html) for
+    /// authentication.
+    ///
     /// ```rust,no_run
     /// # use tsunami::{TsunamiBuilder, Machine};
     /// # use std::collections::HashMap;
@@ -249,7 +255,53 @@ impl TsunamiBuilder {
     where
         F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<(), Error>,
     {
-        use rusoto_core::EnvironmentProvider;
+        self.run_as(rusoto_core::EnvironmentProvider, f)
+    }
+
+    /// Spin up a tsunami batching the defined machine sets in this builder with a custom
+    /// credentials provider.
+    ///
+    /// When all instances are up and running, the given closure will be called with a handle to
+    /// all spawned hosts. When the closure exits, the instances are all terminated automatically.
+    ///
+    /// ```rust,no_run
+    /// # extern crate rusoto_core;
+    /// # extern crate rusoto_sts;
+    /// # extern crate tsunami;
+    /// # fn main() {
+    /// # use tsunami::{TsunamiBuilder, Machine};
+    /// # use std::collections::HashMap;
+    /// // https://github.com/rusoto/rusoto/blob/master/AWS-CREDENTIALS.md
+    /// let sts = rusoto_sts::StsClient::new(
+    ///     rusoto_core::default_tls_client().unwrap(),
+    ///     rusoto_core::EnvironmentProvider,
+    ///     rusoto_core::Region::UsEast1,
+    /// );
+    /// let provider = rusoto_sts::StsAssumeRoleSessionCredentialsProvider::new(
+    ///     sts,
+    ///     "arn:aws:sts::1122334455:role/myrole".to_owned(),
+    ///     "session-name".to_owned(),
+    ///     None,
+    ///     None,
+    ///     None,
+    ///     None,
+    /// );
+    ///
+    /// let mut b = TsunamiBuilder::default();
+    /// // ...
+    /// b.run_as(provider, |vms: HashMap<String, Vec<Machine>>| {
+    ///     println!("==> {}", vms["server"][0].private_ip);
+    ///     for c in &vms["client"] {
+    ///         println!(" -> {}", c.private_ip);
+    ///     }
+    ///     Ok(())
+    /// }).unwrap();
+    /// # }
+    pub fn run_as<P, F>(self, provider: P, f: F) -> Result<(), Error>
+    where
+        P: rusoto_core::ProvideAwsCredentials,
+        F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<(), Error>,
+    {
         use rusoto_core::default_tls_client;
         use rusoto_ec2::Ec2;
 
@@ -259,7 +311,7 @@ impl TsunamiBuilder {
 
         let ec2 = rusoto_ec2::Ec2Client::new(
             default_tls_client().context("failed to create tls session for ec2 api client")?,
-            EnvironmentProvider,
+            provider,
             self.region,
         );
 
