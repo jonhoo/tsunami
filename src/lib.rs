@@ -96,6 +96,7 @@ pub struct Machine {
 pub struct MachineSetup {
     instance_type: String,
     ami: String,
+    username: String,
     setup: Box<Fn(&mut ssh::Session) -> Result<(), Error> + Sync>,
 }
 
@@ -127,8 +128,17 @@ impl MachineSetup {
         MachineSetup {
             instance_type: instance_type.to_string(),
             ami: ami.to_string(),
+            username: String::from("ec2-user"),
             setup: Box::new(setup),
         }
+    }
+
+    /// Set the username to SSH into this machine type as.
+    ///
+    /// Defaults to `ec2-user`.
+    pub fn as_user(mut self, username: &str) -> Self {
+        self.username = username.to_string();
+        self
     }
 }
 
@@ -372,6 +382,7 @@ impl TsunamiBuilder {
         trace!(log, "wrote keypair to file"; "filename" => private_key_file.path().display());
 
         let mut setup_fns = HashMap::new();
+        let mut usernames = HashMap::new();
 
         // 1. issue spot requests
         let mut id_to_name = HashMap::new();
@@ -383,6 +394,7 @@ impl TsunamiBuilder {
             launch.image_id = Some(setup.ami);
             launch.instance_type = Some(setup.instance_type);
             setup_fns.insert(name.clone(), setup.setup);
+            usernames.insert(name.clone(), setup.username);
 
             launch.security_group_ids = Some(vec![group_id.clone()]);
             launch.key_name = Some(key_name.clone());
@@ -586,6 +598,7 @@ impl TsunamiBuilder {
                         .map(|machine| -> Result<_, Error> {
                             use std::net::{IpAddr, SocketAddr};
                             let mut sess = ssh::Session::connect(
+                                &usernames[name],
                                 SocketAddr::new(
                                     machine
                                         .public_ip

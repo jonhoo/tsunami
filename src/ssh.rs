@@ -20,7 +20,7 @@ pub struct Session {
 }
 
 impl Session {
-    pub(crate) fn connect(addr: SocketAddr, key: &Path) -> Result<Self, Error> {
+    pub(crate) fn connect(username: &str, addr: SocketAddr, key: &Path) -> Result<Self, Error> {
         // TODO: instead of max time, keep trying as long as instance is still active
         let start = Instant::now();
         let tcp = loop {
@@ -36,7 +36,7 @@ impl Session {
         let mut sess = ssh2::Session::new().ok_or(Context::new("libssh2 not available"))?;
         sess.handshake(&tcp)
             .context("failed to perform ssh handshake")?;
-        sess.userauth_pubkey_file("ec2-user", None, key, None)
+        sess.userauth_pubkey_file(username, None, key, None)
             .context("failed to authenticate ssh session")?;
 
         Ok(Session {
