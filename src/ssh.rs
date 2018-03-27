@@ -69,14 +69,22 @@ impl Session {
             .map_err(Error::from)
             .map_err(|e| e.context(format!("failed to finish command '{}'", cmd)))?;
 
-        let mut s = String::new();
+        let mut stdout = String::new();
+        let mut stderr = String::new();
         // NOTE: the loop is needed because libssh2 can return reads of size 0 without EOF
         // https://www.libssh2.org/libssh2_channel_read_ex.html
+        // NOTE: we must read from *both* stdout and stderr. EOF is only sent when they're both
+        // drained.
         while !channel.eof() {
             channel
-                .read_to_string(&mut s)
+                .read_to_string(&mut stdout)
                 .map_err(Error::from)
-                .map_err(|e| e.context(format!("failed to read results of command '{}'", cmd)))?;
+                .map_err(|e| e.context(format!("failed to read stdout of command '{}'", cmd)))?;
+            channel
+                .stderr()
+                .read_to_string(&mut stderr)
+                .map_err(Error::from)
+                .map_err(|e| e.context(format!("failed to read stderr of command '{}'", cmd)))?;
         }
 
         channel
@@ -85,7 +93,9 @@ impl Session {
             .map_err(|e| e.context(format!("command '{}' never completed", cmd)))?;
 
         // TODO: check channel.exit_status()
-        Ok(s)
+        // TODO: return stderr as well?
+        drop(stderr);
+        Ok(stdout)
     }
 }
 
