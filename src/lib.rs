@@ -577,16 +577,17 @@ impl TsunamiBuilder {
                         .spot_instance_requests
                         .map(|reqs| {
                             reqs.into_iter()
-                                .filter_map(|sir| {
-                                    if sir.state.as_ref().unwrap() == "active" {
-                                        sir.instance_id.map(|instance_id| {
-                                            trace!(log, "spot request satisfied"; "iid" => &instance_id);
+                                .filter_map(|mut sir| {
+                                    sir.instance_id
+                                        .take()
+                                        .map(|instance_id| {
+                                            trace!(log, "spot request cancelled"; "iid" => &instance_id);
                                             instance_id
                                         })
-                                    } else {
-                                        error!(log, "spot request failed: {:?}", &sir.status; "state" => &sir.state.unwrap());
-                                        None
-                                    }
+                                        .or_else(|| {
+                                            error!(log, "spot request failed: {:?}", &sir.status);
+                                            None
+                                        })
                                 })
                                 .collect()
                         })
