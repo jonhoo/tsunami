@@ -9,7 +9,7 @@ fn main() {
     b.add_set(
         "server",
         1,
-        MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
+        MachineSetup::new("t2.micro", "ami-e18aa89b", |ssh| {
             ssh.cmd("cat /etc/hostname").map(|out| {
                 println!("{}", out);
             })
@@ -18,7 +18,7 @@ fn main() {
     b.add_set(
         "client",
         3,
-        MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
+        MachineSetup::new("t2.micro", "ami-e18aa89b", |ssh| {
             ssh.cmd("date").map(|out| {
                 println!("{}", out);
             })

@@ -383,6 +383,7 @@ impl TsunamiBuilder {
 
         let mut setup_fns = HashMap::new();
         let mut usernames = HashMap::new();
+        let expected_num: u32 = self.descriptors.values().map(|&(_, n)| n).sum();
 
         // 1. issue spot requests
         let mut id_to_name = HashMap::new();
@@ -432,7 +433,6 @@ impl TsunamiBuilder {
         let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
         req.spot_instance_request_ids = Some(spot_req_ids);
 
-        let mut all_active;
         let instances: Vec<_>;
         debug!(log, "waiting for instances to spawn");
         loop {
@@ -468,24 +468,23 @@ impl TsunamiBuilder {
                     if state == "open" || (state == "active" && sir.instance_id.is_none()) {
                         true
                     } else {
-                        trace!(log, "spot request is not yet ready"; "state" => state, "id" => &sir.spot_instance_request_id);
+                        trace!(log, "spot request ready"; "state" => state, "id" => &sir.spot_instance_request_id);
                         false
                     }
                 });
 
             if !any_pending {
-                all_active = true;
                 // unwraps okay because they are the same as expects above
                 instances = res.spot_instance_requests
                     .unwrap()
                     .into_iter()
                     .filter_map(|sir| {
-                        if sir.state.unwrap() == "active" {
-                            let name = id_to_name
-                                .remove(&sir.spot_instance_request_id
-                                    .expect("spot request must have spot request id"))
-                                .expect("every spot request id is made for some machine set");
+                        let name = id_to_name
+                            .remove(&sir.spot_instance_request_id
+                                .expect("spot request must have spot request id"))
+                            .expect("every spot request id is made for some machine set");
 
+                        if sir.state.as_ref().unwrap() == "active" {
                             // unwrap ok because active implies instance_id.is_some()
                             // because !any_pending
                             let instance_id = sir.instance_id.unwrap();
@@ -494,7 +493,7 @@ impl TsunamiBuilder {
 
                             Some(instance_id)
                         } else {
-                            all_active = false;
+                            error!(log, "spot request failed: {:?}", &sir.status; "set" => &name, "state" => &sir.state.unwrap());
                             None
                         }
                     })
@@ -511,16 +510,19 @@ impl TsunamiBuilder {
             use std::mem;
 
             // 5. terminate all instances
-            debug!(log, "terminating instances");
-            let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
-            termination_req.instance_ids = mem::replace(&mut term_instances, Vec::new());
-            while let Err(e) = ec2.terminate_instances(&termination_req) {
-                let msg = format!("{}", e);
-                if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
-                    trace!(log, "retrying instance termination");
-                    continue;
-                } else {
-                    warn!(log, "failed to terminate tsunami instances: {:?}", e);
+            if !term_instances.is_empty() {
+                debug!(log, "terminating instances");
+                let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
+                termination_req.instance_ids = mem::replace(&mut term_instances, Vec::new());
+                while let Err(e) = ec2.terminate_instances(&termination_req) {
+                    let msg = format!("{}", e);
+                    if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
+                        trace!(log, "retrying instance termination");
+                        continue;
+                    } else {
+                        warn!(log, "failed to terminate tsunami instances: {:?}", e);
+                        break;
+                    }
                 }
             }
 
@@ -541,10 +543,12 @@ impl TsunamiBuilder {
         }};
 
         // 3. wait until all instances are up
+        // note that we *don't* do this check if we have no instances, b/c empty instance list
+        // means "list all instances".
         let mut machines = HashMap::new();
         let mut desc_req = rusoto_ec2::DescribeInstancesRequest::default();
+        let mut all_ready = instances.is_empty();
         desc_req.instance_ids = Some(instances);
-        let mut all_ready = false;
         while !all_ready {
             all_ready = true;
             machines.clear();
@@ -583,10 +587,9 @@ impl TsunamiBuilder {
             }
         }
 
-        // TODO: assert here that #instances in each set is the same as requested
-
         let mut errors = Vec::new();
-        if all_active {
+        let running: u32 = machines.values().map(|ms| ms.len() as u32).sum();
+        if running == expected_num {
             info!(log, "all machines instantiated; running setup");
 
             //    - once an instance is ready, run setup closure
@@ -644,6 +647,13 @@ impl TsunamiBuilder {
                     })?;
                 info!(log, "the power of the tsunami was unleashed"; "duration" => start.elapsed().as_secs());
             }
+        } else {
+            crit!(
+                log,
+                "only {} out of {} machines were started; aborting",
+                running,
+                expected_num
+            );
         }
 
         debug!(log, "all done");
