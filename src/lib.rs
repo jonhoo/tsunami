@@ -49,6 +49,7 @@
 //! - [Part 2](https://youtu.be/66INYb73yXo)
 #![deny(missing_docs)]
 
+#[macro_use]
 extern crate failure;
 extern crate rand;
 extern crate rayon;
@@ -67,7 +68,7 @@ use rayon::prelude::*;
 use rusoto_core::Region;
 use std::collections::HashMap;
 use std::io::Write;
-use std::time;
+use std::{thread, time};
 
 mod ssh;
 pub use ssh::Session;
@@ -154,6 +155,8 @@ pub struct TsunamiBuilder {
     log: slog::Logger,
     max_duration: i64,
     region: Region,
+    cluster: bool,
+    max_wait: Option<time::Duration>,
 }
 
 impl Default for TsunamiBuilder {
@@ -163,6 +166,8 @@ impl Default for TsunamiBuilder {
             log: slog::Logger::root(slog::Discard, o!()),
             max_duration: 60,
             region: Region::UsEast1,
+            cluster: true,
+            max_wait: None,
         }
     }
 }
@@ -205,6 +210,26 @@ impl TsunamiBuilder {
     /// here](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#concepts-available-regions)
     pub fn set_region(&mut self, region: Region) {
         self.region = region;
+    }
+
+    /// By default, all spawned instances are launched in a single [Placement
+    /// Group](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html) using the
+    /// [cluster](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html#placement-groups-cluster)
+    /// policy. This ensures that all the instances are located in the same availability region,
+    /// and in close proximity to one another.
+    ///
+    /// This places [some
+    /// restrictions](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html#concepts-placement-groups)
+    /// on the launched instances, and causes it to be more likely for placements to fail. Call
+    /// this method to disable clustering. This will leave instance placing entirely up to ec2,
+    /// which may choose to place your instances in disparate availability zones.
+    pub fn no_clustering(&mut self) {
+        self.cluster = false;
+    }
+
+    /// Limit how long we should wait for spot requests to be satisfied before giving up.
+    pub fn wait_limit(&mut self, t: time::Duration) {
+        self.max_wait = Some(t);
     }
 
     /// Set the maxium lifetime of spawned spot instances.
@@ -385,6 +410,25 @@ impl TsunamiBuilder {
         let mut usernames = HashMap::new();
         let expected_num: u32 = self.descriptors.values().map(|&(_, n)| n).sum();
 
+        // determine a placement if the user has requested one
+        let placement = if self.cluster {
+            trace!(log, "creating placement group");
+            let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
+            let mut placement_name = String::from("tsunami_placement_");
+            placement_name.extend(rand::thread_rng().gen_ascii_chars().take(10));
+            req.group_name = placement_name.clone();
+            req.strategy = String::from("cluster");
+            ec2.create_placement_group(&req)
+                .context("failed to create new placement group")?;
+            trace!(log, "created placement group");
+
+            let mut placement = rusoto_ec2::SpotPlacement::default();
+            placement.group_name = Some(placement_name);
+            Some(placement)
+        } else {
+            None
+        };
+
         // 1. issue spot requests
         let mut id_to_name = HashMap::new();
         let mut spot_req_ids = Vec::new();
@@ -394,6 +438,7 @@ impl TsunamiBuilder {
             let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
             launch.image_id = Some(setup.ami);
             launch.instance_type = Some(setup.instance_type);
+            launch.placement = placement.clone();
             setup_fns.insert(name.clone(), setup.setup);
             usernames.insert(name.clone(), setup.username);
 
@@ -430,6 +475,8 @@ impl TsunamiBuilder {
         }
 
         // 2. wait for instances to come up
+        let start = time::Instant::now();
+        let mut error = None;
         let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
         req.spot_instance_request_ids = Some(spot_req_ids);
 
@@ -501,7 +548,52 @@ impl TsunamiBuilder {
                 break;
             } else {
                 use std::{thread, time};
-                thread::sleep(time::Duration::from_millis(500));
+                thread::sleep(time::Duration::from_secs(1));
+            }
+
+            if let Some(wait_limit) = self.max_wait {
+                if start.elapsed() > wait_limit {
+                    warn!(log, "wait time exceeded -- cancelling run");
+                    let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
+                    cancel.spot_instance_request_ids = req.spot_instance_request_ids
+                        .clone()
+                        .expect("we set this to Some above");
+                    ec2.cancel_spot_instance_requests(&cancel)
+                        .context("failed to cancel spot instances")
+                        .map_err(|e| {
+                            warn!(log, "failed to cancel spot instance request: {:?}", e);
+                            e
+                        })?;
+
+                    trace!(
+                        log,
+                        "spot instances cancelled -- gathering remaining instances"
+                    );
+                    // wait for a little while for the cancelled spot requests to settle
+                    // and any that were *just* made active to be associated with their instances
+                    thread::sleep(time::Duration::from_secs(1));
+
+                    instances = ec2.describe_spot_instance_requests(&req)?
+                        .spot_instance_requests
+                        .map(|reqs| {
+                            reqs.into_iter()
+                                .filter_map(|sir| {
+                                    if sir.state.as_ref().unwrap() == "active" {
+                                        sir.instance_id.map(|instance_id| {
+                                            trace!(log, "spot request satisfied"; "iid" => &instance_id);
+                                            instance_id
+                                        })
+                                    } else {
+                                        error!(log, "spot request failed: {:?}", &sir.status; "state" => &sir.state.unwrap());
+                                        None
+                                    }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    error = Some("wait limit reached");
+                    break;
+                }
             }
         }
 
@@ -539,8 +631,13 @@ impl TsunamiBuilder {
             req.key_name = key_name;
             ec2.delete_key_pair(&req)
             .context("failed to clean up key pair")?;
+            // TODO: clean up created placement group
             */
         }};
+
+        if let Some(e) = error {
+            bail!(e);
+        }
 
         // 3. wait until all instances are up
         // note that we *don't* do this check if we have no instances, b/c empty instance list

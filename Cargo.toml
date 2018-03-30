@@ -1,6 +1,6 @@
 [package]
 name = "tsunami"
-version = "0.5.8"
+version = "0.5.9"
 
 description = "Toolkit for running short-lived jobs on EC2 spot instances"
 readme = "README.md"
