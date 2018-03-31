@@ -1,10 +1,12 @@
-use failure::ResultExt;
-use failure::{Context, Error};
-use ssh2;
-use std::net::{SocketAddr, TcpStream};
+use async_ssh;
+use failure::{Error, ResultExt};
+use futures::Future;
+use std::net::SocketAddr;
 use std::path::Path;
-use std::thread;
 use std::time::{Duration, Instant};
+use thrussh_keys;
+use tokio_core;
+use tokio_io;
 
 /// An established SSH session.
 ///
@@ -15,98 +17,77 @@ use std::time::{Duration, Instant};
 /// To execute a command and get its `STDOUT` output, use
 /// [`Session#cmd`](struct.Session.html#method.cmd).
 pub struct Session {
-    ssh: ssh2::Session,
-    _stream: TcpStream,
+    ssh: async_ssh::Session<tokio_core::net::TcpStream>,
 }
 
 impl Session {
-    pub(crate) fn connect(username: &str, addr: SocketAddr, key: &Path) -> Result<Self, Error> {
+    pub(crate) fn connect<'a>(
+        username: &'a str,
+        addr: SocketAddr,
+        key: &Path,
+        handle: &'a tokio_core::reactor::Handle,
+    ) -> Box<Future<Item = Self, Error = Error> + 'a> {
         // TODO: instead of max time, keep trying as long as instance is still active
         let start = Instant::now();
-        let tcp = loop {
-            match TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
-                Ok(s) => break s,
-                Err(_) if start.elapsed() <= Duration::from_secs(120) => {
-                    thread::sleep(Duration::from_secs(1));
-                }
-                Err(e) => Err(Error::from(e).context("failed to connect to ssh port"))?,
-            }
-        };
+        let key = thrussh_keys::load_secret_key(key, None).unwrap();
+        // TODO: retry tcp connection
 
-        let mut sess = ssh2::Session::new().ok_or(Context::new("libssh2 not available"))?;
-        sess.handshake(&tcp)
-            .context("failed to perform ssh handshake")?;
-        sess.userauth_pubkey_file(username, None, key, None)
-            .context("failed to authenticate ssh session")?;
-
-        Ok(Session {
-            ssh: sess,
-            _stream: tcp,
-        })
+        Box::new(
+            tokio_core::net::TcpStream::connect(&addr, handle)
+                .then(|r| r.context("failed to connect to ssh port"))
+                .map_err(Into::into)
+                .and_then(move |c| {
+                    async_ssh::Session::new(c, &handle)
+                        .map_err(|e| format_err!("{:?}", e))
+                        .context("failed to establish ssh session")
+                })
+                .and_then(move |session| {
+                    session
+                        .authenticate_key(username, key)
+                        .map_err(|e| format_err!("{:?}", e))
+                        .then(|r| r.context("failed to authenticate ssh session"))
+                })
+                .map_err(Into::into)
+                .map(|ssh| Session { ssh }),
+        )
     }
 
     /// Issue the given command and return the command's raw standard output.
-    pub fn cmd_raw(&mut self, cmd: &str) -> Result<Vec<u8>, Error> {
-        use std::io::Read;
-
-        let mut channel = self.ssh
-            .channel_session()
-            .map_err(Error::from)
-            .map_err(|e| {
-                e.context(format!(
-                    "failed to create ssh channel for command '{}'",
-                    cmd
-                ))
-            })?;
-
-        channel
-            .exec(cmd)
-            .map_err(Error::from)
-            .map_err(|e| e.context(format!("failed to execute command '{}'", cmd)))?;
-
-        channel
-            .send_eof()
-            .map_err(Error::from)
-            .map_err(|e| e.context(format!("failed to finish command '{}'", cmd)))?;
-
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        // NOTE: the loop is needed because libssh2 can return reads of size 0 without EOF
-        // https://www.libssh2.org/libssh2_channel_read_ex.html
-        // NOTE: we must read from *both* stdout and stderr. EOF is only sent when they're both
-        // drained.
-        while !channel.eof() {
-            channel
-                .read_to_end(&mut stdout)
-                .map_err(Error::from)
-                .map_err(|e| e.context(format!("failed to read stdout of command '{}'", cmd)))?;
-            channel
-                .stderr()
-                .read_to_end(&mut stderr)
-                .map_err(Error::from)
-                .map_err(|e| e.context(format!("failed to read stderr of command '{}'", cmd)))?;
-        }
-
-        channel
-            .wait_close()
-            .map_err(Error::from)
-            .map_err(|e| e.context(format!("command '{}' never completed", cmd)))?;
-
+    pub fn cmd_raw<'a>(&mut self, cmd: &'a str) -> Box<Future<Item = Vec<u8>, Error = Error> + 'a> {
         // TODO: check channel.exit_status()
         // TODO: return stderr as well?
-        drop(stderr);
-        Ok(stdout)
+        Box::new(
+            self.ssh
+                .open_exec(cmd)
+                .map_err(|e| format_err!("{:?}", e))
+                .then(move |e| {
+                    e.map_err(|e| format_err!("{:?}", e))
+                        .context(format!("failed to execute command '{}'", cmd))
+                })
+                .map_err(Into::into)
+                .and_then(move |c| {
+                    tokio_io::io::read_to_end(c, Vec::new()).then(move |r| {
+                        r.context(format!("failed to read stdout of command '{}'", cmd))
+                    })
+                })
+                .map(|(_, b)| b)
+                .map_err(Into::into),
+        )
     }
 
     /// Issue the given command and return the command's standard output.
-    pub fn cmd(&mut self, cmd: &str) -> Result<String, Error> {
-        Ok(String::from_utf8(self.cmd_raw(cmd)?)?)
+    pub fn cmd<'a>(&mut self, cmd: &'a str) -> Box<Future<Item = String, Error = Error> + 'a> {
+        Box::new(self.cmd_raw(cmd).and_then(|bytes| {
+            String::from_utf8(bytes)
+                .context("invalid utf-8 in command output")
+                .map_err(Into::into)
+        }))
     }
 }
 
 use std::ops::{Deref, DerefMut};
 impl Deref for Session {
-    type Target = ssh2::Session;
+    type Target = async_ssh::Session<tokio_core::net::TcpStream>;
     fn deref(&self) -> &Self::Target {
         &self.ssh
     }

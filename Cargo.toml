@@ -23,17 +23,21 @@ travis-ci = { repository = "jonhoo/tsunami" }
 debug = ["slog/max_level_trace", "slog/release_max_level_debug"]
 
 [dependencies]
-rusoto_core = "0.31.0"
-rusoto_ec2 = "0.31.0"
-ssh2 = "0.3.2"
+rusoto_core = "0.32.0"
+rusoto_ec2 = "0.32.0"
+async-ssh = "0.1"
 failure = "0.1.1"
 rand = "0.4"
 tempfile = "2.2.0"
-rayon = "1.0.0"
 slog-term = "2.3.0"
 slog = "2.1.1"
 #slog = { version = "2.1.1", features = ["max_level_trace"] }
 scopeguard = "0.3.3"
+
+tokio-core = "0.1"
+tokio-io = "0.1"
+futures = "0.1"
+thrussh-keys = "0.9"
 
 [dev-dependencies]
 rusoto_sts = "0.31.0"
