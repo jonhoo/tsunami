@@ -1,12 +1,13 @@
 use async_ssh;
 use failure::{Error, ResultExt};
-use futures::Future;
+use futures::{self, Future};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use thrussh_keys;
 use tokio_core;
 use tokio_io;
+use tokio_timer::Deadline;
 
 /// An established SSH session.
 ///
@@ -27,14 +28,25 @@ impl Session {
         key: &Path,
         handle: &'a tokio_core::reactor::Handle,
     ) -> Box<Future<Item = Self, Error = Error> + 'a> {
+        // TODO: don't use a file, use thrussh_keys::decode_secret_key
+        let key = thrussh_keys::load_secret_key(key, None).unwrap();
+
         // TODO: instead of max time, keep trying as long as instance is still active
         let start = Instant::now();
-        let key = thrussh_keys::load_secret_key(key, None).unwrap();
-        // TODO: retry tcp connection
 
         Box::new(
-            tokio_core::net::TcpStream::connect(&addr, handle)
-                .then(|r| r.context("failed to connect to ssh port"))
+            futures::future::loop_fn((), move |_| {
+                Deadline::new(
+                    tokio_core::net::TcpStream::connect(&addr, handle),
+                    Instant::now() + Duration::from_secs(3),
+                ).then(move |r| match r {
+                    Ok(c) => Ok(futures::future::Loop::Break(c)),
+                    Err(_) if start.elapsed() <= Duration::from_secs(120) => {
+                        Ok(futures::future::Loop::Continue(()))
+                    }
+                    Err(e) => Err(Error::from(e).context("failed to connect to ssh port")),
+                })
+            }).then(|r| r.context("failed to connect to ssh port"))
                 .map_err(Into::into)
                 .and_then(move |c| {
                     async_ssh::Session::new(c, &handle)

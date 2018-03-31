@@ -65,6 +65,7 @@ extern crate tempfile;
 extern crate thrussh_keys;
 extern crate tokio_core;
 extern crate tokio_io;
+extern crate tokio_timer;
 
 use failure::{Error, ResultExt};
 use futures::{Future, IntoFuture};
