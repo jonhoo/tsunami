@@ -28,7 +28,6 @@ rusoto_ec2 = "0.32.0"
 async-ssh = "0.1"
 failure = "0.1.1"
 rand = "0.4"
-tempfile = "2.2.0"
 slog-term = "2.3.0"
 slog = "2.1.1"
 #slog = { version = "2.1.1", features = ["max_level_trace"] }

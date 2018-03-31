@@ -25,11 +25,10 @@ impl Session {
     pub(crate) fn connect<'a>(
         username: &'a str,
         addr: SocketAddr,
-        key: &Path,
+        key: &str,
         handle: &'a tokio_core::reactor::Handle,
     ) -> Box<Future<Item = Self, Error = Error> + 'a> {
-        // TODO: don't use a file, use thrussh_keys::decode_secret_key
-        let key = thrussh_keys::load_secret_key(key, None).unwrap();
+        let key = thrussh_keys::decode_secret_key(key, None).unwrap();
 
         // TODO: instead of max time, keep trying as long as instance is still active
         let start = Instant::now();
