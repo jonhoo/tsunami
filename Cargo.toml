@@ -40,7 +40,7 @@ futures = "0.1"
 thrussh-keys = "0.9"
 
 [dev-dependencies]
-rusoto_sts = "0.31.0"
+rusoto_sts = "0.32.0"
 
 [profile.release]
 debug = true

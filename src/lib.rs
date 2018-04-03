@@ -5,10 +5,16 @@
 //! # Examples
 //!
 //! ```rust,no_run
+//! # extern crate tokio_core;
+//! # extern crate tsunami;
+//! # extern crate futures;
+//! # fn main() {
 //! # use tsunami::{Machine, MachineSetup, TsunamiBuilder};
 //! # use std::collections::HashMap;
 //! let mut b = TsunamiBuilder::default();
 //! b.use_term_logger();
+//!
+//! use futures::Future;
 //! b.add_set(
 //!     "server",
 //!     1,
@@ -28,14 +34,18 @@
 //!     }),
 //! );
 //!
-//! b.run(|vms: HashMap<String, Vec<Machine>>| {
+//! let mut core = tokio_core::reactor::Core::new().unwrap();
+//! let handle = core.handle();
+//! let fut = b.run(&handle, |vms: HashMap<&str, Vec<Machine>>| {
 //!     println!("==> {}", vms["server"][0].private_ip);
 //!     for c in &vms["client"] {
 //!         println!(" -> {}", c.private_ip);
 //!     }
 //!     // ...
 //!     Ok(())
-//! }).unwrap();
+//! });
+//! core.run(fut).unwrap();
+//! # }
 //! ```
 //!
 //! # Live-coding
@@ -100,10 +110,7 @@ pub struct MachineSetup {
     instance_type: String,
     ami: String,
     username: String,
-    setup: Box<
-        Fn(&mut ssh::Session, &tokio_core::reactor::Handle)
-            -> Box<Future<Item = (), Error = Error>>,
-    >,
+    setup: Box<Fn(&mut ssh::Session) -> Box<Future<Item = (), Error = Error>>>,
 }
 
 impl MachineSetup {
@@ -120,23 +127,28 @@ impl MachineSetup {
     /// in `ami`.
     ///
     /// ```rust
+    /// # extern crate futures;
+    /// # extern crate tsunami;
+    /// # fn main() {
     /// # use tsunami::MachineSetup;
+    /// use futures::Future;
     /// MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
     ///     ssh.cmd("cat /etc/hostname").map(|out| {
     ///         println!("{}", out);
     ///     })
     /// });
+    /// # }
     /// ```
     pub fn new<F, FF>(instance_type: &str, ami: &str, setup: F) -> Self
     where
-        F: Fn(&mut ssh::Session, &tokio_core::reactor::Handle) -> FF + 'static,
+        F: Fn(&mut ssh::Session) -> FF + 'static,
         FF: IntoFuture<Item = (), Error = Error> + 'static,
     {
         MachineSetup {
             instance_type: instance_type.to_string(),
             ami: ami.to_string(),
             username: String::from("ec2-user"),
-            setup: Box::new(move |ssh, h| Box::new(setup(ssh, h).into_future())),
+            setup: Box::new(move |ssh| Box::new(setup(ssh).into_future())),
         }
     }
 
@@ -185,7 +197,11 @@ impl TsunamiBuilder {
     /// spawned as part of the tsunami.
     ///
     /// ```rust
+    /// # extern crate futures;
+    /// # extern crate tsunami;
+    /// # fn main() {
     /// # use tsunami::{TsunamiBuilder, MachineSetup};
+    /// use futures::Future;
     /// let mut b = TsunamiBuilder::default();
     /// b.add_set(
     ///     "server",
@@ -205,6 +221,7 @@ impl TsunamiBuilder {
     ///         })
     ///     }),
     /// );
+    /// # }
     /// ```
     pub fn add_set(&mut self, name: &str, number: u32, setup: MachineSetup) {
         // TODO: what if name is already in use?
@@ -283,17 +300,24 @@ impl TsunamiBuilder {
     /// authentication.
     ///
     /// ```rust,no_run
+    /// # extern crate tokio_core;
+    /// # extern crate tsunami;
+    /// # fn main() {
     /// # use tsunami::{TsunamiBuilder, Machine};
     /// # use std::collections::HashMap;
     /// let mut b = TsunamiBuilder::default();
     /// // ...
-    /// b.run(|vms: HashMap<String, Vec<Machine>>| {
+    /// let mut core = tokio_core::reactor::Core::new().unwrap();
+    /// let handle = &core.handle();
+    /// let fut = b.run(&handle, |vms: HashMap<&str, Vec<Machine>>| {
     ///     println!("==> {}", vms["server"][0].private_ip);
     ///     for c in &vms["client"] {
     ///         println!(" -> {}", c.private_ip);
     ///     }
     ///     Ok(())
-    /// }).unwrap();
+    /// });
+    /// core.run(fut).unwrap();
+    /// # }
     pub fn run<'a, F, FF>(
         &'a mut self,
         handle: &'a tokio_core::reactor::Handle,
@@ -316,14 +340,15 @@ impl TsunamiBuilder {
     /// # extern crate rusoto_core;
     /// # extern crate rusoto_sts;
     /// # extern crate tsunami;
+    /// # extern crate tokio_core;
     /// # fn main() {
     /// # use tsunami::{TsunamiBuilder, Machine};
     /// # use std::collections::HashMap;
     /// // https://github.com/rusoto/rusoto/blob/master/AWS-CREDENTIALS.md
     /// let sts = rusoto_sts::StsClient::new(
-    ///     rusoto_core::default_tls_client().unwrap(),
+    ///     rusoto_core::reactor::RequestDispatcher::default(),
     ///     rusoto_core::EnvironmentProvider,
-    ///     rusoto_core::Region::UsEast1,
+    ///     rusoto_core::region::Region::UsEast1,
     /// );
     /// let provider = rusoto_sts::StsAssumeRoleSessionCredentialsProvider::new(
     ///     sts,
@@ -337,13 +362,16 @@ impl TsunamiBuilder {
     ///
     /// let mut b = TsunamiBuilder::default();
     /// // ...
-    /// b.run_as(provider, |vms: HashMap<String, Vec<Machine>>| {
+    /// let mut core = tokio_core::reactor::Core::new().unwrap();
+    /// let handle = &core.handle();
+    /// let fut = b.run_as(provider, &handle, |vms: HashMap<&str, Vec<Machine>>| {
     ///     println!("==> {}", vms["server"][0].private_ip);
     ///     for c in &vms["client"] {
     ///         println!(" -> {}", c.private_ip);
     ///     }
     ///     Ok(())
-    /// }).unwrap();
+    /// });
+    /// core.run(fut).unwrap();
     /// # }
     pub fn run_as<'a, P, F, FF>(
         &'a mut self,
@@ -881,7 +909,7 @@ impl TsunamiBuilder {
                                         })
                                             .and_then(move |(machine, mut ssh)| {
                                                 debug!(log, "setting up {} instance", &name; "dns" => &machine.public_dns);
-                                                setup_fn(&mut ssh, &handle).map(move |_| ssh).then(
+                                                setup_fn(&mut ssh).map(move |_| ssh).then(
                                                     move |r| {
                                                         let r = r.context(format!(
                                                             "setup procedure for {} machine failed",
