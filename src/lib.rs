@@ -55,8 +55,6 @@ extern crate rand;
 extern crate rusoto_core;
 extern crate rusoto_ec2;
 #[macro_use]
-extern crate scopeguard;
-#[macro_use]
 extern crate slog;
 extern crate async_ssh;
 extern crate futures;
@@ -72,9 +70,7 @@ use futures::{Future, IntoFuture};
 use rand::Rng;
 use rusoto_core::Region;
 use std::collections::HashMap;
-use std::io::Write;
-use std::rc::Rc;
-use std::{thread, time};
+use std::time;
 
 mod ssh;
 pub use ssh::Session;
@@ -167,6 +163,7 @@ pub struct TsunamiBuilder {
     region: Region,
     cluster: bool,
     max_wait: Option<time::Duration>,
+    ec2: Option<Box<rusoto_ec2::Ec2>>,
 }
 
 impl Default for TsunamiBuilder {
@@ -178,6 +175,7 @@ impl Default for TsunamiBuilder {
             region: Region::UsEast1,
             cluster: true,
             max_wait: None,
+            ec2: None,
         }
     }
 }
@@ -297,15 +295,15 @@ impl TsunamiBuilder {
     ///     Ok(())
     /// }).unwrap();
     pub fn run<'a, F, FF>(
-        self,
+        &'a mut self,
+        handle: &'a tokio_core::reactor::Handle,
         f: F,
-        handle: tokio_core::reactor::Handle,
     ) -> Box<Future<Item = (), Error = Error> + 'a>
     where
-        F: 'a + FnOnce(HashMap<String, Vec<Machine>>, &tokio_core::reactor::Handle) -> FF,
+        F: 'a + FnOnce(HashMap<&'a str, Vec<Machine>>) -> FF,
         FF: 'a + IntoFuture<Item = (), Error = Error>,
     {
-        self.run_as(rusoto_core::EnvironmentProvider, f, handle)
+        self.run_as(rusoto_core::EnvironmentProvider, handle, f)
     }
 
     /// Spin up a tsunami batching the defined machine sets in this builder with a custom
@@ -348,35 +346,29 @@ impl TsunamiBuilder {
     /// }).unwrap();
     /// # }
     pub fn run_as<'a, P, F, FF>(
-        self,
+        &'a mut self,
         provider: P,
+        handle: &'a tokio_core::reactor::Handle,
         f: F,
-        handle: tokio_core::reactor::Handle,
     ) -> Box<Future<Item = (), Error = Error> + 'a>
     where
         P: 'static + rusoto_core::ProvideAwsCredentials,
-        F: 'a + FnOnce(HashMap<String, Vec<Machine>>, &tokio_core::reactor::Handle) -> FF,
+        F: 'a + FnOnce(HashMap<&'a str, Vec<Machine>>) -> FF,
         FF: 'a + IntoFuture<Item = (), Error = Error>,
     {
         use rusoto_core::reactor::RequestDispatcher;
-        use rusoto_ec2::Ec2;
 
-        let expected_num: u32 = self.descriptors.values().map(|&(_, n)| n).sum();
-        let TsunamiBuilder {
-            descriptors,
-            log,
-            max_duration,
-            region,
-            cluster,
-            max_wait,
-        } = self;
-
-        debug!(log, "connecting to ec2");
-        let ec2 = Rc::new(rusoto_ec2::Ec2Client::new(
+        debug!(self.log, "connecting to ec2");
+        self.ec2 = Some(Box::new(rusoto_ec2::Ec2Client::new(
             RequestDispatcher::default(),
             provider,
-            region,
-        ));
+            self.region.clone(),
+        )));
+
+        let this = &*self; // so we can have all the futures share self
+        let ec2 = this.ec2.as_ref().unwrap();
+        let log = &this.log;
+        let expected_num: u32 = this.descriptors.values().map(|&(_, n)| n).sum();
 
         let all_the_things = futures::future::lazy(move || {
             info!(log, "spinning up tsunami");
@@ -390,8 +382,7 @@ impl TsunamiBuilder {
             req.description = "temporary access group for tsunami VMs".to_string();
             ec2.create_security_group(&req)
                 .then(|r| r.context("failed to create security group for new machines"))
-                .map(move |r| (r, ec2, log))
-        }).and_then(|(res, ec2, log)| {
+        }).and_then(move |res| {
             let group_id = res.group_id
                 .expect("aws created security group with no group id");
             trace!(log, "created security group"; "id" => &group_id);
@@ -408,9 +399,8 @@ impl TsunamiBuilder {
             ec2.authorize_security_group_ingress(&req)
                 .then(|r| r.context("failed to fill in security group for new machines"))
                 .map(move |_| (group_id, req))
-                .map(move |r| (r, ec2, log))
         })
-            .and_then(|((group_id, mut req), ec2, log)| {
+            .and_then(move |(group_id, mut req)| {
                 // cross-VM talk
                 req.from_port = Some(0);
                 req.to_port = Some(65535);
@@ -419,9 +409,8 @@ impl TsunamiBuilder {
                 ec2.authorize_security_group_ingress(&req)
                     .then(|r| r.context("failed to fill in security group for new machines"))
                     .map(move |_| group_id)
-                    .map(move |r| (r, ec2, log))
             })
-            .and_then(|(group_id, ec2, log)| {
+            .and_then(move |group_id| {
                 // construct keypair for ssh access
                 trace!(log, "creating keypair");
                 let mut req = rusoto_ec2::CreateKeyPairRequest::default();
@@ -431,19 +420,18 @@ impl TsunamiBuilder {
                 ec2.create_key_pair(&req)
                     .then(|r| r.context("failed to generate new key pair"))
                     .map(move |res| (res, group_id, key_name))
-                    .map(move |r| (r, ec2, log))
             })
-            .map(|((res, group_id, key_name), ec2, log)| {
+            .map(move |(res, group_id, key_name)| {
                 trace!(log, "created keypair"; "fingerprint" => res.key_fingerprint);
 
                 let private_key = res.key_material
                     .expect("aws did not generate key material for new key");
 
-                ((private_key, group_id, key_name), ec2, log)
+                (private_key, group_id, key_name)
             })
-            .and_then(move |((pk, group_id, key_name), ec2, log)| {
+            .and_then(move |(pk, group_id, key_name)| {
                 // determine a placement if the user has requested one
-                if cluster {
+                if this.cluster {
                     trace!(log, "creating placement group");
                     let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
                     let mut placement_name = String::from("tsunami_placement_");
@@ -466,32 +454,33 @@ impl TsunamiBuilder {
                 } else {
                     Either::B(futures::future::ok(None))
                 }.map(move |p| (p, pk, group_id, key_name))
-                    .map(move |r| (r, ec2, log))
             })
             .map_err(Error::from)
-            .and_then(move |((placement, pk, group_id, key_name), ec2, log)| {
+            .and_then(move |(placement, pk, group_id, key_name)| {
                 // 1. issue spot requests
                 debug!(log, "issuing spot requests");
 
-                let all: Vec<_> = descriptors
-                    .into_iter()
-                    .map(|(name, (setup, number))| {
+                let all: Vec<_> = this.descriptors
+                    .iter()
+                    .map(|(name, &(ref setup, number))| {
+                        let name = &**name;
+
                         let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
-                        launch.image_id = Some(setup.ami);
-                        launch.instance_type = Some(setup.instance_type);
+                        launch.image_id = Some(setup.ami.clone());
+                        launch.instance_type = Some(setup.instance_type.clone());
                         launch.placement = placement.clone();
 
                         launch.security_group_ids = Some(vec![group_id.clone()]);
                         launch.key_name = Some(key_name.clone());
 
-                        let setup_fn = setup.setup;
-                        let user = setup.username;
+                        let setup_fn = &setup.setup;
+                        let user = &*setup.username;
 
                         // TODO: VPC
 
                         let req = rusoto_ec2::RequestSpotInstancesRequest {
                             instance_count: Some(i64::from(number)),
-                            block_duration_minutes: Some(max_duration),
+                            block_duration_minutes: Some(this.max_duration),
                             launch_specification: Some(launch),
                             // one-time spot instances are only fulfilled once and therefore do not need to be
                             // cancelled.
@@ -522,131 +511,120 @@ impl TsunamiBuilder {
                 futures::future::join_all(all)
                     .map(|r| (r, pk))
                     .map_err(Error::from)
-                    .map(move |r| (r, ec2, log))
             })
-            .and_then(move |((res_v, pk), ec2, log)| {
+            .and_then(move |(res_v, pk)| {
                 let mut id_to_name = HashMap::new();
                 let mut setup_fns = HashMap::new();
                 let mut usernames = HashMap::new();
-                let spot_req_ids: Vec<_> = {
-                    let log = &log;
-                    res_v
-                        .into_iter()
-                        .flat_map(|(name, setup, user, res)| {
-                            setup_fns.insert(name.clone(), setup);
-                            usernames.insert(name.clone(), user);
-                            res.into_iter()
-                                .filter_map(|sir| sir.spot_instance_request_id)
-                                .map(|sir| {
-                                    // TODO: add more info if in parallel
-                                    trace!(log, "activated spot request"; "id" => &sir);
-                                    id_to_name.insert(sir.clone(), name.clone());
-                                    sir
-                                })
-                        })
-                        .collect()
-                };
+                let mut spot_req_ids = Vec::new();
+                for (name, setup, user, res) in res_v {
+                    setup_fns.insert(name, setup);
+                    usernames.insert(name, user);
+                    for sir in res {
+                        if let Some(sir) = sir.spot_instance_request_id {
+                            trace!(log, "activated spot request"; "id" => &sir);
+                            id_to_name.insert(sir.clone(), name);
+                            spot_req_ids.push(sir);
+                        }
+                    }
+                }
 
                 // 2. wait for instances to come up
-                let start = time::Instant::now();
                 let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
-                req.spot_instance_request_ids = Some(spot_req_ids);
+                req.spot_instance_request_ids = Some(spot_req_ids.clone());
 
                 debug!(log, "waiting for instances to spawn");
+                let wait_for_instances = futures::future::loop_fn(
+                    id_to_name,
+                    move |mut id_to_name| {
+                        trace!(log, "checking spot request status");
 
-                let log2 = log.clone();
-                let req2 = &req;
-                let wait_for_instances = futures::future::loop_fn((), move |_| {
-                    let log = log2;
-                    let req = req2;
-                    trace!(log, "checking spot request status");
-
-                    ec2.describe_spot_instance_requests(&req)
-                        .then(|res| {
-                            if let Err(e) = res {
-                                let msg = format!("{}", e);
-                                if msg.contains("The spot instance request ID")
-                                    && msg.contains("does not exist")
-                                {
-                                    trace!(log, "spot instance requests not yet ready");
-                                    return Ok(futures::future::Loop::Continue(()));
-                                } else {
-                                    return Err(e)
-                                        .context(format!("failed to describe spot instances"))
-                                        .map_err(Error::from);
-                                }
-                            }
-                            let res = res.expect("Err checked above");
-
-                            let any_pending = res.spot_instance_requests
-                                .as_ref()
-                                .expect("describe always returns at least one spot instance")
-                                .iter()
-                                .map(|sir| {
-                                    (
-                                        sir,
-                                        sir.state
-                                            .as_ref()
-                                            .expect("spot request did not have state specified"),
-                                    )
-                                })
-                                .any(|(sir, state)| {
-                                    if state == "open"
-                                        || (state == "active" && sir.instance_id.is_none())
+                        ec2.describe_spot_instance_requests(&req)
+                            .then(move |res| {
+                                if let Err(e) = res {
+                                    let msg = format!("{}", e);
+                                    if msg.contains("The spot instance request ID")
+                                        && msg.contains("does not exist")
                                     {
-                                        true
+                                        trace!(log, "spot instance requests not yet ready");
+                                        return Ok(futures::future::Loop::Continue(id_to_name));
                                     } else {
-                                        trace!(log, "spot request ready"; "state" => state, "id" => &sir.spot_instance_request_id);
-                                        false
+                                        return Err(e)
+                                            .context(format!("failed to describe spot instances"))
+                                            .map_err(Error::from);
                                     }
-                                });
+                                }
+                                let res = res.expect("Err checked above");
 
-                            if !any_pending {
-                                // unwraps okay because they are the same as expects above
-                                let mut iid_to_name = HashMap::new();
-                                let v: Vec<_> = res.spot_instance_requests
-                                    .unwrap()
-                                    .into_iter()
-                                    .filter_map(|sir| {
-                                        let name = id_to_name
-                                        .get(&sir.spot_instance_request_id
+                                let any_pending = res.spot_instance_requests
+                                    .as_ref()
+                                    .expect("describe always returns at least one spot instance")
+                                    .iter()
+                                    .map(|sir| {
+                                        (
+                                            sir,
+                                            sir.state.as_ref().expect(
+                                                "spot request did not have state specified",
+                                            ),
+                                        )
+                                    })
+                                    .any(|(sir, state)| {
+                                        if state == "open"
+                                            || (state == "active" && sir.instance_id.is_none())
+                                        {
+                                            true
+                                        } else {
+                                            trace!(log, "spot request ready"; "state" => state, "id" => &sir.spot_instance_request_id);
+                                            false
+                                        }
+                                    });
+
+                                if !any_pending {
+                                    // unwraps okay because they are the same as expects above
+                                    let mut iid_to_name = HashMap::new();
+                                    let v: Vec<_> = res.spot_instance_requests
+                                        .unwrap()
+                                        .into_iter()
+                                        .filter_map(|sir| {
+                                            let name = id_to_name
+                                        .remove(&sir.spot_instance_request_id
                                             .expect("spot request must have spot request id")).clone()
                                         .expect("every spot request id is made for some machine set");
 
-                                        if sir.state.as_ref().unwrap() == "active" {
-                                            // unwrap ok because active implies instance_id.is_some()
-                                            // because !any_pending
-                                            let instance_id = sir.instance_id.unwrap();
-                                            trace!(log, "spot request satisfied"; "set" => &name, "iid" => &instance_id);
-                                            iid_to_name.insert(instance_id.clone(), name);
+                                            if sir.state.as_ref().unwrap() == "active" {
+                                                // unwrap ok because active implies instance_id.is_some()
+                                                // because !any_pending
+                                                let instance_id = sir.instance_id.unwrap();
+                                                trace!(log, "spot request satisfied"; "set" => &name, "iid" => &instance_id);
+                                                iid_to_name.insert(instance_id.clone(), name);
 
-                                            Some(instance_id)
-                                        } else {
-                                            error!(log, "spot request failed: {:?}", &sir.status; "set" => &name, "state" => &sir.state.unwrap());
-                                            None
-                                        }
-                                    })
-                                    .collect();
-                                Ok(futures::future::Loop::Break((v, iid_to_name, true)))
-                            } else {
-                                // TODO: sleep here
-                                Ok(futures::future::Loop::Continue(()))
-                            }
-                        })
-                        .map_err(Error::from)
-                        .and_then(|r| match r {
-                            futures::future::Loop::Continue(()) => Either::A(
-                                tokio_timer::Delay::new(
-                                    time::Instant::now() + time::Duration::from_millis(500),
-                                ).map(|_| futures::future::Loop::Continue(()))
-                                    .map_err(Error::from),
-                            ),
-                            b => Either::B(futures::future::ok(b)),
-                        })
-                });
+                                                Some(instance_id)
+                                            } else {
+                                                error!(log, "spot request failed: {:?}", &sir.status; "set" => &name, "state" => &sir.state.unwrap());
+                                                None
+                                            }
+                                        })
+                                        .collect();
+                                    Ok(futures::future::Loop::Break((v, iid_to_name, true)))
+                                } else {
+                                    // TODO: sleep here
+                                    Ok(futures::future::Loop::Continue(id_to_name))
+                                }
+                            })
+                            .map_err(Error::from)
+                            .and_then(|r| match r {
+                                futures::future::Loop::Continue(i2n) => Either::A(
+                                    tokio_timer::Delay::new(
+                                        time::Instant::now() + time::Duration::from_millis(500),
+                                    ).map(move |_| futures::future::Loop::Continue(i2n))
+                                        .map_err(Error::from),
+                                ),
+                                b => Either::B(futures::future::ok(b)),
+                            })
+                    },
+                );
 
-                if let Some(wait_limit) = max_wait {
-                    let log = log.clone();
+                if let Some(wait_limit) = this.max_wait {
                     Either::A(
                         tokio_timer::Deadline::new(
                             wait_for_instances,
@@ -657,16 +635,13 @@ impl TsunamiBuilder {
                                     warn!(log, "wait time exceeded -- cancelling run");
                                     let mut cancel =
                                         rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
-                                    cancel.spot_instance_request_ids =
-                                        req.spot_instance_request_ids
-                                            .clone()
-                                            .expect("we set this to Some above");
+                                    cancel.spot_instance_request_ids = spot_req_ids.clone();
 
                                     Either::A(
                                         ec2.cancel_spot_instance_requests(&cancel)
                                             .then(|r| r.context("failed to cancel spot instances"))
                                             .map_err(Error::from)
-                                            .map_err(|e| {
+                                            .map_err(move |e| {
                                                 warn!(
                                                     log,
                                                     "failed to cancel spot instance request: {:?}",
@@ -674,7 +649,7 @@ impl TsunamiBuilder {
                                                 );
                                                 e
                                             })
-                                            .and_then(|_| {
+                                            .and_then(move |_| {
                                                 trace!(log, "spot instances cancelled -- gathering remaining instances");
 
                                                 // wait for a little while for the cancelled spot requests to settle
@@ -684,19 +659,23 @@ impl TsunamiBuilder {
                                                         + time::Duration::from_secs(1),
                                                 ).map_err(Error::from)
                                             })
-                                            .and_then(|_| {
+                                            .and_then(move |_| {
+                                                let mut req =
+                                                    rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
+                                                req.spot_instance_request_ids = Some(spot_req_ids);
+
                                                 ec2.describe_spot_instance_requests(&req)
                                                     .then(|r| {
                                                         r.context("failed to find instances after cancellation")
                                                     })
                                                     .map_err(Error::from)
                                             })
-                                            .map(|res| {
+                                            .map(move |res| {
                                                 let iid_to_name = HashMap::new();
                                                 let instances = res.spot_instance_requests
-                                                    .map(|reqs| {
+                                                    .map(move |reqs| {
                                                         reqs.into_iter()
-                                                            .filter_map(|mut sir| {
+                                                            .filter_map(move |mut sir| {
                                                                 sir.instance_id
                                                                     .take()
                                                                     .map(|instance_id| {
@@ -729,25 +708,15 @@ impl TsunamiBuilder {
                 }.map(move |(instances, id_to_name, ok)| {
                     (instances, ok, id_to_name, setup_fns, usernames, pk)
                 })
-                    .map(move |r| (r, ec2, log))
             })
             .map_err(Error::from)
             .and_then(
-                move |(
-                    (instances, everything_ok, id_to_name, setup_fns, usernames, private_key),
-                    ec2,
-                    log,
-                )| {
+                move |(instances, everything_ok, id_to_name, setup_fns, usernames, private_key)| {
                     let mut term_instances = instances.clone();
 
                     // or_else
-                    let log_2 = log.clone();
-                    let ec2_2 = ec2.clone();
                     let at_the_end = move |e| {
                         use std::mem;
-
-                        let ec2 = ec2_2;
-                        let log = log_2;
 
                         // 5. terminate all instances
                         if !term_instances.is_empty() {
@@ -798,16 +767,15 @@ impl TsunamiBuilder {
                     };
 
                     start
-                        .and_then(|_| {
+                        .and_then(move |_| {
                             // 3. wait until all instances are up
                             // note that we *don't* do this check if we have no instances, b/c empty instance list
                             // means "list all instances".
                             let mut desc_req = rusoto_ec2::DescribeInstancesRequest::default();
-                            let mut all_ready = instances.is_empty();
                             desc_req.instance_ids = Some(instances);
 
-                            futures::future::loop_fn((), move |_| {
-                                ec2.describe_instances(&desc_req).map(|reservations| {
+                            futures::future::loop_fn(id_to_name, move |id_to_name| {
+                                ec2.describe_instances(&desc_req).map(move |reservations| {
                                     let mut machines = HashMap::new();
                                     for reservation in
                                         reservations.reservations.unwrap_or_else(Vec::new)
@@ -831,7 +799,7 @@ impl TsunamiBuilder {
                                                         public_ip,
                                                         public_dns,
                                                     };
-                                                    let name = id_to_name[&instance_id].clone();
+                                                    let name = &*id_to_name[&instance_id];
                                                     trace!(log, "instance ready"; "set" => &name, "ip" => &machine.public_ip);
                                                     machines
                                                         .entry(name)
@@ -839,7 +807,9 @@ impl TsunamiBuilder {
                                                         .push(machine);
                                                 }
                                                 _ => {
-                                                    return futures::future::Loop::Continue(());
+                                                    return futures::future::Loop::Continue(
+                                                        id_to_name,
+                                                    );
                                                 }
                                             }
                                         }
@@ -848,12 +818,8 @@ impl TsunamiBuilder {
                                     futures::future::Loop::Break(machines)
                                 })
                             }).map_err(Error::from)
-                                .map(move |v| (v, ec2, log))
                         })
-                        .and_then(move |(machines, ec2, log)| {
-                            let usernames = &usernames;
-                            let setup_fns = &setup_fns;
-                            let private_key = &private_key;
+                        .and_then(move |machines| {
                             let running: u32 = machines.values().map(|ms| ms.len() as u32).sum();
                             if running != expected_num {
                                 crit!(
@@ -872,85 +838,99 @@ impl TsunamiBuilder {
                             info!(log, "all machines instantiated; running setup");
 
                             //    - once an instance is ready, run setup closure
-                            let setups = machines.iter_mut().flat_map(move |(name, machines)| {
-                                use std::net::{IpAddr, SocketAddr};
+                            let private_key = &private_key;
+                            let setups: Vec<_> = machines
+                                .into_iter()
+                                .flat_map(move |(name, machines)| {
+                                    let setup_fn = setup_fns[name];
+                                    let username = usernames[name];
 
-                                let name = &*name;
-                                let f = &setup_fns[name];
-                                let username = &usernames[name];
+                                    machines.into_iter().map(move |machine| {
+                                        use std::net::{IpAddr, SocketAddr};
 
-                                machines.iter_mut().map(move |machine| {
-                                    let ip = &machine.public_ip;
-                                    let dns = &machine.public_dns;
-                                    let machine_ssh = &mut machine.ssh;
-
-                                    ip.parse::<IpAddr>()
-                                        .context("machine ip is not an ip address")
-                                        .map_err(Into::into)
-                                        .into_future()
-                                        .and_then(move |addr| {
-                                            ssh::Session::connect(
+                                        match machine
+                                            .public_ip
+                                            .parse::<IpAddr>()
+                                            .context("machine ip is not an ip address")
+                                        {
+                                            Ok(addr) => Either::A(ssh::Session::connect(
                                                 username,
                                                 SocketAddr::new(addr, 22),
                                                 private_key,
                                                 &handle,
-                                            )
-                                        })
-                                        .then(move |r| {
-                                            r.context(format!(
+                                            )),
+                                            Err(e) => {
+                                                Either::B(futures::future::err(Error::from(e)))
+                                            }
+                                        }.then(move |r| {
+                                            let r = r.context(format!(
                                                 "failed to ssh to {} machine {}",
-                                                &name, &dns
-                                            ))
-                                        })
-                                        .map_err(move |e| {
-                                            error!(log, "failed to ssh to {}:{}", &name, &ip);
-                                            e
-                                        })
-                                        .and_then(move |mut ssh| {
-                                            debug!(log, "setting up {} instance", &name; "ip" => &ip);
-                                            f(&mut ssh, &handle).map(move |_| ssh).then(move |r| {
-                                                r.context(format!(
-                                                    "setup procedure for {} machine failed",
-                                                    &name
-                                                )).map_err(|e| {
-                                                    error!(
-                                                        log,
-                                                        "setup for {} machine failed", &name
-                                                    );
-                                                    e
-                                                })
-                                            })
-                                        })
-                                        .map(move |ssh| {
-                                            info!(log, "finished setting up {} instance", &name; "ip" => &ip);
-                                            *machine_ssh = Some(ssh);
-                                            ()
-                                        })
-                                })
-                            });
+                                                name, &machine.public_dns
+                                            ));
 
-                            Either::B(
-                                futures::future::join_all(setups)
-                                    .map_err(Error::from)
-                                    .map(move |_| machines)
-                                    .map(move |v| (v, ec2, log)),
-                            )
+                                            if r.is_err() {
+                                                error!(
+                                                    log,
+                                                    "failed to ssh to {}:{}",
+                                                    name,
+                                                    &machine.public_dns
+                                                );
+                                            }
+
+                                            r.map(move |ssh| (machine, ssh))
+                                        })
+                                            .and_then(move |(machine, mut ssh)| {
+                                                debug!(log, "setting up {} instance", &name; "dns" => &machine.public_dns);
+                                                setup_fn(&mut ssh, &handle).map(move |_| ssh).then(
+                                                    move |r| {
+                                                        let r = r.context(format!(
+                                                            "setup procedure for {} machine failed",
+                                                            name
+                                                        ));
+
+                                                        if r.is_err() {
+                                                            error!(
+                                                                log,
+                                                                "setup for {} machine failed", name
+                                                            );
+                                                        }
+
+                                                        r.map(move |ssh| (machine, ssh))
+                                                    },
+                                                )
+                                            })
+                                            .map(move |(mut machine, ssh)| {
+                                                info!(log, "finished setting up {} instance", name; "dns" => &machine.public_dns);
+                                                machine.ssh = Some(ssh);
+                                                (name, machine)
+                                            })
+                                    })
+                                })
+                                .collect();
+
+                            Either::B(futures::future::join_all(setups).map_err(Error::from))
                         })
-                        .and_then(|(machines, ec2, log)| {
+                        .and_then(move |machines| {
+                            let machines = machines.into_iter().fold(
+                                HashMap::new(),
+                                |mut machines, (name, machine)| {
+                                    machines.entry(name).or_insert_with(Vec::new).push(machine);
+                                    machines
+                                },
+                            );
                             // 4. invoke F with Machine descriptors
                             let start = time::Instant::now();
                             info!(log, "quiet before the storm");
-                            f(machines, &handle)
+                            f(machines)
                                 .into_future()
                                 .then(|r| r.context("tsunami main routine failed"))
-                                .map_err(|e| {
+                                .map_err(move |e| {
                                     crit!(log, "main tsunami routine failed");
                                     Error::from(e)
                                 })
                                 .map(move |r| (r, start))
-                                .map(move |v| (v, log))
                         })
-                        .map(|((r, start), log)| {
+                        .map(move |(r, start)| {
                             info!(log, "the power of the tsunami was unleashed"; "duration" => start.elapsed().as_secs());
                             r
                         })

@@ -1,4 +1,5 @@
 extern crate futures;
+extern crate tokio_core;
 extern crate tsunami;
 
 use futures::Future;
@@ -29,11 +30,14 @@ fn main() {
     );
 
     b.wait_limit(time::Duration::from_secs(10));
-    b.run(|vms: HashMap<String, Vec<Machine>>| {
+
+    let mut core = tokio_core::reactor::Core::new().unwrap();
+    let handle = core.handle();
+    core.run(b.run(&handle, |vms: HashMap<&str, Vec<Machine>>| {
         println!("==> {}", vms["server"][0].private_ip);
         for c in &vms["client"] {
             println!(" -> {}", c.private_ip);
         }
         Ok(())
-    }).unwrap();
+    })).unwrap();
 }

@@ -2,7 +2,6 @@ use async_ssh;
 use failure::{Error, ResultExt};
 use futures::{self, Future};
 use std::net::SocketAddr;
-use std::path::Path;
 use std::time::{Duration, Instant};
 use thrussh_keys;
 use tokio_core;
@@ -28,6 +27,7 @@ impl Session {
         key: &str,
         handle: &'a tokio_core::reactor::Handle,
     ) -> Box<Future<Item = Self, Error = Error> + 'a> {
+        // TODO: avoid decoding the key multiple times
         let key = thrussh_keys::decode_secret_key(key, None).unwrap();
 
         // TODO: instead of max time, keep trying as long as instance is still active
