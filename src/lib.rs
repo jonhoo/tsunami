@@ -161,7 +161,7 @@ impl MachineSetup {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct SpotRequestResult<'a> {
     id_to_name: HashMap<String, &'a str>,
     setup_fns: HashMap<
@@ -430,21 +430,21 @@ impl TsunamiBuilder {
                     placement,
                     key_name,
                     group_id,
-                ).map(
-                    |SpotRequestResult {
-                         id_to_name,
-                         setup_fns,
-                         usernames,
-                         spot_req_ids,
-                     }| (id_to_name, setup_fns, usernames, spot_req_ids, pk),
-                )
+                ).map(|req| (req, pk))
             })
             .and_then(
-                move |(id_to_name, setup_fns, usernames, spot_req_ids, pk)| {
-                    Self::wait_for_instances(log, ec2, spot_req_ids, id_to_name, &this.max_wait)
-                        .map(|(machines, instances)| {
-                            (machines, instances, setup_fns, usernames, pk)
-                        })
+                move |(
+                    SpotRequestResult {
+                        id_to_name,
+                        setup_fns,
+                        usernames,
+                        spot_req_ids,
+                    },
+                    pk,
+                )| {
+                    Self::wait_for_instances(log, ec2, spot_req_ids, id_to_name, this.max_wait).map(
+                        |(machines, instances)| (machines, instances, setup_fns, usernames, pk),
+                    )
                 },
             )
             .and_then(move |(machines, instances, setup_fns, usernames, pk)| {
@@ -622,7 +622,7 @@ impl TsunamiBuilder {
             .map(move |res_v| {
                 let mut result = SpotRequestResult::default();
                 for (name, setup, user, res) in res_v {
-                    result.setup_fns.insert(name, &setup);
+                    result.setup_fns.insert(name, setup);
                     result.usernames.insert(name, user);
                     for sir in res {
                         if let Some(sir) = sir.spot_instance_request_id {
@@ -644,15 +644,14 @@ impl TsunamiBuilder {
         ec2: &'a Box<rusoto_ec2::Ec2>,
         spot_req_ids: Vec<String>,
         id_to_name: HashMap<String, &'a str>,
-        max_wait: &'a Option<time::Duration>,
+        max_wait: Option<time::Duration>,
     ) -> Box<Future<Item = (HashMap<&'a str, Vec<Machine>>, Vec<String>), Error = Error> + 'a> {
         // Helper enum for intermediate state
-        enum WaitForInstancesResult<'a> {
-            /// instances, id_to_name
-            Ok(Vec<String>, HashMap<String, &'a str>),
-
-            /// instances
-            NotOk(Vec<String>),
+        enum RunningInstanceSet<'a> {
+            /// All instances started correctly: holds instance ids and id_to_name
+            All(Vec<String>, HashMap<String, &'a str>),
+            /// Some instances were not started: holds instance ids for those that were
+            Only(Vec<String>),
         }
 
         let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
@@ -726,7 +725,7 @@ impl TsunamiBuilder {
                                 }
                             })
                             .collect();
-                        Ok(futures::future::Loop::Break(WaitForInstancesResult::Ok(
+                        Ok(futures::future::Loop::Break(RunningInstanceSet::All(
                             v,
                             iid_to_name,
                         )))
@@ -747,7 +746,7 @@ impl TsunamiBuilder {
                 })
         });
 
-        let future = if let Some(wait_limit) = *max_wait {
+        let future = if let Some(wait_limit) = max_wait {
             let future = tokio_timer::Deadline::new(
                 wait_for_instances,
                 time::Instant::now() + wait_limit,
@@ -811,7 +810,7 @@ impl TsunamiBuilder {
                                             .collect::<Vec<_>>()
                                     })
                                     .unwrap_or_default();
-                                WaitForInstancesResult::NotOk(instances)
+                                RunningInstanceSet::Only(instances)
                             });
                         Either::A(future)
                     }
@@ -821,14 +820,13 @@ impl TsunamiBuilder {
             Either::A(future)
         } else {
             Either::B(wait_for_instances)
-        }.and_then(|wait_result| {
-            if let WaitForInstancesResult::Ok(instances, id_to_name) = wait_result {
+        }.and_then(|wait_result| match wait_result {
+            RunningInstanceSet::All(instances, id_to_name) => {
                 Either::A(futures::future::ok((id_to_name, instances)))
-            } else {
-                Either::B(futures::future::err(format_err!(
-                    "not all instances were launched within the time limit"
-                )))
             }
+            RunningInstanceSet::Only(_) => Either::B(futures::future::err(format_err!(
+                "not all instances were launched within the time limit"
+            ))),
         })
             .and_then(move |(id_to_name, instances)| {
                 // 3. wait until all instances are up
@@ -852,7 +850,7 @@ impl TsunamiBuilder {
                                         public_ip_address: Some(public_ip),
                                         ..
                                     } => {
-                                        let name = id_to_name[&instance_id].clone();
+                                        let name = id_to_name[&instance_id];
                                         let machine = Machine {
                                             ssh: None,
                                             instance_type,
@@ -978,10 +976,10 @@ impl TsunamiBuilder {
         let future = futures::future::join_all(setups)
             .map_err(Error::from)
             .and_then(move |machines| {
-                let machines: HashMap<&str, _> = machines.into_iter().fold(
+                let machines = machines.into_iter().fold(
                     HashMap::new(),
                     |mut machines, (name, machine)| {
-                        machines.entry(&name).or_insert_with(Vec::new).push(machine);
+                        machines.entry(name).or_insert_with(Vec::new).push(machine);
                         machines
                     },
                 );
@@ -1003,7 +1001,7 @@ impl TsunamiBuilder {
             })
             .or_else(move |e| {
                 // 5. terminate all instances
-                if !&term_instances.is_empty() {
+                if !term_instances.is_empty() {
                     debug!(log, "terminating instances");
                     let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
                     termination_req.instance_ids = term_instances;
