@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use thrussh_keys;
 use tokio_core;
 use tokio_io;
-use tokio_timer::Deadline;
+use tokio_timer;
 
 /// An established SSH session.
 ///
@@ -32,19 +32,22 @@ impl Session {
 
         // TODO: instead of max time, keep trying as long as instance is still active
         let start = Instant::now();
+        let timer = tokio_timer::Timer::default();
 
         Box::new(
-            futures::future::loop_fn((), move |_| {
-                Deadline::new(
-                    tokio_core::net::TcpStream::connect(&addr, handle),
-                    Instant::now() + Duration::from_secs(3),
-                ).then(move |r| match r {
-                    Ok(c) => Ok(futures::future::Loop::Break(c)),
-                    Err(_) if start.elapsed() <= Duration::from_secs(120) => {
-                        Ok(futures::future::Loop::Continue(()))
-                    }
-                    Err(e) => Err(Error::from(e).context("failed to connect to ssh port")),
-                })
+            futures::future::loop_fn(timer, move |timer| {
+                timer
+                    .timeout(
+                        tokio_core::net::TcpStream::connect(&addr, handle),
+                        Duration::from_secs(3),
+                    )
+                    .then(move |r| match r {
+                        Ok(c) => Ok(futures::future::Loop::Break(c)),
+                        Err(_) if start.elapsed() <= Duration::from_secs(120) => {
+                            Ok(futures::future::Loop::Continue(timer))
+                        }
+                        Err(e) => Err(Error::from(e).context("failed to connect to ssh port")),
+                    })
             }).then(|r| r.context("failed to connect to ssh port"))
                 .map_err(Into::into)
                 .and_then(move |c| {

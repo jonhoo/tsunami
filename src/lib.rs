@@ -194,7 +194,7 @@ enum TsunamiError {
     Describe(rusoto_ec2::DescribeSpotInstanceRequestsError),
 
     #[fail(display = "timer error: {}", _0)]
-    Timer(tokio_timer::Error),
+    Timer(tokio_timer::TimerError),
 
     #[fail(display = "failed to cancel spot instances: {:?}", _0)]
     Cancel(rusoto_ec2::CancelSpotInstanceRequestsError),
@@ -793,9 +793,9 @@ impl TsunamiBuilder {
                 })
                 .and_then(|r| match r {
                     future::Loop::Continue(i2n) => Either::A(
-                        tokio_timer::Delay::new(
-                            time::Instant::now() + time::Duration::from_millis(500),
-                        ).map(move |_| future::Loop::Continue(i2n))
+                        tokio_timer::Timer::default()
+                            .sleep(time::Duration::from_millis(500))
+                            .map(move |_| future::Loop::Continue(i2n))
                             .map_err(TsunamiError::Timer),
                     ),
                     b => Either::B(future::ok(b)),
@@ -803,13 +803,31 @@ impl TsunamiBuilder {
         });
 
         let future = if let Some(wait_limit) = max_wait {
-            let future = tokio_timer::Deadline::new(
-                wait_for_instances,
-                time::Instant::now() + wait_limit,
-            ).map_err(|timer_error| timer_error.into_inner())
+            let timer = tokio_timer::Timer::default();
+
+            enum TotallyUnnecessary {
+                Err(TsunamiError),
+                TimerError(tokio_timer::TimerError),
+                TimedOut,
+            }
+
+            impl<F> From<tokio_timer::TimeoutError<F>> for TotallyUnnecessary {
+                fn from(o: tokio_timer::TimeoutError<F>) -> Self {
+                    match o {
+                        tokio_timer::TimeoutError::TimedOut(_) => TotallyUnnecessary::TimedOut,
+                        tokio_timer::TimeoutError::Timer(_, e) => TotallyUnnecessary::TimerError(e),
+                    }
+                }
+            }
+
+            let future = timer
+                .timeout(
+                    wait_for_instances.map_err(TotallyUnnecessary::Err),
+                    wait_limit,
+                )
                 .or_else(move |e| {
                     match e {
-                        None => {
+                        TotallyUnnecessary::TimedOut => {
                             warn!(log, "wait time exceeded -- cancelling run");
                             let mut cancel =
                                 rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
@@ -829,9 +847,9 @@ impl TsunamiBuilder {
 
                                     // wait for a little while for the cancelled spot requests to settle
                                     // and any that were *just* made active to be associated with their instances
-                                    tokio_timer::Delay::new(
-                                        time::Instant::now() + time::Duration::from_secs(1),
-                                    ).map_err(TsunamiError::Timer)
+                                    timer
+                                        .sleep(time::Duration::from_secs(1))
+                                        .map_err(TsunamiError::Timer)
                                 })
                                 .and_then(move |_| {
                                     let mut req =
@@ -868,7 +886,10 @@ impl TsunamiBuilder {
                                 });
                             Either::A(future)
                         }
-                        Some(e) => Either::B(future::err(e)),
+                        TotallyUnnecessary::TimerError(e) => {
+                            Either::B(Either::A(future::err(TsunamiError::Timer(e))))
+                        }
+                        TotallyUnnecessary::Err(e) => Either::B(Either::B(future::err(e))),
                     }
                 });
             Either::A(future)
