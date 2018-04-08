@@ -230,6 +230,17 @@ enum TsunamiError {
     },
 }
 
+impl TsunamiError {
+    fn get_term_instances(&self) -> Option<Vec<String>> {
+        match self {
+            | TsunamiError::Timeout { ref instances }
+            | TsunamiError::DescribeWithInstances { ref instances, .. }
+            | TsunamiError::MainRoutine { ref instances, .. } => Some(instances.clone()),
+            _ => None,
+        }
+    }
+}
+
 /// Use this to prepare and execute a new tsunami.
 ///
 /// A tsunami consists of one or more [`MachineSetup`](struct.MachineSetup.html)s that will be
@@ -523,15 +534,7 @@ impl TsunamiBuilder {
                     }),
                 })
             })
-            .then(move |r| match r {
-                | Ok(instances)
-                | Err(TsunamiError::Timeout { instances })
-                | Err(TsunamiError::DescribeWithInstances { instances, .. })
-                | Err(TsunamiError::MainRoutine { instances, .. }) => {
-                    Self::clean_up(log, ec2, instances)
-                }
-                Err(error) => Box::new(future::err(Error::from(error))),
-            });
+            .then(move |r| Self::clean_up(log, ec2, r));
         Box::new(all_the_things)
     }
 
@@ -1071,26 +1074,45 @@ impl TsunamiBuilder {
     fn clean_up<'a>(
         log: &'a slog::Logger,
         ec2: &'a Box<rusoto_ec2::Ec2>,
+        result: Result<Vec<String>, TsunamiError>,
+    ) -> Box<Future<Item = (), Error = Error> + 'a> {
+        match result {
+            Ok(instances) => Box::new(Self::terminate_instances(log, ec2, instances)),
+            Err(error) => {
+                if let Some(instances) = error.get_term_instances() {
+                    // TODO: include possible error from terminate_instances?
+                    Box::new(
+                        Self::terminate_instances(log, ec2, instances)
+                            .then(|_| future::err(Error::from(error))),
+                    )
+                } else {
+                    Box::new(future::err(Error::from(error)))
+                }
+            }
+        }
+    }
+
+    fn terminate_instances<'a>(
+        log: &'a slog::Logger,
+        ec2: &'a Box<rusoto_ec2::Ec2>,
         term_instances: Vec<String>,
     ) -> Box<Future<Item = (), Error = Error> + 'a> {
         // 5. terminate all instances
-        let future = if !term_instances.is_empty() {
-            debug!(log, "terminating instances");
-            let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
-            termination_req.instance_ids = term_instances;
+        if term_instances.is_empty() {
+            return Box::new(future::ok(()));
+        }
 
-            Either::A(
-                ec2.terminate_instances(&termination_req)
-                    .map_err(move |term_e| {
-                        warn!(log, "failed to terminate tsunami instances: {:?}", term_e);
-                        // TODO: include both errors?
-                        Error::from(term_e)
-                    })
-                    .map(|_| ()),
-            )
-        } else {
-            Either::B(future::ok(()))
-        };
+        debug!(log, "terminating instances");
+
+        let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
+        termination_req.instance_ids = term_instances;
+
+        let future = ec2.terminate_instances(&termination_req)
+            .map_err(move |term_e| {
+                warn!(log, "failed to terminate tsunami instances: {:?}", term_e);
+                Error::from(term_e)
+            })
+            .map(|_| ());
 
         Box::new(future)
 
