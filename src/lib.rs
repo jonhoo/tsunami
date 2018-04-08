@@ -172,25 +172,17 @@ struct SpotRequestResult<'a> {
 
 #[derive(Debug, Fail)]
 enum TsunamiError {
-    #[fail(display = "failed to create security group for new machines: {:?}", error)]
-    SecurityGroupCreate {
-        error: rusoto_ec2::CreateSecurityGroupError,
-    },
+    #[fail(display = "failed to create security group for new machines: {:?}", _0)]
+    SecurityGroupCreate(rusoto_ec2::CreateSecurityGroupError),
 
-    #[fail(display = "failed to fill in security group for new machines: {:?}", error)]
-    SecurityGroupConfigure {
-        error: rusoto_ec2::AuthorizeSecurityGroupIngressError,
-    },
+    #[fail(display = "failed to fill in security group for new machines: {:?}", _0)]
+    SecurityGroupConfigure(rusoto_ec2::AuthorizeSecurityGroupIngressError),
 
-    #[fail(display = "failed to generate new key pair: {:?}", error)]
-    KeyPair {
-        error: rusoto_ec2::CreateKeyPairError,
-    },
+    #[fail(display = "failed to generate new key pair: {:?}", _0)]
+    KeyPair(rusoto_ec2::CreateKeyPairError),
 
-    #[fail(display = "failed to create new placement group: {:?}", error)]
-    PlacementGroups {
-        error: rusoto_ec2::CreatePlacementGroupError,
-    },
+    #[fail(display = "failed to create new placement group: {:?}", _0)]
+    PlacementGroups(rusoto_ec2::CreatePlacementGroupError),
 
     #[fail(display = "failed to request spot instances for {}: {:?}", name, error)]
     RequestSpotInstances {
@@ -198,21 +190,17 @@ enum TsunamiError {
         error: rusoto_ec2::RequestSpotInstancesError,
     },
 
-    #[fail(display = "failed to describe spot instances")]
-    Describe,
+    #[fail(display = "failed to describe spot instances: {:?}", _0)]
+    Describe(rusoto_ec2::DescribeSpotInstanceRequestsError),
 
-    #[fail(display = "timer error: {}", error)]
-    Timer { error: tokio_timer::Error },
+    #[fail(display = "timer error: {}", _0)]
+    Timer(tokio_timer::Error),
 
-    #[fail(display = "failed to cancel spot instances: {:?}", error)]
-    Cancel {
-        error: rusoto_ec2::CancelSpotInstanceRequestsError,
-    },
+    #[fail(display = "failed to cancel spot instances: {:?}", _0)]
+    Cancel(rusoto_ec2::CancelSpotInstanceRequestsError),
 
-    #[fail(display = "failed to find instances after cancellation: {:?}", error)]
-    FindAfterCancellation {
-        error: rusoto_ec2::DescribeSpotInstanceRequestsError,
-    },
+    #[fail(display = "failed to find instances after cancellation: {:?}", _0)]
+    FindAfterCancellation(rusoto_ec2::DescribeSpotInstanceRequestsError),
 
     #[fail(display = "not all instances were launched within the time limit")]
     Timeout { instances: Vec<String> },
@@ -225,7 +213,7 @@ enum TsunamiError {
 
     #[fail(display = "tsunami main routine failed")]
     MainRoutine {
-        error: Box<Error>,
+        error: Error,
         instances: Vec<String>,
     },
 }
@@ -528,10 +516,7 @@ impl TsunamiBuilder {
                     f,
                 ).then(|r| match r {
                     Ok(_) => Ok(instances),
-                    Err(error) => Err(TsunamiError::MainRoutine {
-                        error: Box::new(error),
-                        instances,
-                    }),
+                    Err(error) => Err(TsunamiError::MainRoutine { error, instances }),
                 })
             })
             .then(move |r| Self::clean_up(log, ec2, r));
@@ -552,7 +537,7 @@ impl TsunamiBuilder {
         req.group_name = group_name;
         req.description = "temporary access group for tsunami VMs".to_string();
         let future = ec2.create_security_group(&req)
-            .map_err(|error| TsunamiError::SecurityGroupCreate { error })
+            .map_err(TsunamiError::SecurityGroupCreate)
             .and_then(move |res| {
                 let group_id = res.group_id
                     .expect("aws created security group with no group id");
@@ -568,7 +553,7 @@ impl TsunamiBuilder {
                 req.cidr_ip = Some("0.0.0.0/0".to_string());
                 trace!(log, "adding ssh access to security group");
                 ec2.authorize_security_group_ingress(&req)
-                    .map_err(|error| TsunamiError::SecurityGroupConfigure { error })
+                    .map_err(TsunamiError::SecurityGroupConfigure)
                     .map(move |_| (group_id, req))
             })
             .and_then(move |(group_id, mut req)| {
@@ -578,7 +563,7 @@ impl TsunamiBuilder {
                 req.cidr_ip = Some("172.31.0.0/16".to_string());
                 trace!(log, "adding internal VM access to security group");
                 ec2.authorize_security_group_ingress(&req)
-                    .map_err(|error| TsunamiError::SecurityGroupConfigure { error })
+                    .map_err(TsunamiError::SecurityGroupConfigure)
                     .map(move |_| group_id)
             });
 
@@ -596,7 +581,7 @@ impl TsunamiBuilder {
         key_name.extend(rand::thread_rng().gen_ascii_chars().take(10));
         req.key_name = key_name.clone();
         let future = ec2.create_key_pair(&req)
-            .map_err(|error| TsunamiError::KeyPair { error })
+            .map_err(TsunamiError::KeyPair)
             .map(move |keypair| {
                 trace!(log, "created keypair"; "fingerprint" => keypair.key_fingerprint);
                 let pk = keypair
@@ -622,7 +607,7 @@ impl TsunamiBuilder {
 
         let log = log.clone();
         let future = ec2.create_placement_group(&req)
-            .map_err(|error| TsunamiError::PlacementGroups { error })
+            .map_err(TsunamiError::PlacementGroups)
             .map(move |_| {
                 trace!(log, "created placement group");
 
@@ -746,7 +731,7 @@ impl TsunamiBuilder {
                             trace!(log, "spot instance requests not yet ready");
                             return Ok(future::Loop::Continue(id_to_name));
                         } else {
-                            return Err(TsunamiError::Describe);
+                            return Err(TsunamiError::Describe(e));
                         }
                     }
                     let res = res.expect("Err checked above");
@@ -811,7 +796,7 @@ impl TsunamiBuilder {
                         tokio_timer::Delay::new(
                             time::Instant::now() + time::Duration::from_millis(500),
                         ).map(move |_| future::Loop::Continue(i2n))
-                            .map_err(|error| TsunamiError::Timer { error }),
+                            .map_err(TsunamiError::Timer),
                     ),
                     b => Either::B(future::ok(b)),
                 })
@@ -831,7 +816,7 @@ impl TsunamiBuilder {
                             cancel.spot_instance_request_ids = spot_req_ids.clone();
 
                             let future = ec2.cancel_spot_instance_requests(&cancel)
-                                .map_err(|error| TsunamiError::Cancel { error })
+                                .map_err(TsunamiError::Cancel)
                                 .map_err(move |e| {
                                     warn!(log, "failed to cancel spot instance request: {:?}", e);
                                     e
@@ -846,16 +831,15 @@ impl TsunamiBuilder {
                                     // and any that were *just* made active to be associated with their instances
                                     tokio_timer::Delay::new(
                                         time::Instant::now() + time::Duration::from_secs(1),
-                                    ).map_err(|error| TsunamiError::Timer { error })
+                                    ).map_err(TsunamiError::Timer)
                                 })
                                 .and_then(move |_| {
                                     let mut req =
                                         rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
                                     req.spot_instance_request_ids = Some(spot_req_ids);
 
-                                    ec2.describe_spot_instance_requests(&req).map_err(|error| {
-                                        TsunamiError::FindAfterCancellation { error }
-                                    })
+                                    ec2.describe_spot_instance_requests(&req)
+                                        .map_err(TsunamiError::FindAfterCancellation)
                                 })
                                 .map(move |res| {
                                     let instances = res.spot_instance_requests
@@ -1065,7 +1049,6 @@ impl TsunamiBuilder {
             })
             .map(move |start| {
                 info!(log, "the power of the tsunami was unleashed"; "duration" => start.elapsed().as_secs());
-                ()
             });
 
         Box::new(future)
