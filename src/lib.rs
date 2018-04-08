@@ -220,8 +220,8 @@ enum TsunamiError {
 
 impl TsunamiError {
     fn get_term_instances(&self) -> Option<Vec<String>> {
-        match self {
-            | TsunamiError::Timeout { ref instances }
+        match *self {
+            | TsunamiError::Timeout { ref instances, .. }
             | TsunamiError::DescribeWithInstances { ref instances, .. }
             | TsunamiError::MainRoutine { ref instances, .. } => Some(instances.clone()),
             _ => None,
