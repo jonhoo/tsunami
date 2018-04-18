@@ -1,6 +1,6 @@
 [package]
 name = "tsunami"
-version = "0.5.10"
+version = "0.5.11"
 
 description = "Toolkit for running short-lived jobs on EC2 spot instances"
 readme = "README.md"
@@ -30,7 +30,7 @@ failure = "0.1.1"
 rand = "0.4"
 tempfile = "2.2.0"
 rayon = "1.0.0"
-slog-term = "2.3.0"
+slog-term = "2.4.0"
 slog = "2.1.1"
 #slog = { version = "2.1.1", features = ["max_level_trace"] }
 scopeguard = "0.3.3"
