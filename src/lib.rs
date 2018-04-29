@@ -286,9 +286,9 @@ impl TsunamiBuilder {
     ///     }
     ///     Ok(())
     /// }).unwrap();
-    pub fn run<F>(self, f: F) -> Result<(), Error>
+    pub fn run<F, R>(self, f: F) -> Result<R, Error>
     where
-        F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<(), Error>,
+        F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<R, Error>,
     {
         self.run_as(rusoto_core::EnvironmentProvider, f)
     }
@@ -332,10 +332,10 @@ impl TsunamiBuilder {
     ///     Ok(())
     /// }).unwrap();
     /// # }
-    pub fn run_as<P, F>(self, provider: P, f: F) -> Result<(), Error>
+    pub fn run_as<P, F, R>(self, provider: P, f: F) -> Result<R, Error>
     where
         P: rusoto_core::ProvideAwsCredentials,
-        F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<(), Error>,
+        F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<R, Error>,
     {
         use rusoto_core::default_tls_client;
         use rusoto_ec2::Ec2;
@@ -685,6 +685,7 @@ impl TsunamiBuilder {
             }
         }
 
+        let mut res = None;
         let mut errors = Vec::new();
         let running: u32 = machines.values().map(|ms| ms.len() as u32).sum();
         if running == expected_num {
@@ -737,12 +738,12 @@ impl TsunamiBuilder {
                 // 4. invoke F with Machine descriptors
                 let start = time::Instant::now();
                 info!(log, "quiet before the storm");
-                f(machines)
+                res = Some(f(machines)
                     .context("tsunami main routine failed")
                     .map_err(|e| {
                         crit!(log, "main tsunami routine failed");
                         e
-                    })?;
+                    })?);
                 info!(log, "the power of the tsunami was unleashed"; "duration" => start.elapsed().as_secs());
             }
         } else {
@@ -757,6 +758,12 @@ impl TsunamiBuilder {
         debug!(log, "all done");
 
         // TODO: this will only expose first setup error -- fix that
-        errors.into_iter().next().map(|e| Err(e)).unwrap_or(Ok(()))
+        errors
+            .into_iter()
+            .next()
+            .map(|e| Err(e))
+            .unwrap_or_else(|| {
+                Ok(res.expect("if there are no errors, then we ran the user's main function"))
+            })
     }
 }
