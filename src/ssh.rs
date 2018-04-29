@@ -46,7 +46,7 @@ impl Session {
     }
 
     /// Issue the given command and return the command's raw standard output.
-    pub fn cmd_raw(&mut self, cmd: &str) -> Result<Vec<u8>, Error> {
+    pub fn cmd_raw(&self, cmd: &str) -> Result<Vec<u8>, Error> {
         use std::io::Read;
 
         let mut channel = self.ssh
@@ -99,7 +99,7 @@ impl Session {
     }
 
     /// Issue the given command and return the command's standard output.
-    pub fn cmd(&mut self, cmd: &str) -> Result<String, Error> {
+    pub fn cmd(&self, cmd: &str) -> Result<String, Error> {
         Ok(String::from_utf8(self.cmd_raw(cmd)?)?)
     }
 }
