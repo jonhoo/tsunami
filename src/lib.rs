@@ -42,11 +42,8 @@
 //!
 //! The crate is under development as part of a live-coding stream series intended for users who
 //! are already somewhat familiar with Rust, and who want to see something larger and more involved
-//! be built.
-//!
-//! You can find the recordings of past sessions below:
-//! - [Part 1](https://youtu.be/Zdudg5TV9i4)
-//! - [Part 2](https://youtu.be/66INYb73yXo)
+//! be built. You can find the recordings of past sessions [on
+//! YouTube](https://www.youtube.com/playlist?list=PLqbS7AVVErFgY2faCIYjJZv_RluGkTlKt).
 #![deny(missing_docs)]
 
 #[macro_use]
