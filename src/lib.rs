@@ -62,6 +62,7 @@ extern crate tempfile;
 
 use failure::{Error, ResultExt};
 use rayon::prelude::*;
+use rusoto_core::reactor::{CredentialsProvider, RequestDispatcher};
 use rusoto_core::Region;
 use std::collections::HashMap;
 use std::io::Write;
@@ -266,10 +267,11 @@ impl TsunamiBuilder {
     /// all spawned hosts. When the closure exits, the instances are all terminated automatically.
     ///
     /// This method uses the rusoto
-    /// [`EnvironmentProvider`](https://docs.rs/rusoto_credential/0.10.0/rusoto_credential/struct.EnvironmentProvider.html),
-    /// which uses standard [AWS environtment
+    /// [`DefaultCredentialsProvider`](https://docs.rs/rusoto_credential/0.11.0/rusoto_credential/type.DefaultCredentialsProvider.html),
+    /// which (primarily) uses standard [AWS environtment
     /// variables](https://docs.aws.amazon.com/cli/latest/userguide/cli-environment.html) for
-    /// authentication.
+    /// authentication. See also the underlying [`ChainProvider`
+    /// documentation](https://docs.rs/rusoto_credential/0.11.0/rusoto_credential/struct.ChainProvider.html).
     ///
     /// ```rust,no_run
     /// # use tsunami::{TsunamiBuilder, Machine};
@@ -287,7 +289,7 @@ impl TsunamiBuilder {
     where
         F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<R, Error>,
     {
-        self.run_as(rusoto_core::EnvironmentProvider, f)
+        self.run_as(CredentialsProvider::default(), f)
     }
 
     /// Spin up a tsunami batching the defined machine sets in this builder with a custom
@@ -304,11 +306,7 @@ impl TsunamiBuilder {
     /// # use tsunami::{TsunamiBuilder, Machine};
     /// # use std::collections::HashMap;
     /// // https://github.com/rusoto/rusoto/blob/master/AWS-CREDENTIALS.md
-    /// let sts = rusoto_sts::StsClient::new(
-    ///     rusoto_core::default_tls_client().unwrap(),
-    ///     rusoto_core::EnvironmentProvider,
-    ///     rusoto_core::Region::UsEast1,
-    /// );
+    /// let sts = rusoto_sts::StsClient::simple(rusoto_core::Region::UsEast1);
     /// let provider = rusoto_sts::StsAssumeRoleSessionCredentialsProvider::new(
     ///     sts,
     ///     "arn:aws:sts::1122334455:role/myrole".to_owned(),
@@ -331,35 +329,34 @@ impl TsunamiBuilder {
     /// # }
     pub fn run_as<P, F, R>(self, provider: P, f: F) -> Result<R, Error>
     where
-        P: rusoto_core::ProvideAwsCredentials,
+        P: rusoto_core::ProvideAwsCredentials + 'static,
         F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<R, Error>,
     {
-        use rusoto_core::default_tls_client;
         use rusoto_ec2::Ec2;
 
         let log = &self.log;
+        let mut rng = rand::thread_rng();
 
         debug!(log, "connecting to ec2");
 
-        let ec2 = rusoto_ec2::Ec2Client::new(
-            default_tls_client().context("failed to create tls session for ec2 api client")?,
-            provider,
-            self.region,
-        );
+        let ec2 = rusoto_ec2::Ec2Client::new(RequestDispatcher::default(), provider, self.region);
 
         info!(log, "spinning up tsunami");
 
         // set up network firewall for machines
         use rand::Rng;
         let mut group_name = String::from("tsunami_security_");
-        group_name.extend(rand::thread_rng().gen_ascii_chars().take(10));
+        group_name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
         trace!(log, "creating security group"; "name" => &group_name);
         let mut req = rusoto_ec2::CreateSecurityGroupRequest::default();
         req.group_name = group_name;
         req.description = "temporary access group for tsunami VMs".to_string();
-        let res = ec2.create_security_group(&req)
+        let res = ec2
+            .create_security_group(&req)
+            .sync()
             .context("failed to create security group for new machines")?;
-        let group_id = res.group_id
+        let group_id = res
+            .group_id
             .expect("aws created security group with no group id");
         trace!(log, "created security group"; "id" => &group_id);
 
@@ -372,7 +369,9 @@ impl TsunamiBuilder {
         req.to_port = Some(22);
         req.cidr_ip = Some("0.0.0.0/0".to_string());
         trace!(log, "adding ssh access to security group");
-        let _ = ec2.authorize_security_group_ingress(&req)
+        let _ = ec2
+            .authorize_security_group_ingress(&req)
+            .sync()
             .context("failed to fill in security group for new machines")?;
 
         // cross-VM talk
@@ -380,21 +379,26 @@ impl TsunamiBuilder {
         req.to_port = Some(65535);
         req.cidr_ip = Some("172.31.0.0/16".to_string());
         trace!(log, "adding internal VM access to security group");
-        let _ = ec2.authorize_security_group_ingress(&req)
+        let _ = ec2
+            .authorize_security_group_ingress(&req)
+            .sync()
             .context("failed to fill in security group for new machines")?;
 
         // construct keypair for ssh access
         trace!(log, "creating keypair");
         let mut req = rusoto_ec2::CreateKeyPairRequest::default();
         let mut key_name = String::from("tsunami_key_");
-        key_name.extend(rand::thread_rng().gen_ascii_chars().take(10));
+        key_name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
         req.key_name = key_name.clone();
-        let res = ec2.create_key_pair(&req)
+        let res = ec2
+            .create_key_pair(&req)
+            .sync()
             .context("failed to generate new key pair")?;
         trace!(log, "created keypair"; "fingerprint" => res.key_fingerprint);
 
         // write keypair to disk
-        let private_key = res.key_material
+        let private_key = res
+            .key_material
             .expect("aws did not generate key material for new key");
         let mut private_key_file =
             tempfile::NamedTempFile::new().context("failed to create temporary file for keypair")?;
@@ -412,10 +416,11 @@ impl TsunamiBuilder {
             trace!(log, "creating placement group");
             let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
             let mut placement_name = String::from("tsunami_placement_");
-            placement_name.extend(rand::thread_rng().gen_ascii_chars().take(10));
+            placement_name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
             req.group_name = placement_name.clone();
             req.strategy = String::from("cluster");
             ec2.create_placement_group(&req)
+                .sync()
                 .context("failed to create new placement group")?;
             trace!(log, "created placement group");
 
@@ -455,9 +460,12 @@ impl TsunamiBuilder {
             };
 
             trace!(log, "issuing spot request for {}", name; "#" => number);
-            let res = ec2.request_spot_instances(&req)
+            let res = ec2
+                .request_spot_instances(&req)
+                .sync()
                 .context(format!("failed to request spot instances for {}", name))?;
-            let res = res.spot_instance_requests
+            let res = res
+                .spot_instance_requests
                 .expect("request_spot_instances should always return spot instance requests");
             spot_req_ids.extend(
                 res.into_iter()
@@ -482,7 +490,7 @@ impl TsunamiBuilder {
         loop {
             trace!(log, "checking spot request status");
 
-            let res = ec2.describe_spot_instance_requests(&req);
+            let res = ec2.describe_spot_instance_requests(&req).sync();
             if let Err(e) = res {
                 let msg = format!("{}", e);
                 if msg.contains("The spot instance request ID") && msg.contains("does not exist") {
@@ -496,7 +504,8 @@ impl TsunamiBuilder {
             }
             let res = res.expect("Err checked above");
 
-            let any_pending = res.spot_instance_requests
+            let any_pending = res
+                .spot_instance_requests
                 .as_ref()
                 .expect("describe always returns at least one spot instance")
                 .iter()
@@ -519,13 +528,16 @@ impl TsunamiBuilder {
 
             if !any_pending {
                 // unwraps okay because they are the same as expects above
-                instances = res.spot_instance_requests
+                instances = res
+                    .spot_instance_requests
                     .unwrap()
                     .into_iter()
                     .filter_map(|sir| {
                         let name = id_to_name
-                            .remove(&sir.spot_instance_request_id
-                                .expect("spot request must have spot request id"))
+                            .remove(
+                                &sir.spot_instance_request_id
+                                    .expect("spot request must have spot request id"),
+                            )
                             .expect("every spot request id is made for some machine set");
 
                         if sir.state.as_ref().unwrap() == "active" {
@@ -552,10 +564,12 @@ impl TsunamiBuilder {
                 if start.elapsed() > wait_limit {
                     warn!(log, "wait time exceeded -- cancelling run");
                     let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
-                    cancel.spot_instance_request_ids = req.spot_instance_request_ids
+                    cancel.spot_instance_request_ids = req
+                        .spot_instance_request_ids
                         .clone()
                         .expect("we set this to Some above");
                     ec2.cancel_spot_instance_requests(&cancel)
+                        .sync()
                         .context("failed to cancel spot instances")
                         .map_err(|e| {
                             warn!(log, "failed to cancel spot instance request: {:?}", e);
@@ -570,7 +584,9 @@ impl TsunamiBuilder {
                     // and any that were *just* made active to be associated with their instances
                     thread::sleep(time::Duration::from_secs(1));
 
-                    instances = ec2.describe_spot_instance_requests(&req)?
+                    instances = ec2
+                        .describe_spot_instance_requests(&req)
+                        .sync()?
                         .spot_instance_requests
                         .map(|reqs| {
                             reqs.into_iter()
@@ -604,7 +620,7 @@ impl TsunamiBuilder {
                 debug!(log, "terminating instances");
                 let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
                 termination_req.instance_ids = mem::replace(&mut term_instances, Vec::new());
-                while let Err(e) = ec2.terminate_instances(&termination_req) {
+                while let Err(e) = ec2.terminate_instances(&termination_req).sync() {
                     let msg = format!("{}", e);
                     if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
                         trace!(log, "retrying instance termination");
@@ -623,11 +639,13 @@ impl TsunamiBuilder {
             let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
             req.group_id = Some(group_id);
             ec2.delete_security_group(&req)
+                .sync()
                 .context("failed to clean up security group")?;
             trace!(log, "cleaning up temporary keypair");
             let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
             req.key_name = key_name;
             ec2.delete_key_pair(&req)
+            .sync()
             .context("failed to clean up key pair")?;
             // TODO: clean up created placement group
             */
@@ -648,7 +666,9 @@ impl TsunamiBuilder {
             all_ready = true;
             machines.clear();
 
-            for reservation in ec2.describe_instances(&desc_req)
+            for reservation in ec2
+                .describe_instances(&desc_req)
+                .sync()
                 .context("failed to cancel spot instances")?
                 .reservations
                 .unwrap_or_else(Vec::new)
@@ -735,12 +755,14 @@ impl TsunamiBuilder {
                 // 4. invoke F with Machine descriptors
                 let start = time::Instant::now();
                 info!(log, "quiet before the storm");
-                res = Some(f(machines)
-                    .context("tsunami main routine failed")
-                    .map_err(|e| {
-                        crit!(log, "main tsunami routine failed");
-                        e
-                    })?);
+                res = Some(
+                    f(machines)
+                        .context("tsunami main routine failed")
+                        .map_err(|e| {
+                            crit!(log, "main tsunami routine failed");
+                            e
+                        })?,
+                );
                 info!(log, "the power of the tsunami was unleashed"; "duration" => start.elapsed().as_secs());
             }
         } else {

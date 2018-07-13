@@ -49,7 +49,8 @@ impl Session {
     pub fn cmd_raw(&self, cmd: &str) -> Result<Vec<u8>, Error> {
         use std::io::Read;
 
-        let mut channel = self.ssh
+        let mut channel = self
+            .ssh
             .channel_session()
             .map_err(Error::from)
             .map_err(|e| {
