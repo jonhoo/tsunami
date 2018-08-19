@@ -153,6 +153,7 @@ pub struct TsunamiBuilder {
     log: slog::Logger,
     max_duration: i64,
     region: Region,
+    availability_zone: Option<String>,
     cluster: bool,
     max_wait: Option<time::Duration>,
 }
@@ -164,6 +165,7 @@ impl Default for TsunamiBuilder {
             log: slog::Logger::root(slog::Discard, o!()),
             max_duration: 60,
             region: Region::UsEast1,
+            availability_zone: None,
             cluster: true,
             max_wait: None,
         }
@@ -208,6 +210,16 @@ impl TsunamiBuilder {
     /// here](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#concepts-available-regions)
     pub fn set_region(&mut self, region: Region) {
         self.region = region;
+    }
+
+    /// Set up the machines in a specific EC2 availability zone.
+    ///
+    /// This controls the `availability_zone` field of the
+    /// [`SpotPlacement`](https://rusoto.github.io/rusoto/rusoto_ec2/struct.SpotPlacement.html)
+    /// struct (N.B.: even though the documentation claims that the parameter only affects spot
+    /// fleets, it does appear to affect *all* spot instances).
+    pub fn set_availability_zone(&mut self, zone: &str) {
+        self.availability_zone = Some(zone.to_string());
     }
 
     /// By default, all spawned instances are launched in a single [Placement
@@ -425,6 +437,7 @@ impl TsunamiBuilder {
             trace!(log, "created placement group");
 
             let mut placement = rusoto_ec2::SpotPlacement::default();
+            placement.availability_zone = self.availability_zone;
             placement.group_name = Some(placement_name);
             Some(placement)
         } else {
