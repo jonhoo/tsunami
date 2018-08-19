@@ -62,8 +62,9 @@ extern crate tempfile;
 
 use failure::{Error, ResultExt};
 use rayon::prelude::*;
-use rusoto_core::reactor::{CredentialsProvider, RequestDispatcher};
+use rusoto_core::request::HttpClient;
 use rusoto_core::Region;
+use rusoto_core::{DefaultCredentialsProvider, ProvideAwsCredentials};
 use std::collections::HashMap;
 use std::io::Write;
 use std::{thread, time};
@@ -301,7 +302,7 @@ impl TsunamiBuilder {
     where
         F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<R, Error>,
     {
-        self.run_as(CredentialsProvider::default(), f)
+        self.run_as(DefaultCredentialsProvider::new()?, f)
     }
 
     /// Spin up a tsunami batching the defined machine sets in this builder with a custom
@@ -341,7 +342,8 @@ impl TsunamiBuilder {
     /// # }
     pub fn run_as<P, F, R>(self, provider: P, f: F) -> Result<R, Error>
     where
-        P: rusoto_core::ProvideAwsCredentials + 'static,
+        P: ProvideAwsCredentials + Send + Sync + 'static,
+        <P as ProvideAwsCredentials>::Future: Send,
         F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<R, Error>,
     {
         use rusoto_ec2::Ec2;
@@ -351,7 +353,7 @@ impl TsunamiBuilder {
 
         debug!(log, "connecting to ec2");
 
-        let ec2 = rusoto_ec2::Ec2Client::new(RequestDispatcher::default(), provider, self.region);
+        let ec2 = rusoto_ec2::Ec2Client::new_with(HttpClient::new()?, provider, self.region);
 
         info!(log, "spinning up tsunami");
 
@@ -364,7 +366,7 @@ impl TsunamiBuilder {
         req.group_name = group_name;
         req.description = "temporary access group for tsunami VMs".to_string();
         let res = ec2
-            .create_security_group(&req)
+            .create_security_group(req)
             .sync()
             .context("failed to create security group for new machines")?;
         let group_id = res
@@ -382,7 +384,7 @@ impl TsunamiBuilder {
         req.cidr_ip = Some("0.0.0.0/0".to_string());
         trace!(log, "adding ssh access to security group");
         let _ = ec2
-            .authorize_security_group_ingress(&req)
+            .authorize_security_group_ingress(req.clone())
             .sync()
             .context("failed to fill in security group for new machines")?;
 
@@ -392,7 +394,7 @@ impl TsunamiBuilder {
         req.cidr_ip = Some("172.31.0.0/16".to_string());
         trace!(log, "adding internal VM access to security group");
         let _ = ec2
-            .authorize_security_group_ingress(&req)
+            .authorize_security_group_ingress(req)
             .sync()
             .context("failed to fill in security group for new machines")?;
 
@@ -403,7 +405,7 @@ impl TsunamiBuilder {
         key_name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
         req.key_name = key_name.clone();
         let res = ec2
-            .create_key_pair(&req)
+            .create_key_pair(req)
             .sync()
             .context("failed to generate new key pair")?;
         trace!(log, "created keypair"; "fingerprint" => res.key_fingerprint);
@@ -431,7 +433,7 @@ impl TsunamiBuilder {
             placement_name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
             req.group_name = placement_name.clone();
             req.strategy = String::from("cluster");
-            ec2.create_placement_group(&req)
+            ec2.create_placement_group(req)
                 .sync()
                 .context("failed to create new placement group")?;
             trace!(log, "created placement group");
@@ -474,7 +476,7 @@ impl TsunamiBuilder {
 
             trace!(log, "issuing spot request for {}", name; "#" => number);
             let res = ec2
-                .request_spot_instances(&req)
+                .request_spot_instances(req)
                 .sync()
                 .context(format!("failed to request spot instances for {}", name))?;
             let res = res
@@ -503,7 +505,7 @@ impl TsunamiBuilder {
         loop {
             trace!(log, "checking spot request status");
 
-            let res = ec2.describe_spot_instance_requests(&req).sync();
+            let res = ec2.describe_spot_instance_requests(req.clone()).sync();
             if let Err(e) = res {
                 let msg = format!("{}", e);
                 if msg.contains("The spot instance request ID") && msg.contains("does not exist") {
@@ -581,7 +583,7 @@ impl TsunamiBuilder {
                         .spot_instance_request_ids
                         .clone()
                         .expect("we set this to Some above");
-                    ec2.cancel_spot_instance_requests(&cancel)
+                    ec2.cancel_spot_instance_requests(cancel)
                         .sync()
                         .context("failed to cancel spot instances")
                         .map_err(|e| {
@@ -598,7 +600,7 @@ impl TsunamiBuilder {
                     thread::sleep(time::Duration::from_secs(1));
 
                     instances = ec2
-                        .describe_spot_instance_requests(&req)
+                        .describe_spot_instance_requests(req)
                         .sync()?
                         .spot_instance_requests
                         .map(|reqs| {
@@ -633,7 +635,7 @@ impl TsunamiBuilder {
                 debug!(log, "terminating instances");
                 let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
                 termination_req.instance_ids = mem::replace(&mut term_instances, Vec::new());
-                while let Err(e) = ec2.terminate_instances(&termination_req).sync() {
+                while let Err(e) = ec2.terminate_instances(termination_req.clone()).sync() {
                     let msg = format!("{}", e);
                     if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
                         trace!(log, "retrying instance termination");
@@ -680,7 +682,7 @@ impl TsunamiBuilder {
             machines.clear();
 
             for reservation in ec2
-                .describe_instances(&desc_req)
+                .describe_instances(desc_req.clone())
                 .sync()
                 .context("failed to cancel spot instances")?
                 .reservations

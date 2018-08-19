@@ -1,6 +1,6 @@
 [package]
 name = "tsunami"
-version = "0.6.0"
+version = "0.7.0"
 
 description = "Toolkit for running short-lived jobs on EC2 spot instances"
 readme = "README.md"
@@ -23,8 +23,8 @@ travis-ci = { repository = "jonhoo/tsunami" }
 debug = ["slog/max_level_trace", "slog/release_max_level_debug"]
 
 [dependencies]
-rusoto_core = "0.32.0"
-rusoto_ec2 = "0.32.0"
+rusoto_core = "0.33.0"
+rusoto_ec2 = "0.33.0"
 ssh2 = "0.3.2"
 failure = "0.1.1"
 rand = "0.5"
@@ -36,7 +36,7 @@ slog = "2.1.1"
 scopeguard = "0.3.3"
 
 [dev-dependencies]
-rusoto_sts = "0.32.0"
+rusoto_sts = "0.33.0"
 
 [profile.release]
 debug = true
