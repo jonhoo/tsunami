@@ -322,7 +322,7 @@ impl TsunamiBuilder {
     /// # use tsunami::{TsunamiBuilder, Machine};
     /// # use std::collections::HashMap;
     /// // https://github.com/rusoto/rusoto/blob/master/AWS-CREDENTIALS.md
-    /// let sts = rusoto_sts::StsClient::simple(rusoto_core::Region::UsEast1);
+    /// let sts = rusoto_sts::StsClient::new(rusoto_core::Region::UsEast1);
     /// let provider = rusoto_sts::StsAssumeRoleSessionCredentialsProvider::new(
     ///     sts,
     ///     "arn:aws:sts::1122334455:role/myrole".to_owned(),
