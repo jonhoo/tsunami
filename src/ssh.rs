@@ -1,5 +1,6 @@
 use failure::ResultExt;
 use failure::{Context, Error};
+use slog;
 use ssh2;
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
@@ -20,16 +21,31 @@ pub struct Session {
 }
 
 impl Session {
-    pub(crate) fn connect(username: &str, addr: SocketAddr, key: &Path) -> Result<Self, Error> {
+    pub(crate) fn connect(
+        log: &slog::Logger,
+        username: &str,
+        addr: SocketAddr,
+        key: &Path,
+        timeout: Option<Duration>,
+    ) -> Result<Self, Error> {
         // TODO: instead of max time, keep trying as long as instance is still active
         let start = Instant::now();
         let tcp = loop {
             match TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
                 Ok(s) => break s,
-                Err(_) if start.elapsed() <= Duration::from_secs(120) => {
-                    thread::sleep(Duration::from_secs(1));
+                Err(e) => {
+                    if let Some(to) = timeout {
+                        if start.elapsed() <= to {
+                            thread::sleep(Duration::from_secs(1));
+                        } else {
+                            Err(Error::from(e).context("failed to connect to ssh port"))?;
+                        }
+                    } else {
+                        if start.elapsed() > Duration::from_secs(30) {
+                            warn!(log, "still can't ssh to {}: {:?}", addr, e);
+                        }
+                    }
                 }
-                Err(e) => Err(Error::from(e).context("failed to connect to ssh port"))?,
             }
         };
 

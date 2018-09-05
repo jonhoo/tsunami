@@ -238,7 +238,10 @@ impl TsunamiBuilder {
         self.cluster = false;
     }
 
-    /// Limit how long we should wait for spot requests to be satisfied before giving up.
+    /// Limit how long we should wait for instances to be available before giving up.
+    ///
+    /// This includes both waiting for spot requests to be satisfied, and for SSH connections to be
+    /// established. Defaults to no limit.
     pub fn wait_limit(&mut self, t: time::Duration) {
         self.max_wait = Some(t);
     }
@@ -726,6 +729,7 @@ impl TsunamiBuilder {
             //    - once an instance is ready, run setup closure
             let usernames = &usernames;
             let private_key_file = &private_key_file;
+            let wait_for = self.max_wait.map(|wl| wl - start.elapsed());
             errors.par_extend(machines.par_iter_mut().flat_map(|(name, machines)| {
                 let f = &setup_fns[name];
                 machines
@@ -733,6 +737,7 @@ impl TsunamiBuilder {
                     .map(move |machine| -> Result<_, Error> {
                         use std::net::{IpAddr, SocketAddr};
                         let mut sess = ssh::Session::connect(
+                            &log,
                             &usernames[name],
                             SocketAddr::new(
                                 machine
@@ -742,6 +747,7 @@ impl TsunamiBuilder {
                                 22,
                             ),
                             private_key_file.path(),
+                            wait_for,
                         ).context(format!(
                             "failed to ssh to {} machine {}",
                             name, machine.public_dns
