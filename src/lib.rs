@@ -417,8 +417,8 @@ impl TsunamiBuilder {
         let private_key = res
             .key_material
             .expect("aws did not generate key material for new key");
-        let mut private_key_file =
-            tempfile::NamedTempFile::new().context("failed to create temporary file for keypair")?;
+        let mut private_key_file = tempfile::NamedTempFile::new()
+            .context("failed to create temporary file for keypair")?;
         private_key_file
             .write_all(private_key.as_bytes())
             .context("could not write private key to file")?;
@@ -434,8 +434,8 @@ impl TsunamiBuilder {
             let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
             let mut placement_name = String::from("tsunami_placement_");
             placement_name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
-            req.group_name = placement_name.clone();
-            req.strategy = String::from("cluster");
+            req.group_name = Some(placement_name.clone());
+            req.strategy = Some(String::from("cluster"));
             ec2.create_placement_group(req)
                 .sync()
                 .context("failed to create new placement group")?;
@@ -574,7 +574,6 @@ impl TsunamiBuilder {
                     .collect();
                 break;
             } else {
-                use std::{thread, time};
                 thread::sleep(time::Duration::from_secs(1));
             }
 
@@ -630,7 +629,7 @@ impl TsunamiBuilder {
         }
 
         let mut term_instances = instances.clone();
-        defer!{{
+        defer! {{
             use std::mem;
 
             // 5. terminate all instances
