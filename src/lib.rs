@@ -352,7 +352,7 @@ impl TsunamiBuilder {
         use rusoto_ec2::Ec2;
 
         let log = &self.log;
-        let mut rng = rand::thread_rng();
+        let rng = rand::thread_rng();
 
         debug!(log, "connecting to ec2");
 
