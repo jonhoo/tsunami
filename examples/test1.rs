@@ -1,38 +1,49 @@
 extern crate tsunami;
 
+use rusoto_core::Region;
 use std::collections::HashMap;
 use std::time;
 use tsunami::{Machine, MachineSetup, TsunamiBuilder};
 
-fn main() {
+fn main() -> Result<(), failure::Error> {
     let mut b = TsunamiBuilder::default();
     b.use_term_logger();
-    b.add_set(
-        "server",
-        1,
-        MachineSetup::new("c5.xlarge", "ami-e18aa89b", |ssh| {
-            ssh.cmd("cat /etc/hostname").map(|out| {
-                println!("{}", out);
-            })
-        }),
-    );
-    b.add_set(
-        "client",
-        3,
-        MachineSetup::new("c5.xlarge", "ami-e18aa89b", |ssh| {
-            ssh.cmd("date").map(|out| {
-                println!("{}", out);
-            })
-        }),
-    );
 
-    b.wait_limit(time::Duration::from_secs(10));
-    b.run(|vms: HashMap<String, Vec<Machine>>| {
-        println!("==> {}", vms["server"][0].private_ip);
-        for c in &vms["client"] {
-            println!(" -> {}", c.private_ip);
+    let m = MachineSetup::default()
+        .region(Region::UsEast1)
+        .setup(|ssh| {
+            ssh.cmd("sudo apt update").map(|out| {
+                println!("{}", out);
+            })
+        });
+    b.add(m);
+
+    let m = MachineSetup::default()
+        .region(Region::ApSouth1)
+        .instance_type("t3.small")
+        .setup(|ssh| {
+            ssh.cmd("sudo apt update").map(|out| {
+                println!("{}", out);
+            })
+        });
+    b.add(m);
+
+    b.wait_limit(time::Duration::from_secs(30));
+    b.run(|vms: HashMap<String, Machine>| {
+        for vm in vms.values() {
+            println!("==> IP: {}", vm.public_ip);
         }
+
+        for vm in vms.values() {
+            vm.ssh.as_ref().map(|ssh| {
+                ssh.cmd("ip addr && hostname && sleep 300").map(|out| {
+                    println!("{}", out);
+                })
+            });
+        }
+
         Ok(())
-    })
-    .unwrap();
+    })?;
+
+    Ok(())
 }
