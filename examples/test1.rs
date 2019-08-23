@@ -28,15 +28,12 @@ fn main() -> Result<(), failure::Error> {
         });
     b.add(m);
 
-    b.wait_limit(time::Duration::from_secs(30));
+    b.wait_limit(time::Duration::from_secs(60));
     b.run(|vms: HashMap<String, Machine>| {
         for vm in vms.values() {
             println!("==> IP: {}", vm.public_ip);
-        }
-
-        for vm in vms.values() {
             vm.ssh.as_ref().map(|ssh| {
-                ssh.cmd("ip addr && hostname && sleep 300").map(|out| {
+                ssh.cmd("ip addr").map(|out| {
                     println!("{}", out);
                 })
             });
