@@ -9,13 +9,13 @@ use std::io::Write;
 use std::{thread, time};
 
 pub struct AWSRegion {
-    pub region: rusoto_core::region::Region,
-    pub security_group_id: String,
-    pub ssh_key_name: String,
+    region: rusoto_core::region::Region,
+    security_group_id: String,
+    ssh_key_name: String,
     private_key_path: tempfile::NamedTempFile,
     client: rusoto_ec2::Ec2Client,
-    outstanding_spot_request_ids: HashMap<String, crate::MachineSetup>,
-    instances: HashMap<String, crate::MachineSetup>,
+    outstanding_spot_request_ids: HashMap<String, (String, crate::MachineSetup)>,
+    instances: HashMap<String, (String, crate::MachineSetup)>,
     log: slog::Logger,
 }
 
@@ -36,6 +36,10 @@ impl AWSRegion {
             .make_ssh_key()?;
 
         Ok(ec2)
+    }
+
+    pub fn region(&self) -> rusoto_core::region::Region {
+        self.region.clone()
     }
 
     fn connect<P>(
@@ -146,9 +150,9 @@ impl AWSRegion {
     pub fn make_spot_instance_requests(
         &mut self,
         max_duration: i64,
-        machines: impl IntoIterator<Item = crate::MachineSetup>,
+        machines: impl IntoIterator<Item = (String, crate::MachineSetup)>,
     ) -> Result<(), Error> {
-        for m in machines {
+        for (name, m) in machines {
             let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
             launch.image_id = Some(m.ami.clone());
             launch.instance_type = Some(m.instance_type.clone());
@@ -189,7 +193,7 @@ impl AWSRegion {
                 .next()
                 .ok_or_else(|| failure::format_err!("a"))?;
             self.outstanding_spot_request_ids
-                .insert(spot_req_id.clone(), m);
+                .insert(spot_req_id.clone(), (name, m));
         }
 
         Ok(())
@@ -361,13 +365,16 @@ impl AWSRegion {
                             ..
                         } => {
                             let mut machine = Machine {
-                                ssh: None,
                                 instance_type,
                                 private_ip,
                                 public_ip,
                                 public_dns,
+                                ..Default::default()
                             };
-                            trace!(self.log, "instance ready"; "instance_id" => instance_id.clone(), "ip" => &machine.public_ip);
+                            trace!(self.log, "instance ready";
+                                "instance_id" => instance_id.clone(),
+                                "ip" => &machine.public_ip,
+                            );
                             use std::net::{IpAddr, SocketAddr};
                             let mut sess = ssh::Session::connect(
                                 &self.log,
@@ -388,7 +395,7 @@ impl AWSRegion {
                                 e
                             })?;
 
-                            let m_setup = self.instances.get(&instance_id).unwrap();
+                            let (name, m_setup) = self.instances.get(&instance_id).unwrap();
                             match m_setup {
                                 crate::MachineSetup { setup: Some(f), .. } => {
                                     debug!(self.log, "setting up instance"; "ip" => &machine.public_ip);
@@ -410,7 +417,8 @@ impl AWSRegion {
                             }
 
                             machine.ssh = Some(sess);
-                            machines.insert(instance_id, machine);
+                            machine.nickname = name.clone();
+                            machines.insert(name.clone(), machine);
                         }
                         _ => {
                             all_ready = false;

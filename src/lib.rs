@@ -36,22 +36,22 @@ pub mod aws_region;
 use aws_region::AWSRegion;
 
 /// A handle to an instance currently running as part of a tsunami.
+#[derive(Default)]
 pub struct Machine {
-    /// An established SSH session to this host.
+    pub nickname: String,
+    pub instance_id: String,
+
+    /// If `Some(_)`, an established SSH session to this host.
     pub ssh: Option<ssh::Session>,
 
     /// AWS EC2 instance type hosting this machine.
-    ///
     /// See https://aws.amazon.com/ec2/instance-types/ for details.
     pub instance_type: String,
 
     /// The private IP address of this host on its designated VPC.
     pub private_ip: String,
 
-    /// The publicly accessible hostname of this host.
     pub public_dns: String,
-
-    /// The publicly accessible IP address of this host.
     pub public_ip: String,
 }
 
@@ -182,7 +182,7 @@ impl MachineSetup {
 /// tsunami.
 #[must_use]
 pub struct TsunamiBuilder {
-    descriptors: Vec<MachineSetup>,
+    descriptors: HashMap<String, MachineSetup>,
     log: slog::Logger,
     max_duration: i64,
     max_wait: Option<time::Duration>,
@@ -200,8 +200,8 @@ impl Default for TsunamiBuilder {
 }
 
 impl TsunamiBuilder {
-    pub fn add(&mut self, m: MachineSetup) {
-        self.descriptors.push(m);
+    pub fn add(&mut self, nickname: String, m: MachineSetup) {
+        self.descriptors.insert(nickname, m);
     }
 
     /// Limit how long we should wait for instances to be available before giving up.
@@ -260,23 +260,22 @@ impl TsunamiBuilder {
         // initialize the set of unique regions to connect to.
         let regions: Result<HashMap<String, AWSRegion>, Error> = descriptors
             .iter()
+            .map(|(_, desc)| desc.region.name())
             .unique()
-            .map(|setup| {
-                // this way we don't have to NewType Region to impl Hash on it.
-                // TODO use Region directly after https://github.com/rusoto/rusoto/pull/1487 is
-                // merged
-                let region = setup.region.clone();
-
+            .map(|region| {
                 let region_log = log.new(slog::o!("region" => format!("{:?}", region)));
                 let provider = DefaultCredentialsProvider::new()?;
-                let ec2 = AWSRegion::new(region.clone(), provider, region_log)?;
-                Ok((format!("{:?}", region), ec2))
+                let ec2 = AWSRegion::new(
+                    region.parse().expect("Didn't get valid region"),
+                    provider,
+                    region_log,
+                )?;
+                Ok((region.to_string(), ec2))
             })
             .collect();
         let mut regions = regions?; // collect can't infer the types correctly, so do this separately
 
         info!(log, "spinning up tsunami");
-
         let expected_num: u32 = descriptors.len() as u32;
 
         // 1. issue spot requests
@@ -284,14 +283,18 @@ impl TsunamiBuilder {
         // TODO: issue spot requests in parallel
 
         let mut region_map = HashMap::new();
-        for (reg_name, m) in descriptors
+        for (reg_name, (name, m)) in descriptors
             .into_iter()
-            .map(|m| (format!("{:?}", m.region.clone()), m))
+            .map(|(nickname, m)| (m.region.name().to_string(), (nickname, m)))
         {
-            region_map.entry(reg_name).or_insert_with(Vec::new).push(m);
+            region_map
+                .entry(reg_name)
+                .or_insert_with(Vec::new)
+                .push((name, m));
         }
 
         for (region, machines) in region_map {
+            trace!(log, "Spot instance requests"; "region" => &region);
             regions
                 .get_mut(&region)
                 .expect(&format!("Couldn't find region {}", region))

@@ -16,7 +16,7 @@ fn main() -> Result<(), failure::Error> {
                 println!("{}", out);
             })
         });
-    b.add(m);
+    b.add("east".into(), m);
 
     let m = MachineSetup::default()
         .region(Region::ApSouth1)
@@ -26,12 +26,12 @@ fn main() -> Result<(), failure::Error> {
                 println!("{}", out);
             })
         });
-    b.add(m);
+    b.add("india".into(), m);
 
     b.wait_limit(time::Duration::from_secs(60));
     b.run(|vms: HashMap<String, Machine>| {
-        for vm in vms.values() {
-            println!("==> IP: {}", vm.public_ip);
+        for (name, vm) in vms {
+            println!("{} ==> IP: {}", name, vm.public_ip);
             vm.ssh.as_ref().map(|ssh| {
                 ssh.cmd("ip addr").map(|out| {
                     println!("{}", out);
