@@ -380,7 +380,7 @@ impl AWSRegion {
                                     22,
                                 ),
                                 &self.private_key_path.path(),
-                                max_wait,
+                                None,
                             )
                             .context(format!("failed to ssh to machine {}", machine.public_dns))
                             .map_err(|e| {
