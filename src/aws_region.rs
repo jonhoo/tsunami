@@ -455,23 +455,27 @@ impl std::ops::Drop for AWSRegion {
             }
         }
 
-        /*
-        debug!(log, "cleaning up temporary resources");
-        trace!(log, "cleaning up temporary security group");
+        debug!(self.log, "cleaning up temporary resources");
+        trace!(self.log, "cleaning up temporary security group");
         // clean up security groups and keys
         let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
-        req.group_id = Some(group_id);
-        ec2.delete_security_group(&req)
-            .sync()
-            .context("failed to clean up security group")?;
-        trace!(log, "cleaning up temporary keypair");
+        req.group_id = Some(self.security_group_id.clone());
+        if let Err(e) = self.client.delete_security_group(req).sync() {
+            warn!(self.log, "failed to clean up temporary security group";
+                "group_id" => &self.security_group_id,
+                "error" => ?e,
+            )
+        }
+
+        trace!(self.log, "cleaning up temporary keypair");
         let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
-        req.key_name = key_name;
-        ec2.delete_key_pair(&req)
-        .sync()
-        .context("failed to clean up key pair")?;
-        // TODO: clean up created placement group
-        */
+        req.key_name = self.ssh_key_name.clone();
+        if let Err(e) = self.client.delete_key_pair(req).sync() {
+            warn!(self.log, "failed to clean up temporary SSH key";
+                "key_name" => &self.ssh_key_name,
+                "error" => ?e,
+            )
+        }
     }
 }
 
