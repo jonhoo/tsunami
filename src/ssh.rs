@@ -62,7 +62,7 @@ impl Session {
     }
 
     /// Issue the given command and return the command's raw standard output.
-    pub fn cmd_raw(&self, cmd: &str) -> Result<Vec<u8>, Error> {
+    pub fn cmd_raw(&self, cmd: &str) -> Result<(Vec<u8>, Vec<u8>), Error> {
         use std::io::Read;
 
         let mut channel = self
@@ -109,15 +109,17 @@ impl Session {
             .map_err(Error::from)
             .map_err(|e| e.context(format!("command '{}' never completed", cmd)))?;
 
-        // TODO: check channel.exit_status()
-        // TODO: return stderr as well?
-        drop(stderr);
-        Ok(stdout)
+        match channel.exit_status() {
+            Ok(x) if x == 0 => Ok((stdout, stderr)),
+            Ok(e) => bail!("SSH command '{}' failed with exit code {}", cmd, e),
+            Err(e) => Err(Error::from(e)),
+        }
     }
 
     /// Issue the given command and return the command's standard output.
-    pub fn cmd(&self, cmd: &str) -> Result<String, Error> {
-        Ok(String::from_utf8(self.cmd_raw(cmd)?)?)
+    pub fn cmd(&self, cmd: &str) -> Result<(String, String), Error> {
+        let (out, err) = self.cmd_raw(cmd)?;
+        Ok((String::from_utf8(out)?, String::from_utf8(err)?))
     }
 }
 

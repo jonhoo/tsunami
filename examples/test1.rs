@@ -12,7 +12,7 @@ fn main() -> Result<(), failure::Error> {
     let m = MachineSetup::default()
         .region(Region::UsEast1)
         .setup(|ssh| {
-            ssh.cmd("sudo apt update").map(|out| {
+            ssh.cmd("sudo apt update").map(|(out, _)| {
                 println!("{}", out);
             })
         });
@@ -22,7 +22,7 @@ fn main() -> Result<(), failure::Error> {
         .region(Region::ApSouth1)
         .instance_type("t3.small")
         .setup(|ssh| {
-            ssh.cmd("sudo apt update").map(|out| {
+            ssh.cmd("sudo apt update").map(|(out, _)| {
                 println!("{}", out);
             })
         });
@@ -33,7 +33,7 @@ fn main() -> Result<(), failure::Error> {
         for (name, vm) in vms {
             println!("{} ==> IP: {}", name, vm.public_ip);
             vm.ssh.as_ref().map(|ssh| {
-                ssh.cmd("ip addr").map(|out| {
+                ssh.cmd("ip addr").map(|(out, _)| {
                     println!("{}", out);
                 })
             });
