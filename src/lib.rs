@@ -221,7 +221,7 @@ impl TsunamiBuilder {
     /// such instances must be declared in advance (1-6 hours), and can be changed with this
     /// method.
     ///
-    /// The default duration is 1 hour.
+    /// The default duration is 6 hours.
     pub fn set_max_duration(&mut self, hours: u8) {
         self.max_duration = hours as i64 * 60;
     }
