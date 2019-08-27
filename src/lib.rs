@@ -245,7 +245,7 @@ impl TsunamiBuilder {
 
     /// When all instances are up and running, the given closure will be called with a handle to
     /// all spawned hosts. When the closure exits, the instances are all terminated automatically.
-    pub fn run<F, R>(self, f: F) -> Result<R, Error>
+    pub fn run<F, R>(self, pause: bool, f: F) -> Result<R, Error>
     where
         F: FnOnce(HashMap<String, Machine>) -> Result<R, Error>,
     {
@@ -328,16 +328,7 @@ impl TsunamiBuilder {
                     .map_err(|e| {
                         crit!(log, "main tsunami routine failed");
                         println!("{}", e);
-                        debug!(
-                            log,
-                            "pausing for manual instance inspection, press enter to continue"
-                        );
-
-                        use std::io::prelude::*;
-                        let stdin = std::io::stdin();
-                        let mut iterator = stdin.lock().lines();
-                        iterator.next().unwrap().unwrap();
-
+                        wait_for_continue(log);
                         e
                     })?,
             );
@@ -352,6 +343,22 @@ impl TsunamiBuilder {
         }
 
         debug!(log, "all done");
+        if pause {
+            wait_for_continue(log);
+        }
+
         res.ok_or_else(|| format_err!("no result from main()"))
     }
+}
+
+fn wait_for_continue(log: &slog::Logger) {
+    debug!(
+        log,
+        "pausing for manual instance inspection, press enter to continue"
+    );
+
+    use std::io::prelude::*;
+    let stdin = std::io::stdin();
+    let mut iterator = stdin.lock().lines();
+    iterator.next().unwrap().unwrap();
 }
