@@ -99,7 +99,7 @@ pub struct MachineSetup {
     region: Region,
     instance_type: String,
     ami: String,
-    setup: Option<Box<dyn Fn(&mut ssh::Session) -> Result<(), Error> + Sync>>,
+    setup: Option<Box<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Sync>>,
 }
 
 impl PartialEq for MachineSetup {
@@ -121,7 +121,7 @@ impl Default for MachineSetup {
     fn default() -> Self {
         MachineSetup {
             region: Region::UsEast1,
-            instance_type: "t3a.small".into(),
+            instance_type: "t3.small".into(),
             ami: UbuntuAmi::from(Region::UsEast1).into(),
             setup: None,
         }
@@ -161,7 +161,7 @@ impl MachineSetup {
     /// commands on the host in question.
     pub fn setup(
         mut self,
-        setup: impl Fn(&mut ssh::Session) -> Result<(), Error> + Sync + 'static,
+        setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Sync + 'static,
     ) -> Self {
         self.setup = Some(Box::new(setup));
         self
@@ -247,7 +247,7 @@ impl TsunamiBuilder {
     /// all spawned hosts. When the closure exits, the instances are all terminated automatically.
     pub fn run<F, R>(self, pause: bool, f: F) -> Result<R, Error>
     where
-        F: FnOnce(HashMap<String, Machine>) -> Result<R, Error>,
+        F: FnOnce(HashMap<String, Machine>, &slog::Logger) -> Result<R, Error>,
     {
         let TsunamiBuilder {
             descriptors,
@@ -323,7 +323,7 @@ impl TsunamiBuilder {
             let start = time::Instant::now();
             info!(log, "quiet before the storm");
             res = Some(
-                f(machines)
+                f(machines, log)
                     .context("tsunami main routine failed")
                     .map_err(|e| {
                         crit!(log, "main tsunami routine failed");

@@ -409,7 +409,7 @@ impl AWSRegion {
                             match m_setup {
                                 crate::MachineSetup { setup: Some(f), .. } => {
                                     debug!(self.log, "setting up instance"; "ip" => &machine.public_ip);
-                                    f(&mut sess)
+                                    f(&mut sess, &self.log)
                                         .context(format!(
                                             "setup procedure for {} machine failed",
                                             instance_id
