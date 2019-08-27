@@ -313,6 +313,7 @@ impl TsunamiBuilder {
             .par_iter_mut()
             .map(|(_, region)| region.wait_for_instances(max_wait))
             .collect();
+        // TODO collect all the errors, not just the first one
         let machines: HashMap<String, Machine> = machines?.into_iter().flat_map(|x| x).collect();
 
         let mut res = None;
@@ -326,6 +327,17 @@ impl TsunamiBuilder {
                     .context("tsunami main routine failed")
                     .map_err(|e| {
                         crit!(log, "main tsunami routine failed");
+                        println!("{}", e);
+                        debug!(
+                            log,
+                            "pausing for manual instance inspection, press enter to continue"
+                        );
+
+                        use std::io::prelude::*;
+                        let stdin = std::io::stdin();
+                        let mut iterator = stdin.lock().lines();
+                        iterator.next().unwrap().unwrap();
+
                         e
                     })?,
             );

@@ -417,7 +417,9 @@ impl AWSRegion {
                                         .map_err(|e| {
                                             error!(
                                                 self.log,
-                                                "setup for {} machine failed", instance_id
+                                                "machine setup failed";
+                                                "name" => name.clone(),
+                                                "ssh" => format!("ssh -i {} ubuntu@{}", &self.private_key_path.path().display(), machine.public_ip),
                                             );
                                             e
                                         })?;

@@ -1,5 +1,4 @@
-use failure::ResultExt;
-use failure::{Context, Error};
+use failure::{Context, Error, ResultExt};
 use slog;
 use ssh2;
 use std::net::{SocketAddr, TcpStream};
@@ -111,7 +110,21 @@ impl Session {
 
         match channel.exit_status() {
             Ok(x) if x == 0 => Ok((stdout, stderr)),
-            Ok(e) => bail!("SSH command '{}' failed with exit code {}", cmd, e),
+            Ok(e) => {
+                let stdout_str =
+                    String::from_utf8(stdout).unwrap_or_else(|_| String::from("malformed stdout"));
+                let stderr_str =
+                    String::from_utf8(stderr).unwrap_or_else(|_| String::from("malformed stderr"));
+
+                Err(
+                    format_err!("SSH command '{}' failed with exit code {}", cmd, e)
+                        .context(format!(
+                            "stdout:\n{}\n\nstderr:\n{}",
+                            stdout_str, stderr_str
+                        ))
+                        .into(),
+                )
+            }
             Err(e) => Err(Error::from(e)),
         }
     }
