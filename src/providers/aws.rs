@@ -2,11 +2,132 @@ use crate::ssh;
 use crate::Machine;
 use failure::{Error, ResultExt};
 use rusoto_core::request::HttpClient;
-use rusoto_core::ProvideAwsCredentials;
+use rusoto_core::{ProvideAwsCredentials, Region};
 use rusoto_ec2::Ec2;
 use std::collections::HashMap;
 use std::io::Write;
 use std::{thread, time};
+
+struct UbuntuAmi(String);
+
+impl From<Region> for UbuntuAmi {
+    fn from(r: Region) -> Self {
+        // https://cloud-images.ubuntu.com/locator/
+        // ec2 20190814 releases
+        UbuntuAmi(
+            match r {
+                Region::ApEast1 => "ami-e0ff8491",
+                Region::ApNortheast1 => "ami-0cb1c8cab7f5249b6",
+                Region::ApNortheast2 => "ami-081626bfb3fbc9f49",
+                Region::ApSouth1 => "ami-0cf8402efdb171312",
+                Region::ApSoutheast1 => "ami-099d318f80eab7e94",
+                Region::ApSoutheast2 => "ami-08a648fb5cc86fb74",
+                Region::CaCentral1 => "ami-0bc1dd4eb012a451e",
+                Region::EuCentral1 => "ami-0cdab515472ca0bac",
+                Region::EuNorth1 => "ami-c37bf0bd",
+                Region::EuWest1 => "ami-01cca82393e531118",
+                Region::EuWest2 => "ami-0a7c91b6616d113b1",
+                Region::EuWest3 => "ami-033e0056c336ecff0",
+                Region::SaEast1 => "ami-094c359b4d8c6a8ca",
+                Region::UsEast1 => "ami-064a0193585662d74",
+                Region::UsEast2 => "ami-021b7b04f1ac696c2",
+                Region::UsWest1 => "ami-056d04da775d124d7",
+                Region::UsWest2 => "ami-09a3d8a7177216dcf",
+                x => panic!("Unsupported Region {:?}", x),
+            }
+            .into(),
+        )
+    }
+}
+
+impl Into<String> for UbuntuAmi {
+    fn into(self) -> String {
+        self.0
+    }
+}
+
+/// A template for a particular machine setup in a tsunami.
+/// Define a new template for a tsunami machine setup.
+pub struct MachineSetup {
+    region: Region,
+    instance_type: String,
+    ami: String,
+    setup: Option<Box<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Sync>>,
+}
+
+impl super::MachineSetup for MachineSetup {
+    type Region = String;
+
+    fn region(&self) -> Self::Region {
+        self.region.name().to_string()
+    }
+}
+
+impl PartialEq for MachineSetup {
+    fn eq(&self, other: &Self) -> bool {
+        self.ami == other.ami && self.instance_type == other.instance_type
+    }
+}
+
+impl Eq for MachineSetup {}
+
+impl std::hash::Hash for MachineSetup {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.instance_type.hash(state);
+        self.ami.hash(state);
+    }
+}
+
+impl Default for MachineSetup {
+    fn default() -> Self {
+        MachineSetup {
+            region: Region::UsEast1,
+            instance_type: "t3.small".into(),
+            ami: UbuntuAmi::from(Region::UsEast1).into(),
+            setup: None,
+        }
+    }
+}
+
+impl MachineSetup {
+    /// Set up the machine in a specific EC2
+    /// [`Region`](http://rusoto.github.io/rusoto/rusoto_core/region/enum.Region.html).
+    ///
+    /// The default region is us-east-1. [Available regions are listed
+    /// here](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#concepts-available-regions)
+    /// AMIs are region-specific. This will overwrite the ami field to
+    /// the Ubuntu 18.04 LTS AMI in the selected region.
+    pub fn region(mut self, region: Region) -> Self {
+        self.region = region.clone();
+        self.ami = UbuntuAmi::from(region).into();
+        self
+    }
+
+    /// The given AWS EC2 instance type will be used. Note that only [EC2 Defined Duration Spot
+    /// Instance types](https://aws.amazon.com/ec2/spot/pricing/) are allowed.
+    pub fn instance_type(mut self, typ: impl std::string::ToString) -> Self {
+        self.instance_type = typ.to_string();
+        self
+    }
+
+    /// The new instance will start out in the state dictated by the Amazon Machine Image specified
+    /// in `ami`. Default is Ubuntu 18.04 LTS.
+    pub fn ami(mut self, ami: impl std::string::ToString) -> Self {
+        self.ami = ami.to_string();
+        self
+    }
+
+    /// The `setup` argument is called once for every spawned instances of this type with a handle
+    /// to the target machine. Use [`Machine::ssh`](struct.Machine.html#structfield.ssh) to issue
+    /// commands on the host in question.
+    pub fn setup(
+        mut self,
+        setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Sync + 'static,
+    ) -> Self {
+        self.setup = Some(Box::new(setup));
+        self
+    }
+}
 
 pub struct AWSRegion {
     region: rusoto_core::region::Region,
@@ -14,32 +135,56 @@ pub struct AWSRegion {
     ssh_key_name: String,
     private_key_path: tempfile::NamedTempFile,
     client: rusoto_ec2::Ec2Client,
-    outstanding_spot_request_ids: HashMap<String, (String, crate::MachineSetup)>,
-    instances: HashMap<String, (String, crate::MachineSetup)>,
+    outstanding_spot_request_ids: HashMap<String, (String, MachineSetup)>,
+    instances: HashMap<String, (String, MachineSetup)>,
     log: slog::Logger,
 }
 
 unsafe impl Send for AWSRegion {}
 
+impl super::Launcher for AWSRegion {
+    type Region = String;
+    type Machine = MachineSetup;
+
+    fn region(&self) -> Self::Region {
+        self.region.name().to_string()
+    }
+
+    fn init_instances(
+        &mut self,
+        max_instance_duration: Option<time::Duration>,
+        max_wait: Option<time::Duration>,
+        machines: impl IntoIterator<Item = (String, Self::Machine)>,
+    ) -> Result<HashMap<String, crate::Machine>, Error> {
+        self.make_spot_instance_requests(
+            max_instance_duration
+                .map(|x| (x.as_secs() / 60) as i64)
+                .unwrap_or_else(|| 360),
+            machines,
+        )?;
+
+        let start = time::Instant::now();
+        self.wait_for_spot_instance_requests(max_wait)?;
+        if let Some(mut d) = max_wait {
+            d -= time::Instant::now().duration_since(start);
+        }
+
+        self.wait_for_instances(max_wait)
+    }
+}
+
 impl AWSRegion {
-    pub fn new<P>(
-        region: rusoto_core::region::Region,
-        provider: P,
-        log: slog::Logger,
-    ) -> Result<Self, Error>
+    pub fn new<P>(region: &str, provider: P, log: slog::Logger) -> Result<Self, Error>
     where
         P: ProvideAwsCredentials + Send + Sync + 'static,
         <P as ProvideAwsCredentials>::Future: Send,
     {
+        let region = region.parse()?;
         let ec2 = AWSRegion::connect(region, provider, log)?
             .make_security_group()?
             .make_ssh_key()?;
 
         Ok(ec2)
-    }
-
-    pub fn region(&self) -> rusoto_core::region::Region {
-        self.region.clone()
     }
 
     fn connect<P>(
@@ -160,7 +305,7 @@ impl AWSRegion {
     pub fn make_spot_instance_requests(
         &mut self,
         max_duration: i64,
-        machines: impl IntoIterator<Item = (String, crate::MachineSetup)>,
+        machines: impl IntoIterator<Item = (String, MachineSetup)>,
     ) -> Result<(), Error> {
         for (name, m) in machines {
             let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
@@ -368,15 +513,11 @@ impl AWSRegion {
                         rusoto_ec2::Instance {
                             state: Some(rusoto_ec2::InstanceState { code: Some(16), .. }),
                             instance_id: Some(instance_id),
-                            instance_type: Some(instance_type),
-                            private_ip_address: Some(private_ip),
                             public_dns_name: Some(public_dns),
                             public_ip_address: Some(public_ip),
                             ..
                         } => {
                             let mut machine = Machine {
-                                instance_type,
-                                private_ip,
                                 public_ip,
                                 public_dns,
                                 ..Default::default()
@@ -407,12 +548,12 @@ impl AWSRegion {
 
                             let (name, m_setup) = self.instances.get(&instance_id).unwrap();
                             match m_setup {
-                                crate::MachineSetup { setup: Some(f), .. } => {
+                                MachineSetup { setup: Some(f), .. } => {
                                     debug!(self.log, "setting up instance"; "ip" => &machine.public_ip);
                                     f(&mut sess, &self.log)
                                         .context(format!(
                                             "setup procedure for {} machine failed",
-                                            instance_id
+                                            name
                                         ))
                                         .map_err(|e| {
                                             error!(
@@ -423,7 +564,7 @@ impl AWSRegion {
                                             );
                                             e
                                         })?;
-                                    info!(self.log, "finished setting up {} instance", instance_id; "ip" => &machine.public_ip);
+                                    info!(self.log, "finished setting up {} instance", name; "ip" => &machine.public_ip);
                                 }
                                 _ => {}
                             }
