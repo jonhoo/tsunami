@@ -23,8 +23,12 @@ pub trait Launcher {
 pub mod aws;
 use aws::AWSRegion;
 
+pub mod baremetal;
+use baremetal::Machine;
+
 pub enum Provider {
     AWS(AWSRegion),
+    Bare(Machine),
 }
 
 unsafe impl Send for Provider {}
@@ -36,6 +40,7 @@ impl Launcher for Provider {
     fn region(&self) -> Self::Region {
         match self {
             Provider::AWS(x) => x.region(),
+            Provider::Bare(x) => x.region(),
         }
     }
 
@@ -49,6 +54,14 @@ impl Launcher for Provider {
             Provider::AWS(x) => {
                 let ms = machines.into_iter().map(|(s, m)| match m {
                     Setup::AWS(a) => (s, a),
+                    _ => unreachable!(),
+                });
+                x.init_instances(max_instance_duration, max_wait, ms)
+            }
+            Provider::Bare(x) => {
+                let ms = machines.into_iter().map(|(s, m)| match m {
+                    Setup::Bare(a) => (s, a),
+                    _ => unreachable!(),
                 });
                 x.init_instances(max_instance_duration, max_wait, ms)
             }
@@ -58,6 +71,7 @@ impl Launcher for Provider {
 
 pub enum Setup {
     AWS(aws::MachineSetup),
+    Bare(baremetal::Setup),
 }
 
 unsafe impl Send for Setup {}
@@ -67,6 +81,7 @@ impl MachineSetup for Setup {
     fn region(&self) -> Self::Region {
         match self {
             Setup::AWS(x) => format!("aws:{}", x.region()),
+            Setup::Bare(x) => x.region(),
         }
     }
 }
@@ -79,6 +94,7 @@ impl Setup {
                 let ec2 = AWSRegion::new(&x.region(), provider, log)?;
                 Ok(Provider::AWS(ec2))
             }
+            Setup::Bare(_) => Ok(Provider::Bare(Machine { log })),
         }
     }
 }
