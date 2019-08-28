@@ -7,7 +7,8 @@ pub struct Setup {
     addr: std::net::SocketAddr,
     username: String,
     key_path: Option<std::path::PathBuf>,
-    setup_fn: Option<Box<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Sync>>,
+    setup_fn:
+        Option<Box<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
 }
 
 impl super::MachineSetup for Setup {
@@ -53,7 +54,7 @@ impl Setup {
 
     pub fn setup(
         self,
-        setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Sync + 'static,
+        setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
     ) -> Self {
         Self {
             setup_fn: Some(Box::new(setup)),
@@ -65,8 +66,6 @@ impl Setup {
 pub struct Machine {
     pub log: slog::Logger,
 }
-
-unsafe impl Send for Machine {}
 
 impl super::Launcher for Machine {
     type Region = String;

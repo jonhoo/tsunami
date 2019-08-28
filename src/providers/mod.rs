@@ -31,8 +31,6 @@ pub enum Provider {
     Bare(Machine),
 }
 
-unsafe impl Send for Provider {}
-
 impl Launcher for Provider {
     type Region = String;
     type Machine = Setup;
@@ -73,8 +71,6 @@ pub enum Setup {
     AWS(aws::MachineSetup),
     Bare(baremetal::Setup),
 }
-
-unsafe impl Send for Setup {}
 
 impl MachineSetup for Setup {
     type Region = String;

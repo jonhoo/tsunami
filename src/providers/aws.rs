@@ -52,7 +52,7 @@ pub struct MachineSetup {
     region: Region,
     instance_type: String,
     ami: String,
-    setup: Option<Box<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Sync>>,
+    setup: Option<Box<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
 }
 
 impl super::MachineSetup for MachineSetup {
@@ -122,7 +122,7 @@ impl MachineSetup {
     /// commands on the host in question.
     pub fn setup(
         mut self,
-        setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Sync + 'static,
+        setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
     ) -> Self {
         self.setup = Some(Box::new(setup));
         self
@@ -139,8 +139,6 @@ pub struct AWSRegion {
     instances: HashMap<String, (String, MachineSetup)>,
     log: slog::Logger,
 }
-
-unsafe impl Send for AWSRegion {}
 
 impl super::Launcher for AWSRegion {
     type Region = String;
