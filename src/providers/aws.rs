@@ -535,7 +535,7 @@ impl AWSRegion {
                                         .context("machine ip is not an ip address")?,
                                     22,
                                 ),
-                                &self.private_key_path.path(),
+                                Some(&self.private_key_path.path()),
                                 None,
                             )
                             .context(format!("failed to ssh to machine {}", machine.public_dns))
@@ -641,17 +641,11 @@ impl std::ops::Drop for AWSRegion {
 #[cfg(test)]
 mod test {
     use super::AWSRegion;
+    use crate::test::test_logger;
     use failure::{Error, ResultExt};
     use rusoto_core::region::Region;
     use rusoto_core::DefaultCredentialsProvider;
     use rusoto_ec2::Ec2;
-
-    fn test_logger() -> slog::Logger {
-        use slog::Drain;
-        let plain = slog_term::PlainSyncDecorator::new(slog_term::TestStdoutWriter);
-        let drain = slog_term::FullFormat::new(plain).build().fuse();
-        slog::Logger::root(drain, o!())
-    }
 
     #[test]
     fn make_key() -> Result<(), Error> {

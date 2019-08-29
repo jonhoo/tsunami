@@ -225,3 +225,13 @@ fn wait_for_continue(log: &slog::Logger) {
     let mut iterator = stdin.lock().lines();
     iterator.next().unwrap().unwrap();
 }
+
+#[cfg(test)]
+mod test {
+    pub fn test_logger() -> slog::Logger {
+        use slog::Drain;
+        let plain = slog_term::PlainSyncDecorator::new(slog_term::TestStdoutWriter);
+        let drain = slog_term::FullFormat::new(plain).build().fuse();
+        slog::Logger::root(drain, o!())
+    }
+}

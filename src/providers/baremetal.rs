@@ -33,7 +33,17 @@ impl std::hash::Hash for Setup {
 }
 
 impl Setup {
-    pub fn new(addr: impl std::net::ToSocketAddrs, username: String) -> Result<Self, Error> {
+    pub fn new(
+        addr: impl std::net::ToSocketAddrs,
+        username: Option<String>,
+    ) -> Result<Self, Error> {
+        let username: Result<String, Error> = username.map(Ok).unwrap_or_else(|| {
+            Ok(String::from_utf8(
+                std::process::Command::new("whoami").output()?.stdout,
+            )?)
+        });
+        let username = username?;
+
         Ok(Self {
             username,
             addr: addr
@@ -88,10 +98,7 @@ impl super::Launcher for Machine {
                     &self.log,
                     &setup.username,
                     setup.addr,
-                    setup
-                        .key_path
-                        .as_ref()
-                        .unwrap_or(&std::path::Path::new("~/.ssh/id_rsa").to_path_buf()),
+                    setup.key_path.as_ref().map(|p| p.as_path()),
                     max_wait,
                 )
                 .map_err(|e| {
@@ -130,3 +137,35 @@ impl super::Launcher for Machine {
             .collect()
     }
 }
+
+// TODO not working due to some ssh-agent bug:
+// ---- providers::baremetal::test::localhost stdout ----
+// Aug 29 18:59:42.375 TRCE agent identity failed, err: Error { code: -18, msg: "Username/PublicKey
+// combination invalid" }, identity: /Users/akshay/.ssh/id_rsa, username: akshay
+//
+// Aug 29 18:59:42.375 ERRO failed to ssh to [::1]:22
+// Error: ErrorMessage { msg: "failed to authenticate ssh session with ssh-agent" }
+/*
+#[cfg(test)]
+mod test {
+    use crate::providers::Launcher;
+    use failure::Error;
+
+    #[test]
+    fn localhost() -> Result<(), Error> {
+        let s = super::Setup::new("localhost:22", None)?;
+        let mut m = super::Machine {
+            log: crate::test::test_logger(),
+        };
+        let ms = m.init_instances(None, None, vec![(String::from("self"), s)])?;
+        ms.get("self")
+            .unwrap()
+            .ssh
+            .as_ref()
+            .unwrap()
+            .cmd("ls")
+            .unwrap();
+        Ok(())
+    }
+}
+*/

@@ -20,11 +20,11 @@ pub struct Session {
 }
 
 impl Session {
-    pub(crate) fn connect(
+    pub fn connect(
         log: &slog::Logger,
         username: &str,
         addr: SocketAddr,
-        key: &Path,
+        key: Option<&Path>,
         timeout: Option<Duration>,
     ) -> Result<Self, Error> {
         // TODO: instead of max time, keep trying as long as instance is still active
@@ -51,8 +51,27 @@ impl Session {
         let mut sess = ssh2::Session::new().ok_or(Context::new("libssh2 not available"))?;
         sess.handshake(&tcp)
             .context("failed to perform ssh handshake")?;
-        sess.userauth_pubkey_file(username, None, key, None)
-            .context("failed to authenticate ssh session")?;
+        if let Some(key) = key {
+            sess.userauth_pubkey_file(username, None, key, None)
+                .context("failed to authenticate ssh session with key")?;
+        } else {
+            // TODO doesn't work, see crate::providers::baremetal::test
+            let mut ag = sess.agent()?;
+            ag.connect().context("could not connect to ssh-agent")?;
+            ag.list_identities()
+                .context("could not list ssh-agent identities")?;
+            let ok = ag.identities().flat_map(|x| x).any(|id| {
+                ag.userauth(username, &id)
+                    .map_err(|e| {
+                        trace!(log, "agent identity failed"; "username" => username,  "identity" => id.comment(), "err" => ?e);
+                        e
+                    })
+                    .is_ok()
+            });
+            if !ok {
+                bail!("failed to authenticate ssh session with ssh-agent");
+            }
+        }
 
         Ok(Session {
             ssh: sess,
