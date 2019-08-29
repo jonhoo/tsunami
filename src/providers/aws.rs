@@ -16,23 +16,23 @@ impl From<Region> for UbuntuAmi {
         // ec2 20190814 releases
         UbuntuAmi(
             match r {
-                Region::ApEast1 => "ami-e0ff8491",
-                Region::ApNortheast1 => "ami-0cb1c8cab7f5249b6",
-                Region::ApNortheast2 => "ami-081626bfb3fbc9f49",
-                Region::ApSouth1 => "ami-0cf8402efdb171312",
-                Region::ApSoutheast1 => "ami-099d318f80eab7e94",
-                Region::ApSoutheast2 => "ami-08a648fb5cc86fb74",
-                Region::CaCentral1 => "ami-0bc1dd4eb012a451e",
-                Region::EuCentral1 => "ami-0cdab515472ca0bac",
-                Region::EuNorth1 => "ami-c37bf0bd",
-                Region::EuWest1 => "ami-01cca82393e531118",
-                Region::EuWest2 => "ami-0a7c91b6616d113b1",
-                Region::EuWest3 => "ami-033e0056c336ecff0",
-                Region::SaEast1 => "ami-094c359b4d8c6a8ca",
-                Region::UsEast1 => "ami-064a0193585662d74",
-                Region::UsEast2 => "ami-021b7b04f1ac696c2",
-                Region::UsWest1 => "ami-056d04da775d124d7",
-                Region::UsWest2 => "ami-09a3d8a7177216dcf",
+                Region::ApEast1 => "ami-e0ff8491",               // Hong Kong
+                Region::ApNortheast1 => "ami-0cb1c8cab7f5249b6", // Tokyo
+                Region::ApNortheast2 => "ami-081626bfb3fbc9f49", // Seoul
+                Region::ApSouth1 => "ami-0cf8402efdb171312",     // Mumbai
+                Region::ApSoutheast1 => "ami-099d318f80eab7e94", // Singapore
+                Region::ApSoutheast2 => "ami-08a648fb5cc86fb74", // Sydney
+                Region::CaCentral1 => "ami-0bc1dd4eb012a451e",   // Canada
+                Region::EuCentral1 => "ami-0cdab515472ca0bac",   // Frankfurt
+                Region::EuNorth1 => "ami-c37bf0bd",              // Stockholm
+                Region::EuWest1 => "ami-01cca82393e531118",      // Ireland
+                Region::EuWest2 => "ami-0a7c91b6616d113b1",      // London
+                Region::EuWest3 => "ami-033e0056c336ecff0",      // Paris
+                Region::SaEast1 => "ami-094c359b4d8c6a8ca",      // Sao Paulo
+                Region::UsEast1 => "ami-064a0193585662d74",      // N Virginia
+                Region::UsEast2 => "ami-021b7b04f1ac696c2",      // Ohio
+                Region::UsWest1 => "ami-056d04da775d124d7",      // N California
+                Region::UsWest2 => "ami-09a3d8a7177216dcf",      // Oregon
                 x => panic!("Unsupported Region {:?}", x),
             }
             .into(),
