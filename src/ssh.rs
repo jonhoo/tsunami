@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 /// To execute a command and get its `STDOUT` output, use
 /// [`Session#cmd`](struct.Session.html#method.cmd).
 pub struct Session {
+    addr: SocketAddr,
     ssh: ssh2::Session,
     _stream: TcpStream,
 }
@@ -35,13 +36,14 @@ impl Session {
                 Err(e) => {
                     if let Some(to) = timeout {
                         if start.elapsed() <= to {
+                            warn!(log, "still can't ssh to {}", addr);
                             thread::sleep(Duration::from_secs(1));
                         } else {
                             Err(Error::from(e).context("failed to connect to ssh port"))?;
                         }
                     } else {
                         if start.elapsed() > Duration::from_secs(30) {
-                            warn!(log, "still can't ssh to {}: {:?}", addr, e);
+                            Err(Error::from(e).context("failed to connect to ssh port"))?;
                         }
                     }
                 }
@@ -74,6 +76,7 @@ impl Session {
         }
 
         Ok(Session {
+            addr,
             ssh: sess,
             _stream: tcp,
         })

@@ -189,7 +189,7 @@ impl TsunamiBuilder {
                     .context("tsunami main routine failed")
                     .map_err(|e| {
                         crit!(log, "main tsunami routine failed");
-                        println!("{}", e);
+                        println!("{:?}", e);
                         wait_for_continue(log);
                         e
                     })?,
