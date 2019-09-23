@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 /// To execute a command and get its `STDOUT` output, use
 /// [`Session#cmd`](struct.Session.html#method.cmd).
 pub struct Session {
-    addr: SocketAddr,
+    pub addr: SocketAddr,
     ssh: ssh2::Session,
     _stream: TcpStream,
 }

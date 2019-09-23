@@ -213,12 +213,9 @@ impl AWSRegion {
     fn make_security_group(mut self) -> Result<Self, Error> {
         let log = &self.log;
         let ec2 = &mut self.client;
-        use rand::Rng;
-        let rng = rand::thread_rng();
 
         // set up network firewall for machines
-        let mut group_name = String::from("tsunami_security_");
-        group_name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
+        let group_name = super::rand_name("security");
         trace!(log, "creating security group"; "name" => &group_name);
         let mut req = rusoto_ec2::CreateSecurityGroupRequest::default();
         req.group_name = group_name;
@@ -271,14 +268,11 @@ impl AWSRegion {
     fn make_ssh_key(mut self) -> Result<Self, Error> {
         let log = &self.log;
         let ec2 = &mut self.client;
-        use rand::Rng;
-        let rng = rand::thread_rng();
 
         // construct keypair for ssh access
         trace!(log, "creating keypair");
         let mut req = rusoto_ec2::CreateKeyPairRequest::default();
-        let mut key_name = String::from("tsunami_key_");
-        key_name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
+        let key_name = super::rand_name("key");
         req.key_name = key_name.clone();
         let res = ec2
             .create_key_pair(req)
