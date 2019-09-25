@@ -1,6 +1,6 @@
 use failure::bail;
 use structopt::StructOpt;
-use tsunami::providers::Setup;
+use tsunami::providers::Launcher;
 use tsunami::TsunamiBuilder;
 
 #[derive(Debug)]
@@ -29,33 +29,48 @@ struct Opt {
     region: String,
 }
 
+fn wait_for_continue(log: &slog::Logger) {
+    slog::debug!(
+        log,
+        "pausing for manual instance inspection, press enter to continue"
+    );
+
+    use std::io::prelude::*;
+    let stdin = std::io::stdin();
+    let mut iterator = stdin.lock().lines();
+    iterator.next().unwrap().unwrap();
+}
+
+fn launch_and_wait<L: Launcher>(b: TsunamiBuilder<L>) -> Result<(), failure::Error> {
+    let ts = b.spawn()?;
+    wait_for_continue(ts.logger());
+    Ok(())
+}
+
 // just launch an instance in the specified region and wait.
 fn main() -> Result<(), failure::Error> {
     let opt = Opt::from_args();
 
-    let mut b = TsunamiBuilder::default();
-    b.use_term_logger();
-
     match opt.provider {
         Providers::AWS => {
+            let mut b = TsunamiBuilder::default();
+            b.use_term_logger();
             let m = tsunami::providers::aws::MachineSetup::default()
                 .region(opt.region.parse()?)
                 .instance_type("t3.medium");
 
-            b.add(String::from("machine"), Setup::AWS(m));
+            b.add(String::from("machine"), m);
+            launch_and_wait::<tsunami::providers::aws::AWSRegion>(b)?;
         }
         Providers::Azure => {
+            let mut b = TsunamiBuilder::default();
+            b.use_term_logger();
             let m = tsunami::providers::azure::Setup::default().region(opt.region.parse()?);
 
-            b.add(String::from("machine"), Setup::Azure(m));
+            b.add(String::from("machine"), m);
+            launch_and_wait::<tsunami::providers::azure::AzureRegion>(b)?;
         }
     }
-
-    b.run(true, |_, _| {
-        println!("launched");
-        Ok(())
-    })
-    .unwrap();
 
     Ok(())
 }

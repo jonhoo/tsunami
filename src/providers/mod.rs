@@ -1,26 +1,34 @@
 use failure::Error;
-use rusoto_core::DefaultCredentialsProvider;
 use std::collections::HashMap;
 
 /// This is used to group machines into connections
 /// to cloud providers. e.g., for AWS we need a separate
 /// connection to each region.
 pub trait MachineSetup {
-    type Region: Eq + std::hash::Hash;
+    type Region: Eq + std::hash::Hash + Clone + std::string::ToString;
     fn region(&self) -> Self::Region;
 }
 
-pub trait Launcher {
-    type Region: Eq + std::hash::Hash;
-    type Machine: MachineSetup<Region = Self::Region>;
+/// Implement this trait to implement a new cloud provider for Tsunami.
+/// Tsunami will call `init_instances` once per unique region, as defined by `MachineSetup`.
+pub trait Launcher: Drop + Send + Sync + Sized {
+    type Region: Send + Eq + std::hash::Hash + Clone + std::string::ToString;
+    type Machine: MachineSetup<Region = Self::Region> + Send;
 
+    fn init(log: slog::Logger, r: Self::Region) -> Result<Self, Error>;
     fn region(&self) -> Self::Region;
+
+    /// Spawn the instances. Implementors should remember enough information to subsequently answer
+    /// calls to `connect_instances`, i.e., the IPs of the machines.
     fn init_instances(
         &mut self,
         max_instance_duration: Option<std::time::Duration>,
         max_wait: Option<std::time::Duration>,
         machines: impl IntoIterator<Item = (String, Self::Machine)>,
-    ) -> Result<HashMap<String, crate::Machine>, Error>;
+    ) -> Result<(), Error>;
+
+    /// Return connections to the [`Machine`s](crate::Machine) that `init_instances` spawned.
+    fn connect_instances<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error>;
 }
 
 struct Sep(&'static str);
@@ -53,93 +61,5 @@ fn rand_name_sep(prefix: &str, sep: impl Into<Sep>) -> String {
 }
 
 pub mod aws;
-use aws::AWSRegion;
-
-pub mod baremetal;
-use baremetal::Machine;
-
 pub mod azure;
-
-pub enum Provider {
-    AWS(AWSRegion),
-    Azure(azure::AzureRegion),
-    Bare(Machine),
-}
-
-impl Launcher for Provider {
-    type Region = String;
-    type Machine = Setup;
-
-    fn region(&self) -> Self::Region {
-        match self {
-            Provider::AWS(x) => x.region(),
-            Provider::Azure(x) => format!("az:{}", x.region().to_string()),
-            Provider::Bare(x) => x.region(),
-        }
-    }
-
-    fn init_instances(
-        &mut self,
-        max_instance_duration: Option<std::time::Duration>,
-        max_wait: Option<std::time::Duration>,
-        machines: impl IntoIterator<Item = (String, Self::Machine)>,
-    ) -> Result<HashMap<String, crate::Machine>, Error> {
-        match self {
-            Provider::AWS(x) => {
-                let ms = machines.into_iter().map(|(s, m)| match m {
-                    Setup::AWS(a) => (s, a),
-                    _ => unreachable!(),
-                });
-                x.init_instances(max_instance_duration, max_wait, ms)
-            }
-            Provider::Azure(x) => {
-                let ms = machines.into_iter().map(|(s, m)| match m {
-                    Setup::Azure(a) => (s, a),
-                    _ => unreachable!(),
-                });
-                x.init_instances(max_instance_duration, max_wait, ms)
-            }
-            Provider::Bare(x) => {
-                let ms = machines.into_iter().map(|(s, m)| match m {
-                    Setup::Bare(a) => (s, a),
-                    _ => unreachable!(),
-                });
-                x.init_instances(max_instance_duration, max_wait, ms)
-            }
-        }
-    }
-}
-
-pub enum Setup {
-    AWS(aws::MachineSetup),
-    Azure(azure::Setup),
-    Bare(baremetal::Setup),
-}
-
-impl MachineSetup for Setup {
-    type Region = String;
-    fn region(&self) -> Self::Region {
-        match self {
-            Setup::AWS(x) => format!("aws:{}", x.region()),
-            Setup::Azure(x) => format!("az:{}", x.region().to_string()),
-            Setup::Bare(x) => x.region(),
-        }
-    }
-}
-
-impl Setup {
-    pub fn init_provider(&self, log: slog::Logger) -> Result<Provider, Error> {
-        match self {
-            Setup::AWS(x) => {
-                let provider = DefaultCredentialsProvider::new()?;
-                let ec2 = AWSRegion::new(&x.region(), provider, log)?;
-                Ok(Provider::AWS(ec2))
-            }
-            Setup::Azure(x) => {
-                let az = azure::AzureRegion::new(&x.region().to_string(), log)?;
-                Ok(Provider::Azure(az))
-            }
-            Setup::Bare(_) => Ok(Provider::Bare(Machine { log })),
-        }
-    }
-}
+pub mod baremetal;

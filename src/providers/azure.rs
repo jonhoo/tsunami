@@ -2,7 +2,6 @@ use crate::ssh;
 use failure::{bail, Error, ResultExt};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Region {
@@ -244,6 +243,7 @@ mod azcmd {
     }
 }
 
+/// A descriptor for a single Azure VM type. Only UbuntuLTS VMs are supported.
 pub struct Setup {
     region: Region,
     instance_type: String,
@@ -274,6 +274,8 @@ impl Setup {
         Self { region: r, ..self }
     }
 
+    /// To view the available sizes in the relevant region, use:
+    /// `az vm list-sizes -l <region_name>`.
     pub fn instance_type(self, inst_type: String) -> Result<Self, Error> {
         if azcmd::available_instances_in_region(self.region)?
             .iter()
@@ -292,6 +294,9 @@ impl Setup {
         }
     }
 
+    /// The `setup` argument is called once for every spawned instances of this type with a handle
+    /// to the target machine. Use [`Machine::ssh`](struct.Machine.html#structfield.ssh) to issue
+    /// commands on the host in question.
     pub fn setup(
         mut self,
         setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
@@ -301,10 +306,21 @@ impl Setup {
     }
 }
 
+struct Descriptor {
+    name: String,
+    ip: String,
+}
+
+/// This implementation relies on the [Azure
+/// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest). 
+///
+/// It also assumes you have previously run `az login` to authenticate with Microsoft.
+#[derive(Default)]
 pub struct AzureRegion {
-    pub log: slog::Logger,
+    pub log: Option<slog::Logger>,
     pub region: Region,
     resource_group_name: String,
+    machines: Vec<Descriptor>,
 }
 
 impl AzureRegion {
@@ -315,9 +331,10 @@ impl AzureRegion {
         azcmd::create_resource_group(region, &rg_name)?;
 
         Ok(Self {
-            log,
+            log: Some(log),
             region,
             resource_group_name: rg_name,
+            machines: vec![],
         })
     }
 }
@@ -330,17 +347,23 @@ impl super::Launcher for AzureRegion {
         self.region
     }
 
+    fn init(log: slog::Logger, r: Self::Region) -> Result<Self, Error> {
+        Self::new(&r.to_string(), log)
+    }
+
     fn init_instances(
         &mut self,
         _max_instance_duration: Option<std::time::Duration>,
         _max_wait: Option<std::time::Duration>,
         machines: impl IntoIterator<Item = (String, Self::Machine)>,
-    ) -> Result<HashMap<String, crate::Machine>, Error> {
+    ) -> Result<(), Error> {
+        let log = self.log.as_ref().expect("AzureRegion uninitialized");
+        self.machines = 
         machines
             .into_iter()
             .map(|(nickname, desc)| {
                 let vm_name = super::rand_name_sep("vm", "-");
-                debug!(self.log, "setting up azure instance"; "nickname" => &nickname, "vm_name" => &vm_name);
+                debug!(log, "setting up azure instance"; "nickname" => &nickname, "vm_name" => &vm_name);
 
                 let pub_ip = azcmd::create_vm(
                     &self.resource_group_name,
@@ -352,7 +375,7 @@ impl super::Launcher for AzureRegion {
                 azcmd::open_ports(&self.resource_group_name, &vm_name)?;
 
                 let mut sess = ssh::Session::connect(
-                    &self.log,
+                    log,
                     "ubuntu",
                     SocketAddr::new(
                         pub_ip
@@ -366,22 +389,22 @@ impl super::Launcher for AzureRegion {
                 )
                 .context(format!("failed to ssh to machine {}", nickname.clone()))
                 .map_err(|e| {
-                    error!(self.log, "failed to ssh to {}", &pub_ip.clone());
+                    error!(log, "failed to ssh to {}", &pub_ip.clone());
                     e
                 })?;
 
 
                 match desc {
                     Setup { setup_fn: Some(f), .. } => {
-                        debug!(self.log, "setting up instance"; "ip" => &pub_ip);
-                        f(&mut sess, &self.log)
+                        debug!(log, "setting up instance"; "ip" => &pub_ip);
+                        f(&mut sess, log)
                             .context(format!(
                                 "setup procedure for {} machine failed",
                                 &nickname
                             ))
                             .map_err(|e| {
                                 error!(
-                                    self.log,
+                                    log,
                                     "machine setup failed";
                                     "name" => &nickname,
                                     "ssh" => format!("ssh ubuntu@{}", &pub_ip),
@@ -392,16 +415,45 @@ impl super::Launcher for AzureRegion {
                     _ => {},
                 }
 
-                info!(self.log, "finished setting up {} instance", &nickname; "ip" => &pub_ip);
+                info!(log, "finished setting up instance"; "name" => &nickname, "ip" => &pub_ip);
+                Ok(Descriptor { name: nickname, ip: pub_ip })
+            })
+            .collect::<Result<Vec<Descriptor>, Error>>()?;
+        Ok(())
+    }
 
+    fn connect_instances<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
+        let log = self.log.as_ref().expect("AzureRegion uninitialized");
+        self.machines
+            .iter()
+            .map(|desc| {
+                let Descriptor { name, ip } = desc;
+                let sess = ssh::Session::connect(
+                    log,
+                    "ubuntu",
+                    SocketAddr::new(
+                        ip.clone()
+                            .parse::<IpAddr>()
+                            .context("machine ip is not an ip address")?,
+                        22,
+                    ),
+                    None,
+                    None,
+                )
+                .context(format!("failed to ssh to machine {}", name.clone()))
+                .map_err(|e| {
+                    error!(log, "failed to ssh to {}", &ip.clone());
+                    e
+                })?;
                 use crate::Machine;
                 Ok((
-                    nickname.clone(),
+                    name.clone(),
                     Machine {
-                        nickname,
-                        public_dns: pub_ip.clone(),
-                        public_ip: pub_ip,
+                        nickname: name.clone(),
+                        public_dns: ip.clone(),
+                        public_ip: ip.clone(),
                         ssh: Some(sess),
+                        ..Default::default()
                     },
                 ))
             })
@@ -422,7 +474,7 @@ mod test {
 
     #[test]
     fn resource_group() {
-        static TEST_RG_NAME: &'static str = "test";
+        static TEST_RG_NAME: &str = "test";
         azcmd::create_resource_group(Region::EastUs, TEST_RG_NAME)
             .expect("create resource group test failed");
 

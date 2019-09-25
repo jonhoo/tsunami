@@ -2,7 +2,7 @@ use crate::ssh;
 use crate::Machine;
 use failure::{Error, ResultExt};
 use rusoto_core::request::HttpClient;
-use rusoto_core::{ProvideAwsCredentials, Region};
+use rusoto_core::{DefaultCredentialsProvider, ProvideAwsCredentials, Region};
 use rusoto_ec2::Ec2;
 use std::collections::HashMap;
 use std::io::Write;
@@ -46,8 +46,11 @@ impl Into<String> for UbuntuAmi {
     }
 }
 
-/// A template for a particular machine setup in a tsunami.
-/// Define a new template for a tsunami machine setup.
+/// A descriptor for a particular machine setup in a tsunami.
+///
+/// The `setup` argument is called once for every spawned instances of this type with a handle
+/// to the target machine. Use [`Machine::ssh`](struct.Machine.html#structfield.ssh) to issue
+/// commands on the host in question.
 pub struct MachineSetup {
     region: Region,
     instance_type: String,
@@ -129,15 +132,58 @@ impl MachineSetup {
     }
 }
 
+/// Launch AWS EC2 spot instances.
+///
+/// This implementation uses [rusoto](https://crates.io/crates/rusoto_core) to connect to AWS.
+/// Currently, `AWSRegion` only supports
+/// (DefaultCredentialsProvider)[https://docs.rs/rusoto_core/0.40.0/rusoto_core/struct.DefaultCredentialsProvider.html].
+/// To use a different credentials provider, you may have to [impl
+/// Launcher](crate::providers::Launcher):
+///
+/// ```
+/// use tsunami::providers::Launcher;
+/// struct CustomAWSRegion(AWSRegion);
+///
+/// impl Launcher for CustomAWSRegion {
+///     type Region = <AWSRegion as Launcher>::Region;
+///     type Machine = <AWSRegion as Launcher>::Machine;
+///
+///     fn init(log: slog::Logger, r: Self::Region) -> Result<Self, Error> {
+///         let my_provider = unimplemented!(); // TODO initialize provider
+///         Ok(Self(AWSRegion::new(&r, my_provider, log)?))
+///     }
+///
+///     fn init_instances(
+///         &mut self,
+///         max_instance_duration: Option<time::Duration>,
+///         max_wait: Option<time::Duration>,
+///         machines: impl IntoIterator<Item = (String, Self::Machine)>,
+///     ) -> Result<(), Error> {
+///         self.0.init_instances(max_instance_duration, max_wait, machines)
+///     }
+///
+///     fn connect_instances(&self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
+///         self.0.connect_instances()
+///     }
+/// }
+/// ```
+///
+/// EC2 spot instances are normally subject to termination at any point. This library instead
+/// uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+/// instances, which cost slightly more, but are never prematurely terminated.  The lifetime of
+/// such instances must be declared in advance (1-6 hours). By default, we use 6 hours (the
+/// maximum). To change this, AWSRegion respects the limit specified in
+/// [`TsunamiBuilder::set_max_duration`](TsunamiBuidler::set_max_duration).
+#[derive(Default)]
 pub struct AWSRegion {
     region: rusoto_core::region::Region,
     security_group_id: String,
     ssh_key_name: String,
-    private_key_path: tempfile::NamedTempFile,
-    client: rusoto_ec2::Ec2Client,
+    private_key_path: Option<tempfile::NamedTempFile>,
+    client: Option<rusoto_ec2::Ec2Client>,
     outstanding_spot_request_ids: HashMap<String, (String, MachineSetup)>,
-    instances: HashMap<String, (String, MachineSetup)>,
-    log: slog::Logger,
+    instances: HashMap<String, (Option<(String, String)>, (String, MachineSetup))>,
+    log: Option<slog::Logger>,
 }
 
 impl super::Launcher for AWSRegion {
@@ -148,12 +194,17 @@ impl super::Launcher for AWSRegion {
         self.region.name().to_string()
     }
 
+    fn init(log: slog::Logger, r: Self::Region) -> Result<Self, Error> {
+        let p = DefaultCredentialsProvider::new()?;
+        Self::new(&r, p, log)
+    }
+
     fn init_instances(
         &mut self,
         max_instance_duration: Option<time::Duration>,
         max_wait: Option<time::Duration>,
         machines: impl IntoIterator<Item = (String, Self::Machine)>,
-    ) -> Result<HashMap<String, crate::Machine>, Error> {
+    ) -> Result<(), Error> {
         self.make_spot_instance_requests(
             max_instance_duration
                 .map(|x| (x.as_secs() / 60) as i64)
@@ -169,9 +220,49 @@ impl super::Launcher for AWSRegion {
 
         self.wait_for_instances(max_wait)
     }
+
+    fn connect_instances<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
+        let log = self.log.as_ref().unwrap();
+        let private_key_path = self.private_key_path.as_ref().unwrap();
+        self.instances
+            .values()
+            .map(|info| match info {
+                (Some((public_ip, public_dns)), (name, MachineSetup { .. })) => {
+                    use std::net::{IpAddr, SocketAddr};
+                    let sess = ssh::Session::connect(
+                        log,
+                        "ubuntu",
+                        SocketAddr::new(
+                            public_ip
+                                .parse::<IpAddr>()
+                                .context("machine ip is not an ip address")?,
+                            22,
+                        ),
+                        Some(private_key_path.path()),
+                        None,
+                    )
+                    .context(format!("failed to ssh to machine {}", public_dns))
+                    .map_err(|e| {
+                        error!(log, "failed to ssh to {}", public_ip);
+                        e
+                    })?;
+                    let machine = Machine {
+                        public_ip: public_ip.clone(),
+                        public_dns: public_dns.clone(),
+                        nickname: name.clone(),
+                        ssh: Some(sess),
+                        ..Default::default()
+                    };
+                    Ok((name.clone(), machine))
+                }
+                _ => bail!("Machines not initialized"),
+            })
+            .collect()
+    }
 }
 
 impl AWSRegion {
+    /// Connect to AWS region `region`, using credentials provider `provider`.
     pub fn new<P>(region: &str, provider: P, log: slog::Logger) -> Result<Self, Error>
     where
         P: ProvideAwsCredentials + Send + Sync + 'static,
@@ -201,18 +292,20 @@ impl AWSRegion {
             region,
             security_group_id: Default::default(),
             ssh_key_name: Default::default(),
-            private_key_path: tempfile::NamedTempFile::new()
-                .context("failed to create temporary file for keypair")?,
+            private_key_path: Some(
+                tempfile::NamedTempFile::new()
+                    .context("failed to create temporary file for keypair")?,
+            ),
             outstanding_spot_request_ids: Default::default(),
             instances: Default::default(),
-            client: ec2,
-            log,
+            client: Some(ec2),
+            log: Some(log),
         })
     }
 
     fn make_security_group(mut self) -> Result<Self, Error> {
-        let log = &self.log;
-        let ec2 = &mut self.client;
+        let log = self.log.as_ref().expect("AWSRegion uninitialized");
+        let ec2 = self.client.as_mut().expect("AWSRegion unconnected");
 
         // set up network firewall for machines
         let group_name = super::rand_name("security");
@@ -266,8 +359,12 @@ impl AWSRegion {
     }
 
     fn make_ssh_key(mut self) -> Result<Self, Error> {
-        let log = &self.log;
-        let ec2 = &mut self.client;
+        let log = self.log.as_ref().expect("AWSRegion uninitialized");
+        let ec2 = self.client.as_mut().expect("AWSRegion unconnected");
+        let private_key_path = self
+            .private_key_path
+            .as_mut()
+            .expect("AWSRegion unconnected");
 
         // construct keypair for ssh access
         trace!(log, "creating keypair");
@@ -284,21 +381,22 @@ impl AWSRegion {
         let private_key = res
             .key_material
             .expect("aws did not generate key material for new key");
-
-        self.private_key_path
+        private_key_path
             .write_all(private_key.as_bytes())
             .context("could not write private key to file")?;
-        trace!(log, "wrote keypair to file"; "filename" => self.private_key_path.path().display());
+        trace!(log, "wrote keypair to file"; "filename" => private_key_path.path().display());
 
         self.ssh_key_name = key_name;
         Ok(self)
     }
 
+    /// `max_duration` is in minutes.
     pub fn make_spot_instance_requests(
         &mut self,
         max_duration: i64,
         machines: impl IntoIterator<Item = (String, MachineSetup)>,
     ) -> Result<(), Error> {
+        let log = self.log.as_ref().expect("AWSRegion uninitialized");
         for (name, m) in machines {
             let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
             launch.image_id = Some(m.ami.clone());
@@ -320,13 +418,15 @@ impl AWSRegion {
                 ..Default::default()
             };
 
-            trace!(self.log, "issuing spot request");
+            trace!(log, "issuing spot request");
             let res = self
                 .client
+                .as_mut()
+                .unwrap()
                 .request_spot_instances(req)
                 .sync()
                 .context("failed to request spot instance")?;
-            let l = self.log.clone();
+            let l = log.clone();
             let spot_req_id = res
                 .spot_instance_requests
                 .expect("request_spot_instances should always return spot instance requests")
@@ -350,23 +450,22 @@ impl AWSRegion {
         &mut self,
         max_wait: Option<time::Duration>,
     ) -> Result<(), Error> {
+        let log = { self.log.as_ref().expect("AWSRegion uninitialized").clone() };
         let start = time::Instant::now();
         let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
         req.spot_instance_request_ids =
             Some(self.outstanding_spot_request_ids.keys().cloned().collect());
-        debug!(self.log, "waiting for instances to spawn");
+        debug!(log, "waiting for instances to spawn");
+        let client = self.client.as_ref().unwrap();
 
         loop {
-            trace!(self.log, "checking spot request status");
+            trace!(log, "checking spot request status");
 
-            let res = self
-                .client
-                .describe_spot_instance_requests(req.clone())
-                .sync();
+            let res = client.describe_spot_instance_requests(req.clone()).sync();
             if let Err(e) = res {
                 let msg = format!("{}", e);
                 if msg.contains("The spot instance request ID") && msg.contains("does not exist") {
-                    trace!(self.log, "spot instance requests not yet ready");
+                    trace!(log, "spot instance requests not yet ready");
                     continue;
                 } else {
                     return Err(e)
@@ -393,7 +492,7 @@ impl AWSRegion {
                     if state == "open" || (state == "active" && sir.instance_id.is_none()) {
                         true
                     } else {
-                        trace!(self.log, "spot request ready"; "state" => state, "id" => &sir.spot_instance_request_id);
+                        trace!(log, "spot request ready"; "state" => state, "id" => &sir.spot_instance_request_id);
                         false
                     }
                 });
@@ -409,11 +508,11 @@ impl AWSRegion {
                             // unwrap ok because active implies instance_id.is_some()
                             // because !any_pending
                             let instance_id = sir.instance_id.unwrap();
-                            trace!(self.log, "spot request satisfied"; "iid" => &instance_id);
+                            trace!(log, "spot request satisfied"; "iid" => &instance_id);
 
-                            Some((instance_id, self.outstanding_spot_request_ids.remove(&sir.spot_instance_request_id.unwrap()).unwrap()))
+                            Some((instance_id, (None, self.outstanding_spot_request_ids.remove(&sir.spot_instance_request_id.unwrap()).unwrap())))
                         } else {
-                            error!(self.log, "spot request failed: {:?}", &sir.status; "state" => &sir.state.unwrap());
+                            error!(log, "spot request failed: {:?}", &sir.status; "state" => &sir.state.unwrap());
                             None
                         }
                     })
@@ -425,31 +524,30 @@ impl AWSRegion {
 
             if let Some(wait_limit) = max_wait {
                 if start.elapsed() > wait_limit {
-                    warn!(self.log, "wait time exceeded -- cancelling run");
+                    warn!(log, "wait time exceeded -- cancelling run");
                     let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
                     cancel.spot_instance_request_ids = req
                         .spot_instance_request_ids
                         .clone()
                         .expect("we set this to Some above");
-                    self.client
+                    client
                         .cancel_spot_instance_requests(cancel)
                         .sync()
                         .context("failed to cancel spot instances")
                         .map_err(|e| {
-                            warn!(self.log, "failed to cancel spot instance request: {:?}", e);
+                            warn!(log, "failed to cancel spot instance request: {:?}", e);
                             e
                         })?;
 
                     trace!(
-                        self.log,
+                        log,
                         "spot instances cancelled -- gathering remaining instances"
                     );
                     // wait for a little while for the cancelled spot requests to settle
                     // and any that were *just* made active to be associated with their instances
                     thread::sleep(time::Duration::from_secs(1));
 
-                    let sirs = self
-                        .client
+                    let sirs = client
                         .describe_spot_instance_requests(req)
                         .sync()?
                         .spot_instance_requests
@@ -457,14 +555,14 @@ impl AWSRegion {
                     for sir in sirs {
                         match sir.instance_id {
                             Some(instance_id) => {
-                                trace!(self.log, "spot request cancelled";
+                                trace!(log, "spot request cancelled";
                                     "req_id" => sir.spot_instance_request_id,
                                     "iid" => &instance_id,
                                 );
                             }
                             _ => {
                                 error!(
-                                    self.log,
+                                    log,
                                     "spot request failed: {:?}", &sir.status;
                                     "req_id" => sir.spot_instance_request_id,
                                 );
@@ -479,21 +577,18 @@ impl AWSRegion {
         Ok(())
     }
 
-    pub fn wait_for_instances(
-        &mut self,
-        max_wait: Option<time::Duration>,
-    ) -> Result<HashMap<String, Machine>, Error> {
+    pub fn wait_for_instances(&mut self, max_wait: Option<time::Duration>) -> Result<(), Error> {
         let start = time::Instant::now();
-        let mut machines = HashMap::new();
         let mut desc_req = rusoto_ec2::DescribeInstancesRequest::default();
+        let client = self.client.as_ref().unwrap();
+        let log = self.log.as_ref().unwrap();
+        let private_key_path = self.private_key_path.as_ref().unwrap();
         let mut all_ready = self.instances.is_empty();
         desc_req.instance_ids = Some(self.instances.keys().cloned().collect());
         while !all_ready {
             all_ready = true;
-            machines.clear();
 
-            for reservation in self
-                .client
+            for reservation in client
                 .describe_instances(desc_req.clone())
                 .sync()
                 .context("failed to cancel spot instances")?
@@ -509,18 +604,18 @@ impl AWSRegion {
                             public_ip_address: Some(public_ip),
                             ..
                         } => {
-                            let mut machine = Machine {
-                                public_ip,
-                                public_dns,
+                            let machine = Machine {
+                                public_ip: public_ip.clone(),
+                                public_dns: public_dns.clone(),
                                 ..Default::default()
                             };
-                            trace!(self.log, "instance ready";
+                            trace!(log, "instance ready";
                                 "instance_id" => instance_id.clone(),
                                 "ip" => &machine.public_ip,
                             );
                             use std::net::{IpAddr, SocketAddr};
                             let mut sess = ssh::Session::connect(
-                                &self.log,
+                                log,
                                 "ubuntu",
                                 SocketAddr::new(
                                     machine
@@ -529,41 +624,36 @@ impl AWSRegion {
                                         .context("machine ip is not an ip address")?,
                                     22,
                                 ),
-                                Some(&self.private_key_path.path()),
+                                Some(private_key_path.path()),
                                 None,
                             )
                             .context(format!("failed to ssh to machine {}", machine.public_dns))
                             .map_err(|e| {
-                                error!(self.log, "failed to ssh to {}", &machine.public_ip);
+                                error!(log, "failed to ssh to {}", &machine.public_ip);
                                 e
                             })?;
 
-                            let (name, m_setup) = self.instances.get(&instance_id).unwrap();
-                            match m_setup {
-                                MachineSetup { setup: Some(f), .. } => {
-                                    debug!(self.log, "setting up instance"; "ip" => &machine.public_ip);
-                                    f(&mut sess, &self.log)
-                                        .context(format!(
-                                            "setup procedure for {} machine failed",
-                                            name
-                                        ))
-                                        .map_err(|e| {
-                                            error!(
-                                                self.log,
-                                                "machine setup failed";
-                                                "name" => name.clone(),
-                                                "ssh" => format!("ssh -i {} ubuntu@{}", &self.private_key_path.path().display(), machine.public_ip),
-                                            );
-                                            e
-                                        })?;
-                                    info!(self.log, "finished setting up {} instance", name; "ip" => &machine.public_ip);
-                                }
-                                _ => {}
+                            let (ipinfo, (name, m_setup)) =
+                                self.instances.get_mut(&instance_id).unwrap();
+                            *ipinfo = Some((public_ip, public_dns));
+                            if let MachineSetup { setup: Some(f), .. } = m_setup {
+                                debug!(log, "setting up instance"; "ip" => &machine.public_ip);
+                                f(&mut sess, log)
+                                    .context(format!(
+                                        "setup procedure for {} machine failed",
+                                        name
+                                    ))
+                                    .map_err(|e| {
+                                        error!(
+                                            log,
+                                            "machine setup failed";
+                                            "name" => name.clone(),
+                                            "ssh" => format!("ssh -i {} ubuntu@{}", private_key_path.path().display(), machine.public_ip),
+                                        );
+                                        e
+                                    })?;
+                                info!(log, "finished setting up {} instance", name; "ip" => &machine.public_ip);
                             }
-
-                            machine.ssh = Some(sess);
-                            machine.nickname = name.clone();
-                            machines.insert(name.clone(), machine);
                         }
                         _ => {
                             all_ready = false;
@@ -579,52 +669,52 @@ impl AWSRegion {
             }
         }
 
-        Ok(machines)
+        Ok(())
     }
 }
 
 impl std::ops::Drop for AWSRegion {
     fn drop(&mut self) {
+        let client = self.client.as_ref().unwrap();
+        let log = self.log.as_ref().expect("AWSRegion uninitialized");
         // terminate instances
         if !self.instances.is_empty() {
-            info!(self.log, "terminating instances");
+            info!(log, "terminating instances");
             let instances = self.instances.keys().cloned().collect();
             self.instances.clear();
             let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
             termination_req.instance_ids = instances;
-            while let Err(e) = self
-                .client
-                .terminate_instances(termination_req.clone())
-                .sync()
-            {
+            while let Err(e) = client.terminate_instances(termination_req.clone()).sync() {
                 let msg = format!("{}", e);
                 if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
-                    trace!(self.log, "retrying instance termination");
+                    trace!(log, "retrying instance termination");
                     continue;
                 } else {
-                    warn!(self.log, "failed to terminate tsunami instances: {:?}", e);
+                    warn!(log, "failed to terminate tsunami instances: {:?}", e);
                     break;
                 }
             }
         }
 
-        debug!(self.log, "cleaning up temporary resources");
-        trace!(self.log, "cleaning up temporary security group");
+        debug!(log, "cleaning up temporary resources");
+        trace!(log, "cleaning up temporary security group");
         // clean up security groups and keys
+        // TODO need a retry loop for the security group. Currently, this fails
+        // because AWS takes some time to allow the security group to be deleted.
         let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
         req.group_id = Some(self.security_group_id.clone());
-        if let Err(e) = self.client.delete_security_group(req).sync() {
-            warn!(self.log, "failed to clean up temporary security group";
+        if let Err(e) = client.delete_security_group(req).sync() {
+            warn!(log, "failed to clean up temporary security group";
                 "group_id" => &self.security_group_id,
                 "error" => ?e,
             )
         }
 
-        trace!(self.log, "cleaning up temporary keypair");
+        trace!(log, "cleaning up temporary keypair");
         let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
         req.key_name = self.ssh_key_name.clone();
-        if let Err(e) = self.client.delete_key_pair(req).sync() {
-            warn!(self.log, "failed to clean up temporary SSH key";
+        if let Err(e) = client.delete_key_pair(req).sync() {
+            warn!(log, "failed to clean up temporary SSH key";
                 "key_name" => &self.ssh_key_name,
                 "error" => ?e,
             )
@@ -647,18 +737,23 @@ mod test {
         let provider = DefaultCredentialsProvider::new()?;
         let ec2 = AWSRegion::connect(region, provider, test_logger())?;
 
-        let ec2 = ec2.make_ssh_key()?;
+        let mut ec2 = ec2.make_ssh_key()?;
         println!("==> key name: {}", ec2.ssh_key_name);
         println!("==> key path: {:?}", ec2.private_key_path);
         assert!(!ec2.ssh_key_name.is_empty());
-        assert!(ec2.private_key_path.path().exists());
+        assert!(ec2.private_key_path.as_ref().unwrap().path().exists());
 
         let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
         req.key_name = ec2.ssh_key_name.clone();
-        ec2.client.delete_key_pair(req).sync().context(format!(
-            "Could not delete ssh key pair {:?}",
-            ec2.ssh_key_name
-        ))?;
+        ec2.client
+            .as_mut()
+            .unwrap()
+            .delete_key_pair(req)
+            .sync()
+            .context(format!(
+                "Could not delete ssh key pair {:?}",
+                ec2.ssh_key_name
+            ))?;
 
         Ok(())
     }
