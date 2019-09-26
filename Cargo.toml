@@ -1,17 +1,17 @@
 [package]
 name = "tsunami"
-version = "0.9.0"
+version = "0.10.0"
 
-description = "Toolkit for running short-lived jobs on EC2 spot instances"
+description = "Toolkit for running short-lived jobs on cloud VMs"
 readme = "README.md"
 
-authors = ["Jon Gjengset <jon@thesquareplanet.com>"]
+authors = ["Jon Gjengset <jon@thesquareplanet.com>", "Akshay Narayan <akshayn@mit.edu>"]
 
 documentation = "https://docs.rs/tsunami"
 homepage = "https://github.com/jonhoo/tsunami"
 repository = "https://github.com/jonhoo/tsunami.git"
 
-keywords = ["ec2", "aws", "spot-instances", "distributed", "benchmark"]
+keywords = ["ec2", "aws", "azure", "vm", "spot-instances", "distributed", "benchmark"]
 categories = []
 
 license = "MIT/Apache-2.0"
@@ -37,8 +37,8 @@ serde = { version = "1", features = ["derive"]}
 structopt = "0.2"
 serde_json = "1"
 slog-term = "2"
-#slog = "2"
-slog = { version = "2", features = ["max_level_trace"] }
+slog = "2"
+#slog = { version = "2", features = ["max_level_trace"] }
 
 [profile.release]
 debug = true

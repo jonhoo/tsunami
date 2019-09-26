@@ -141,7 +141,11 @@ impl MachineSetup {
 /// Launcher](crate::providers::Launcher):
 ///
 /// ```
+/// use std::time;
+/// use std::collections::HashMap;
+/// use failure::Error;
 /// use tsunami::providers::Launcher;
+/// use tsunami::providers::aws::AWSRegion;
 /// struct CustomAWSRegion(AWSRegion);
 ///
 /// impl Launcher for CustomAWSRegion {
@@ -149,8 +153,14 @@ impl MachineSetup {
 ///     type Machine = <AWSRegion as Launcher>::Machine;
 ///
 ///     fn init(log: slog::Logger, r: Self::Region) -> Result<Self, Error> {
-///         let my_provider = unimplemented!(); // TODO initialize provider
+///         # let my_provider: rusoto_core::DefaultCredentialsProvider = unimplemented!();
+///         let my_provider = // ...
+///         # my_provider;
 ///         Ok(Self(AWSRegion::new(&r, my_provider, log)?))
+///     }
+///
+///     fn region(&self) -> Self::Region {
+///         self.0.region()
 ///     }
 ///
 ///     fn init_instances(
@@ -162,10 +172,12 @@ impl MachineSetup {
 ///         self.0.init_instances(max_instance_duration, max_wait, machines)
 ///     }
 ///
-///     fn connect_instances(&self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
+///     fn connect_instances(&self) -> Result<HashMap<String, tsunami::Machine>, Error> {
 ///         self.0.connect_instances()
 ///     }
 /// }
+///
+/// impl Drop for CustomAWSRegion { fn drop(&mut self) {}}
 /// ```
 ///
 /// EC2 spot instances are normally subject to termination at any point. This library instead

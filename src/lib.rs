@@ -2,9 +2,12 @@
 //! instances. Most interaction with this library happens through
 //! [`TsunamiBuilder`](struct.TsunamiBuilder.html) and [`Tsunami`](struct.Tsunami.html).
 //!
-//! ```rust,no-run
+//! # Example
+//!
+//! ```rust,no_run
+//! use tsunami::TsunamiBuilder;
+//! use tsunami::providers::aws;
 //! fn main() -> Result<(), failure::Error> {
-//!     use tsunami::providers::aws;
 //!     let mut aws = TsunamiBuilder::<aws::AWSRegion>::default();
 //!     let m = aws::MachineSetup::default();
 //!     aws.add("my_vm".into(), m);
@@ -13,6 +16,7 @@
 //!     let my_vm = vms.get("my_vm").unwrap();
 //!     let ssh = my_vm.ssh.as_ref().unwrap();
 //!     ssh.cmd("hostname").map(|(stdout, _)| println!("{}", stdout))?;
+//!     Ok(())
 //! }
 //! ```
 //!
