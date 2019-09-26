@@ -315,6 +315,9 @@ struct Descriptor {
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest). 
 ///
 /// It also assumes you have previously run `az login` to authenticate with Microsoft.
+///
+/// Unlike AWS spot instances, Azure instacnes *do not* auto-terminate after the max_duration.
+/// Therefore, if your code crashes, you must manually terminate your instances.
 #[derive(Default)]
 pub struct AzureRegion {
     pub log: Option<slog::Logger>,

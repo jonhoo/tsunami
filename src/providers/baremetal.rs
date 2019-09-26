@@ -79,6 +79,8 @@ impl Setup {
 /// Only one machine is supported per instance of this Launcher, further instances of `Setup`
 /// passed to `init_instances` will
 /// be ignored, since it doesn't make sense to connect to the same machine twice.
+///
+/// The `impl Drop` of this type is a no-op, since Tsunami can't terminate an existing machine.
 #[derive(Default)]
 pub struct Machine {
     pub log: Option<slog::Logger>,
