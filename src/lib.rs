@@ -53,7 +53,6 @@ use providers::{Launcher, MachineSetup};
 
 /// A handle to an instance currently running as part of a tsunami.
 /// Run commands on the machine via [ssh](ssh::Session)
-#[derive(Default)]
 pub struct Machine<'tsunami> {
     pub nickname: String,
     pub public_dns: String,

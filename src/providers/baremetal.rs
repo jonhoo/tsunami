@@ -186,7 +186,7 @@ impl super::Launcher for Machine {
                 public_dns: addr.to_string(),
                 public_ip: addr.ip().to_string(),
                 ssh: Some(sess),
-                ..Default::default()
+                _tsunami: Default::default(),
             },
         );
         Ok(hmap)

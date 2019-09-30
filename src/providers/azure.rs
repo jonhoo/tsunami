@@ -456,7 +456,7 @@ impl super::Launcher for AzureRegion {
                         public_dns: ip.clone(),
                         public_ip: ip.clone(),
                         ssh: Some(sess),
-                        ..Default::default()
+                        _tsunami: Default::default(),
                     },
                 ))
             })

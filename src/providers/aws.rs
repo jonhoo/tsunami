@@ -263,7 +263,7 @@ impl super::Launcher for AWSRegion {
                         public_dns: public_dns.clone(),
                         nickname: name.clone(),
                         ssh: Some(sess),
-                        ..Default::default()
+                        _tsunami: Default::default(),
                     };
                     Ok((name.clone(), machine))
                 }
@@ -616,22 +616,17 @@ impl AWSRegion {
                             public_ip_address: Some(public_ip),
                             ..
                         } => {
-                            let machine = Machine {
-                                public_ip: public_ip.clone(),
-                                public_dns: public_dns.clone(),
-                                ..Default::default()
-                            };
                             trace!(log, "instance ready";
                                 "instance_id" => instance_id.clone(),
-                                "ip" => &machine.public_ip,
+                                "ip" => &public_ip,
                             );
                             use std::net::{IpAddr, SocketAddr};
                             let mut sess = ssh::Session::connect(
                                 log,
                                 "ubuntu",
                                 SocketAddr::new(
-                                    machine
-                                        .public_ip
+                                    public_ip
+                                        .clone()
                                         .parse::<IpAddr>()
                                         .context("machine ip is not an ip address")?,
                                     22,
@@ -639,17 +634,17 @@ impl AWSRegion {
                                 Some(private_key_path.path()),
                                 None,
                             )
-                            .context(format!("failed to ssh to machine {}", machine.public_dns))
+                            .context(format!("failed to ssh to machine {}", &public_dns))
                             .map_err(|e| {
-                                error!(log, "failed to ssh to {}", &machine.public_ip);
+                                error!(log, "failed to ssh to {}", &public_ip);
                                 e
                             })?;
 
                             let (ipinfo, (name, m_setup)) =
                                 self.instances.get_mut(&instance_id).unwrap();
-                            *ipinfo = Some((public_ip, public_dns));
+                            *ipinfo = Some((public_ip.clone(), public_dns));
                             if let MachineSetup { setup: Some(f), .. } = m_setup {
-                                debug!(log, "setting up instance"; "ip" => &machine.public_ip);
+                                debug!(log, "setting up instance"; "ip" => &public_ip);
                                 f(&mut sess, log)
                                     .context(format!(
                                         "setup procedure for {} machine failed",
@@ -660,11 +655,11 @@ impl AWSRegion {
                                             log,
                                             "machine setup failed";
                                             "name" => name.clone(),
-                                            "ssh" => format!("ssh -i {} ubuntu@{}", private_key_path.path().display(), machine.public_ip),
+                                            "ssh" => format!("ssh -i {} ubuntu@{}", private_key_path.path().display(), public_ip),
                                         );
                                         e
                                     })?;
-                                info!(log, "finished setting up {} instance", name; "ip" => &machine.public_ip);
+                                info!(log, "finished setting up {} instance", name; "ip" => &public_ip);
                             }
                         }
                         _ => {
