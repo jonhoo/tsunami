@@ -217,11 +217,6 @@ impl<L: Launcher> Tsunami<L> {
     }
 }
 
-// prevent destructuring
-impl<L: Launcher> Drop for Tsunami<L> {
-    fn drop(&mut self) {}
-}
-
 #[cfg(test)]
 mod test {
     pub fn test_logger() -> slog::Logger {
