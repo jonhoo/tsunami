@@ -211,6 +211,10 @@ impl<L: Launcher> Tsunami<L> {
     /// The `HashMap` of machines is keyed by the friendly names
     /// assigned by the call to [add](TsunamiBuilder::add).
     /// The returned `Machine`s will live for the lifetime of self.
+    ///
+    /// It's possible to call this method multiple times to get multiple
+    /// independent connections to the machines. These will *not* be
+    /// synchronized, so take care to avoid any conflicts.
     pub fn get_machines<'l>(&'l self) -> Result<HashMap<String, Machine<'l>>, Error> {
         self.providers
             .par_iter()
