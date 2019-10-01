@@ -178,7 +178,7 @@ impl<L: Launcher> TsunamiBuilder<L> {
                 Ok(provs)
             })?;
 
-        Ok(Tsunami(providers, log))
+        Ok(Tsunami { providers, log })
     }
 }
 
@@ -187,14 +187,17 @@ impl<L: Launcher> TsunamiBuilder<L> {
 /// # Note
 /// See caveats for Azure and Baremetal machines.
 #[must_use]
-pub struct Tsunami<L: Launcher>(Vec<L>, slog::Logger);
+pub struct Tsunami<L: Launcher> {
+    providers: Vec<L>,
+    log: slog::Logger,
+}
 
 impl<L: Launcher> Tsunami<L> {
     /// Use to access the machines. The `HashMap` of machines is keyed by the friendly names
     /// assigned by the call to [add](TsunamiBuilder::add).
     /// The returned `Machine`s will live for the lifetime of self.
     pub fn get_machines<'l>(&'l self) -> Result<HashMap<String, Machine<'l>>, Error> {
-        self.0
+        self.providers
             .par_iter()
             .map(|prov| prov.connect_instances())
             .try_fold(
@@ -213,7 +216,7 @@ impl<L: Launcher> Tsunami<L> {
     }
 
     pub fn logger(&self) -> &slog::Logger {
-        &self.1
+        &self.log
     }
 }
 
