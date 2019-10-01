@@ -41,9 +41,12 @@ impl Setup {
         username: Option<String>,
     ) -> Result<Self, Error> {
         let username: Result<String, Error> = username.map(Ok).unwrap_or_else(|| {
-            Ok(String::from_utf8(
-                std::process::Command::new("whoami").output()?.stdout,
-            )?)
+            let user = String::from_utf8(std::process::Command::new("whoami").output()?.stdout)?;
+            let user = user
+                .split_whitespace()
+                .next()
+                .expect("expect newline after whoami output");
+            Ok(user.to_string())
         });
         let username = username?;
 
@@ -207,7 +210,6 @@ impl Drop for Machine {
 //
 // Aug 29 18:59:42.375 ERRO failed to ssh to [::1]:22
 // Error: ErrorMessage { msg: "failed to authenticate ssh session with ssh-agent" }
-/*
 #[cfg(test)]
 mod test {
     use crate::providers::Launcher;
@@ -215,11 +217,11 @@ mod test {
 
     #[test]
     fn localhost() -> Result<(), Error> {
-        let s = super::Setup::new("localhost:22", None)?;
-        let mut m = super::Machine {
-            log: crate::test::test_logger(),
-        };
-        let ms = m.init_instances(None, None, vec![(String::from("self"), s)])?;
+        let s = super::Setup::new("127.0.0.1:22", None)?;
+        let mut m: super::Machine = Default::default();
+        m.log = Some(crate::test::test_logger());
+        m.init_instances(None, None, vec![(String::from("self"), s)])?;
+        let ms = m.connect_instances()?;
         ms.get("self")
             .unwrap()
             .ssh
@@ -230,4 +232,3 @@ mod test {
         Ok(())
     }
 }
-*/
