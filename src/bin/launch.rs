@@ -42,7 +42,7 @@ fn wait_for_continue(log: &slog::Logger) {
     iterator.next().unwrap().unwrap();
 }
 
-fn launch_and_wait<L: Launcher>(b: TsunamiBuilder<L>, l: &mut L) -> Result<(), failure::Error> {
+fn launch_and_wait<L: Launcher>(mut b: TsunamiBuilder<L>, l: &mut L) -> Result<(), failure::Error> {
     let log = b.logger();
     b.spawn(l)?;
     wait_for_continue(&log);

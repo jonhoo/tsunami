@@ -150,24 +150,17 @@ impl<L: Launcher> TsunamiBuilder<L> {
     ///
     /// SSH connections to each instance are accesssible via
     /// [`connect_all`](providers::Launcher::connect_all).
-    pub fn spawn(self, launcher: &mut L) -> Result<(), Error> {
-        let Self {
-            descriptors,
-            max_wait,
-            log,
-            ..
-        } = self;
+    pub fn spawn(&mut self, launcher: &mut L) -> Result<(), Error> {
+        let descriptors: HashMap<String, L::Machine> = self.descriptors.drain().collect();
+        let max_wait = self.max_wait;
+        let log = self.log.clone();
 
         info!(log, "spinning up tsunami");
 
-        // 1. group machines into regions
-        let mut regions: HashMap<String, providers::LaunchDescriptor<L::Machine>> =
-            Default::default();
         for (region_name, setups) in descriptors
             .into_iter()
             .map(|(name, setup)| (setup.region(), (name, setup)))
             .into_group_map()
-            .into_iter()
         {
             let region_log = log.new(slog::o!("region" => region_name.clone().to_string()));
             let dsc = providers::LaunchDescriptor {
@@ -177,12 +170,7 @@ impl<L: Launcher> TsunamiBuilder<L> {
                 machines: setups,
             };
 
-            regions.insert(region_name.to_string(), dsc);
-        }
-
-        // 2. launch ze missiles
-        for (_, desc) in regions {
-            launcher.launch(desc)?;
+            launcher.launch(dsc)?;
         }
 
         Ok(())
