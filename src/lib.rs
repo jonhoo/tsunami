@@ -97,8 +97,14 @@ impl<L: Launcher> TsunamiBuilder<L> {
     /// Add a machine descriptor to the Tsunami.
     ///
     /// Machine descriptors are specific to the cloud provider they will be used for.
-    pub fn add(&mut self, nickname: &str, m: L::Machine) {
-        self.descriptors.insert(nickname.to_string(), m);
+    /// They must be unique for each `TsunamiBuilder`. If `nickname` is a duplicate,
+    /// this method will return an `Err` value.
+    pub fn add(&mut self, nickname: &str, m: L::Machine) -> Result<(), Error> {
+        if let Some(_) = self.descriptors.insert(nickname.to_string(), m) {
+            Err(format_err!("Duplicate machine name {}", nickname))
+        } else {
+            Ok(())
+        }
     }
 
     /// Limit how long we should wait for instances to be available before giving up.

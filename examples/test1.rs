@@ -22,13 +22,13 @@ fn main() -> Result<(), failure::Error> {
     let m = aws::MachineSetup::default()
         .region(Region::UsEast1)
         .setup(|ssh, _| ssh.cmd("sudo apt update").map(|(_, _)| ()));
-    b.add("east", m);
+    b.add("east", m).unwrap();
 
     let m = aws::MachineSetup::default()
         .region(Region::ApSouth1)
         .instance_type("t3.small")
         .setup(|ssh, _| ssh.cmd("sudo apt update").map(|(_, _)| ()));
-    b.add("india", m);
+    b.add("india", m).unwrap();
 
     b.wait_limit(time::Duration::from_secs(60));
     let ts = b.spawn()?;
