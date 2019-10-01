@@ -99,11 +99,11 @@ impl<L: Launcher> TsunamiBuilder<L> {
     /// Machine descriptors are specific to the cloud provider they will be used for.
     /// They must be unique for each `TsunamiBuilder`. If `nickname` is a duplicate,
     /// this method will return an `Err` value.
-    pub fn add(&mut self, nickname: &str, m: L::Machine) -> Result<(), Error> {
+    pub fn add(&mut self, nickname: &str, m: L::Machine) -> Result<&mut Self, Error> {
         if let Some(_) = self.descriptors.insert(nickname.to_string(), m) {
             Err(format_err!("Duplicate machine name {}", nickname))
         } else {
-            Ok(())
+            Ok(self)
         }
     }
 
@@ -111,8 +111,9 @@ impl<L: Launcher> TsunamiBuilder<L> {
     ///
     /// This includes both waiting for spot requests to be satisfied, and for SSH connections to be
     /// established. Defaults to no limit.
-    pub fn wait_limit(&mut self, t: time::Duration) {
+    pub fn wait_limit(&mut self, t: time::Duration) -> &mut Self {
         self.max_wait = Some(t);
+        self
     }
 
     /// Set the maxium lifetime of spawned instances, if applicable for the provider.
@@ -124,25 +125,29 @@ impl<L: Launcher> TsunamiBuilder<L> {
     /// method.
     ///
     /// The default duration is 6 hours.
-    pub fn set_max_duration(&mut self, hours: u64) {
+    pub fn set_max_duration(&mut self, hours: u64) -> &mut Self {
         self.max_duration = Some(time::Duration::from_secs(hours * 3600));
+        self
     }
 
     /// Set the logging target for this tsunami.
     ///
     /// By default, logging is disabled (i.e., the default logger is `slog::Discard`).
-    pub fn set_logger(&mut self, log: slog::Logger) {
+    pub fn set_logger(&mut self, log: slog::Logger) -> &mut Self {
         self.log = log;
+        self
     }
 
     /// Enable logging to terminal.
-    pub fn use_term_logger(&mut self) {
+    pub fn use_term_logger(&mut self) -> &mut Self {
         use slog::Drain;
         use std::sync::Mutex;
 
         let decorator = slog_term::TermDecorator::new().build();
         let drain = Mutex::new(slog_term::FullFormat::new(decorator).build()).fuse();
         self.log = slog::Logger::root(drain, o!());
+
+        self
     }
 
     /// Start up all the hosts.
