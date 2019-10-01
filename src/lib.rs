@@ -166,7 +166,8 @@ impl<L: Launcher> TsunamiBuilder<L> {
 
         // 1. initialize the set of unique regions to connect to, and group machines into those
         // regions
-        let mut regions: HashMap<String, (L, Vec<(String, L::Machine)>)> = Default::default();
+        let mut regions: HashMap<String, providers::LaunchDescriptor<L::Machine, L::Region>> =
+            Default::default();
         for (region_name, setups) in descriptors
             .into_iter()
             .map(|(name, setup)| (setup.region(), (name, setup)))
@@ -174,15 +175,22 @@ impl<L: Launcher> TsunamiBuilder<L> {
             .into_iter()
         {
             let region_log = log.new(slog::o!("region" => region_name.clone().to_string()));
-            let prov = L::init(region_log, region_name.clone())?;
-            regions.insert(region_name.to_string(), (prov, setups));
+            let dsc = providers::LaunchDescriptor {
+                region: region_name.clone(),
+                log: region_log,
+                max_instance_duration: max_duration,
+                max_wait,
+                machines: setups,
+            };
+            regions.insert(region_name.to_string(), dsc);
         }
 
         // 2. launch ze missiles
         let providers: Vec<L> = regions
             .into_par_iter()
-            .map(|(_, (mut prov, descs))| {
-                prov.init_instances(max_duration, max_wait, descs)?;
+            .map(|(_, desc)| {
+                let mut prov: L = Default::default();
+                prov.launch(desc)?;
                 Ok(prov)
             })
             .try_fold(Vec::new, |mut provs, res: Result<L, Error>| {

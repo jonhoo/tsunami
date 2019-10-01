@@ -1,6 +1,17 @@
 use failure::Error;
 use std::collections::HashMap;
 
+pub struct LaunchDescriptor<
+    M: MachineSetup<Region = R>,
+    R: Eq + std::hash::Hash + Clone + std::string::ToString,
+> {
+    pub region: R,
+    pub log: slog::Logger,
+    pub max_instance_duration: Option<std::time::Duration>,
+    pub max_wait: Option<std::time::Duration>,
+    pub machines: Vec<(String, M)>,
+}
+
 /// This is used to group machines into connections
 /// to cloud providers. e.g., for AWS we need a separate
 /// connection to each region.
@@ -10,22 +21,16 @@ pub trait MachineSetup {
 }
 
 /// Implement this trait to implement a new cloud provider for Tsunami.
-/// Tsunami will call `init_instances` once per unique region, as defined by `MachineSetup`.
-pub trait Launcher: Drop + Send + Sync + Sized {
+/// Tsunami will call `launch` once per unique region, as defined by `MachineSetup`.
+pub trait Launcher: Drop + Send + Sync + Sized + Default {
     type Region: Send + Eq + std::hash::Hash + Clone + std::string::ToString;
     type Machine: MachineSetup<Region = Self::Region> + Send;
 
-    fn init(log: slog::Logger, r: Self::Region) -> Result<Self, Error>;
     fn region(&self) -> Self::Region;
 
     /// Spawn the instances. Implementors should remember enough information to subsequently answer
     /// calls to `connect_instances`, i.e., the IPs of the machines.
-    fn init_instances(
-        &mut self,
-        max_instance_duration: Option<std::time::Duration>,
-        max_wait: Option<std::time::Duration>,
-        machines: impl IntoIterator<Item = (String, Self::Machine)>,
-    ) -> Result<(), Error>;
+    fn launch(&mut self, desc: LaunchDescriptor<Self::Machine, Self::Region>) -> Result<(), Error>;
 
     /// Return connections to the [`Machine`s](crate::Machine) that `init_instances` spawned.
     fn connect_instances<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error>;

@@ -1,7 +1,6 @@
 use crate::ssh;
 use failure::Error;
 use std::collections::HashMap;
-use std::time;
 
 /// Descriptor for a single, existing machine to connect to.
 /// Therefore, the `impl MachineSetup` includes the address of the machine in `region`; i.e.,
@@ -101,20 +100,14 @@ impl super::Launcher for Machine {
         String::from("bare")
     }
 
-    fn init(log: slog::Logger, _r: Self::Region) -> Result<Self, Error> {
-        let mut s: Self = Default::default();
-        s.log = Some(log);
-        Ok(s)
-    }
-
-    fn init_instances(
+    fn launch(
         &mut self,
-        _max_instance_duration: Option<time::Duration>,
-        max_wait: Option<time::Duration>,
-        machines: impl IntoIterator<Item = (String, Self::Machine)>,
+        l: super::LaunchDescriptor<Self::Machine, Self::Region>,
     ) -> Result<(), Error> {
+        self.log = Some(l.log);
         let log = self.log.as_ref().expect("Baremetal machine uninitialized");
-        let dscs = machines
+        let dscs = l
+            .machines
             .into_iter()
             .collect::<Vec<(String, Self::Machine)>>();
         if dscs.is_empty() {
@@ -135,7 +128,7 @@ impl super::Launcher for Machine {
             &setup.username,
             setup.addr,
             setup.key_path.as_ref().map(|p| p.as_path()),
-            max_wait,
+            l.max_wait,
         )
         .map_err(|e| {
             error!(log, "failed to ssh to {}", &setup.addr);
@@ -221,7 +214,14 @@ mod test {
         let s = super::Setup::new("127.0.0.1:22", None)?;
         let mut m: super::Machine = Default::default();
         m.log = Some(crate::test::test_logger());
-        m.init_instances(None, None, vec![(String::from("self"), s)])?;
+        let desc = crate::providers::LaunchDescriptor {
+            region: String::from("localhost"),
+            log: crate::test::test_logger(),
+            max_instance_duration: None,
+            max_wait: None,
+            machines: vec![(String::from("self"), s)],
+        };
+        m.launch(desc)?;
         let ms = m.connect_instances()?;
         ms.get("self")
             .unwrap()

@@ -350,19 +350,12 @@ impl super::Launcher for AzureRegion {
         self.region
     }
 
-    fn init(log: slog::Logger, r: Self::Region) -> Result<Self, Error> {
-        Self::new(&r.to_string(), log)
-    }
-
-    fn init_instances(
-        &mut self,
-        _max_instance_duration: Option<std::time::Duration>,
-        _max_wait: Option<std::time::Duration>,
-        machines: impl IntoIterator<Item = (String, Self::Machine)>,
-    ) -> Result<(), Error> {
-        let log = self.log.as_ref().expect("AzureRegion uninitialized");
+    fn launch(&mut self, l: super::LaunchDescriptor<Self::Machine, Self::Region>) -> Result<(), Error> {
+        self.log = Some(l.log);
+        let log = self.log.as_ref().unwrap();
+        let max_wait = l.max_wait;
         self.machines = 
-        machines
+        l.machines
             .into_iter()
             .map(|(nickname, desc)| {
                 let vm_name = super::rand_name_sep("vm", "-");
@@ -388,7 +381,7 @@ impl super::Launcher for AzureRegion {
                         22,
                     ),
                     None,
-                    None,
+                    max_wait,
                 )
                 .context(format!("failed to ssh to machine {}", nickname.clone()))
                 .map_err(|e| {

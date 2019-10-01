@@ -135,50 +135,6 @@ impl MachineSetup {
 /// Launch AWS EC2 spot instances.
 ///
 /// This implementation uses [rusoto](https://crates.io/crates/rusoto_core) to connect to AWS.
-/// Currently, `AWSRegion` only supports
-/// (DefaultCredentialsProvider)[https://docs.rs/rusoto_core/0.40.0/rusoto_core/struct.DefaultCredentialsProvider.html].
-/// To use a different credentials provider, you may have to [impl
-/// Launcher](crate::providers::Launcher):
-///
-/// ```
-/// use std::time;
-/// use std::collections::HashMap;
-/// use failure::Error;
-/// use tsunami::providers::Launcher;
-/// use tsunami::providers::aws::AWSRegion;
-/// struct CustomAWSRegion(AWSRegion);
-///
-/// impl Launcher for CustomAWSRegion {
-///     type Region = <AWSRegion as Launcher>::Region;
-///     type Machine = <AWSRegion as Launcher>::Machine;
-///
-///     fn init(log: slog::Logger, r: Self::Region) -> Result<Self, Error> {
-///         # let my_provider: rusoto_core::DefaultCredentialsProvider = unimplemented!();
-///         let my_provider = // ...
-///         # my_provider;
-///         Ok(Self(AWSRegion::new(&r, my_provider, log)?))
-///     }
-///
-///     fn region(&self) -> Self::Region {
-///         self.0.region()
-///     }
-///
-///     fn init_instances(
-///         &mut self,
-///         max_instance_duration: Option<time::Duration>,
-///         max_wait: Option<time::Duration>,
-///         machines: impl IntoIterator<Item = (String, Self::Machine)>,
-///     ) -> Result<(), Error> {
-///         self.0.init_instances(max_instance_duration, max_wait, machines)
-///     }
-///
-///     fn connect_instances(&self) -> Result<HashMap<String, tsunami::Machine>, Error> {
-///         self.0.connect_instances()
-///     }
-/// }
-///
-/// impl Drop for CustomAWSRegion { fn drop(&mut self) {}}
-/// ```
 ///
 /// EC2 spot instances are normally subject to termination at any point. This library instead
 /// uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
@@ -206,31 +162,25 @@ impl super::Launcher for AWSRegion {
         self.region.name().to_string()
     }
 
-    fn init(log: slog::Logger, r: Self::Region) -> Result<Self, Error> {
-        let p = DefaultCredentialsProvider::new()?;
-        Self::new(&r, p, log)
-    }
-
-    fn init_instances(
+    fn launch(
         &mut self,
-        max_instance_duration: Option<time::Duration>,
-        max_wait: Option<time::Duration>,
-        machines: impl IntoIterator<Item = (String, Self::Machine)>,
+        l: super::LaunchDescriptor<Self::Machine, Self::Region>,
     ) -> Result<(), Error> {
+        self.log = Some(l.log);
         self.make_spot_instance_requests(
-            max_instance_duration
+            l.max_instance_duration
                 .map(|x| (x.as_secs() / 60) as i64)
                 .unwrap_or_else(|| 360),
-            machines,
+            l.machines,
         )?;
 
         let start = time::Instant::now();
-        self.wait_for_spot_instance_requests(max_wait)?;
-        if let Some(mut d) = max_wait {
+        self.wait_for_spot_instance_requests(l.max_wait)?;
+        if let Some(mut d) = l.max_wait {
             d -= time::Instant::now().duration_since(start);
         }
 
-        self.wait_for_instances(max_wait)
+        self.wait_for_instances(l.max_wait)
     }
 
     fn connect_instances<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
