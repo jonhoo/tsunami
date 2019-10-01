@@ -36,6 +36,13 @@ pub trait Launcher: Drop + Send + Sync + Sized + Default {
     fn connect_instances<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error>;
 }
 
+/// Marker trait for whether the `Launcher` supports a maximum instance duration.
+///
+/// Some cloud providers support launching temporary ("spot", "preemptible", "low-priority") instances.
+/// In these cases, [`TsunamiBuilder`](crate::TsunamiBuilder) will allow the caller to set a
+/// maximum duration for the instances.
+pub trait SupportsDefinedDuration: Launcher {}
+
 struct Sep(&'static str);
 
 impl Default for Sep {

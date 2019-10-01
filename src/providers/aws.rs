@@ -630,6 +630,8 @@ impl AWSRegion {
     }
 }
 
+impl super::SupportsDefinedDuration for AWSRegion {}
+
 impl std::ops::Drop for AWSRegion {
     fn drop(&mut self) {
         let client = self.client.as_ref().unwrap();

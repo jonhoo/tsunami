@@ -93,6 +93,15 @@ impl<L: Launcher> Default for TsunamiBuilder<L> {
     }
 }
 
+impl<L: providers::SupportsDefinedDuration> TsunamiBuilder<L> {
+    /// For an `L` which impls [`SupportsDefinedDuration`](providers::SupportsDefinedDuration),
+    /// set the maximum instance duration.
+    pub fn set_max_duration(&mut self, hours: u64) -> &mut Self {
+        self.max_duration = Some(time::Duration::from_secs(hours * 3600));
+        self
+    }
+}
+
 impl<L: Launcher> TsunamiBuilder<L> {
     /// Add a machine descriptor to the Tsunami.
     ///
@@ -113,20 +122,6 @@ impl<L: Launcher> TsunamiBuilder<L> {
     /// established. Defaults to no limit.
     pub fn wait_limit(&mut self, t: time::Duration) -> &mut Self {
         self.max_wait = Some(t);
-        self
-    }
-
-    /// Set the maxium lifetime of spawned instances, if applicable for the provider.
-    ///
-    /// EC2 spot instances are normally subject to termination at any point. This library instead
-    /// uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
-    /// instances, which cost slightly more, but are never prematurely terminated. The lifetime of
-    /// such instances must be declared in advance (1-6 hours), and can be changed with this
-    /// method.
-    ///
-    /// The default duration is 6 hours.
-    pub fn set_max_duration(&mut self, hours: u64) -> &mut Self {
-        self.max_duration = Some(time::Duration::from_secs(hours * 3600));
         self
     }
 
@@ -164,8 +159,7 @@ impl<L: Launcher> TsunamiBuilder<L> {
 
         info!(log, "spinning up tsunami");
 
-        // 1. initialize the set of unique regions to connect to, and group machines into those
-        // regions
+        // 1. group machines into regions
         let mut regions: HashMap<String, providers::LaunchDescriptor<L::Machine, L::Region>> =
             Default::default();
         for (region_name, setups) in descriptors
