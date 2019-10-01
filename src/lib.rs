@@ -8,13 +8,23 @@
 //!
 //! ```rust,no_run
 //! use tsunami::TsunamiBuilder;
-//! use tsunami::providers::aws;
+//! use tsunami::providers::{Launcher, aws};
+//! use rusoto_core::DefaultCredentialsProvider;
 //! fn main() -> Result<(), failure::Error> {
-//!     let mut aws = TsunamiBuilder::<aws::AWSRegion>::default();
+//!     // Initialize AWS
+//!     let mut aws: tsunami::providers::aws::AWSLauncher<_> = Default::default();
+//!     aws.with_credentials(|| Ok(DefaultCredentialsProvider::new()?));
+//!
+//!     // Create a machine descriptor and add it to the Tsunami
+//!     let mut tb = TsunamiBuilder::<aws::AWSLauncher<_>>::default();
 //!     let m = aws::MachineSetup::default();
-//!     aws.add("my_vm".into(), m);
-//!     let tsunami = aws.spawn()?;
-//!     let vms = tsunami.get_machines()?;
+//!     tb.add("my_vm", m);
+//!
+//!     // Launch the VM
+//!     tb.spawn(&mut aws)?;
+//!
+//!     // SSH to the VM and run a command on it
+//!     let vms = aws.connect_all()?;
 //!     let my_vm = vms.get("my_vm").unwrap();
 //!     let ssh = my_vm.ssh.as_ref().unwrap();
 //!     ssh.cmd("hostname").map(|(stdout, _)| println!("{}", stdout))?;
