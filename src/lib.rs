@@ -1,5 +1,7 @@
 //! `tsunami` provides an interface for running short-lived jobs and experiments on cloud
-//! instances. Most interaction with this library happens through
+//! instances.
+//!
+//! Most interaction with this library happens through
 //! [`TsunamiBuilder`](struct.TsunamiBuilder.html) and [`Tsunami`](struct.Tsunami.html).
 //!
 //! # Example
@@ -52,7 +54,8 @@ pub mod providers;
 use providers::{Launcher, MachineSetup};
 
 /// A handle to an instance currently running as part of a tsunami.
-/// Run commands on the machine via [ssh](ssh::Session)
+///
+/// Run commands on the machine using the [`ssh::Session`] via the `ssh` field.
 pub struct Machine<'tsunami> {
     pub nickname: String,
     pub public_dns: String,
@@ -66,9 +69,10 @@ pub struct Machine<'tsunami> {
 }
 
 /// Use this to prepare and execute a new tsunami.
-/// Call [add](TsunamiBuilder::add) to add machines to the Tsunami, and
-/// [spawn](TsunamiBuidler::spawn) to spawn them and yield a [Tsunami](Tsunami).
-/// Then call [get_machines](Tsunami::get_machines) to access the machines that were
+///
+/// Call [`add`](TsunamiBuilder::add) to add machines to the Tsunami, and
+/// [`spawn`](TsunamiBuilder::spawn) to spawn them and yield a [`Tsunami`].
+/// Then call [`get_machines`](Tsunami::get_machines) to access the machines that were
 /// created.
 #[must_use]
 pub struct TsunamiBuilder<L: Launcher> {
@@ -91,6 +95,7 @@ impl<L: Launcher> Default for TsunamiBuilder<L> {
 
 impl<L: Launcher> TsunamiBuilder<L> {
     /// Add a machine descriptor to the Tsunami.
+    ///
     /// Machine descriptors are specific to the cloud provider they will be used for.
     pub fn add(&mut self, nickname: String, m: <L as providers::Launcher>::Machine) {
         self.descriptors.insert(nickname, m);
@@ -134,7 +139,9 @@ impl<L: Launcher> TsunamiBuilder<L> {
         self.log = slog::Logger::root(drain, o!());
     }
 
-    /// Start up all the hosts. Returns a handle, a [Tsunami](Tsunami), from which SSH connections
+    /// Start up all the hosts.
+    ///
+    /// Returns a handle, a [Tsunami](Tsunami), from which SSH connections
     /// to each instance are accesssible via [get_machines](Tsunami::get_machines).
     pub fn spawn(self) -> Result<Tsunami<L>, Error> {
         let Self {
@@ -193,7 +200,9 @@ pub struct Tsunami<L: Launcher> {
 }
 
 impl<L: Launcher> Tsunami<L> {
-    /// Use to access the machines. The `HashMap` of machines is keyed by the friendly names
+    /// Use to access the machines.
+    ///
+    /// The `HashMap` of machines is keyed by the friendly names
     /// assigned by the call to [add](TsunamiBuilder::add).
     /// The returned `Machine`s will live for the lifetime of self.
     pub fn get_machines<'l>(&'l self) -> Result<HashMap<String, Machine<'l>>, Error> {

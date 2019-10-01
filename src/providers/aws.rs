@@ -185,7 +185,7 @@ impl MachineSetup {
 /// instances, which cost slightly more, but are never prematurely terminated.  The lifetime of
 /// such instances must be declared in advance (1-6 hours). By default, we use 6 hours (the
 /// maximum). To change this, AWSRegion respects the limit specified in
-/// [`TsunamiBuilder::set_max_duration`](TsunamiBuidler::set_max_duration).
+/// [`TsunamiBuilder::set_max_duration`](crate::TsunamiBuilder::set_max_duration).
 #[derive(Default)]
 pub struct AWSRegion {
     region: rusoto_core::region::Region,
