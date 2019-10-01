@@ -59,7 +59,7 @@ fn main() -> Result<(), failure::Error> {
                 .region(opt.region.parse()?)
                 .instance_type("t3.medium");
 
-            b.add(String::from("machine"), m);
+            b.add("machine", m);
             launch_and_wait::<tsunami::providers::aws::AWSRegion>(b)?;
         }
         Providers::Azure => {
@@ -67,7 +67,7 @@ fn main() -> Result<(), failure::Error> {
             b.use_term_logger();
             let m = tsunami::providers::azure::Setup::default().region(opt.region.parse()?);
 
-            b.add(String::from("machine"), m);
+            b.add("machine", m);
             launch_and_wait::<tsunami::providers::azure::AzureRegion>(b)?;
         }
     }

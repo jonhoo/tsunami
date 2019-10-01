@@ -97,8 +97,8 @@ impl<L: Launcher> TsunamiBuilder<L> {
     /// Add a machine descriptor to the Tsunami.
     ///
     /// Machine descriptors are specific to the cloud provider they will be used for.
-    pub fn add(&mut self, nickname: String, m: <L as providers::Launcher>::Machine) {
-        self.descriptors.insert(nickname, m);
+    pub fn add(&mut self, nickname: &str, m: L::Machine) {
+        self.descriptors.insert(nickname.to_string(), m);
     }
 
     /// Limit how long we should wait for instances to be available before giving up.
