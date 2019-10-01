@@ -311,13 +311,35 @@ struct Descriptor {
     ip: String,
 }
 
+#[derive(Default)]
+pub struct AzureLauncher {
+    regions: HashMap<Region, AzureRegion>,
+}
+
+impl super::Launcher for AzureLauncher {
+    type Machine = Setup;
+
+    fn launch(&mut self, l: super::LaunchDescriptor<Self::Machine>) -> Result<(), Error> {
+        let region = l.region;
+        let mut az_region = AzureRegion::new(&l.region.to_string(), l.log.clone())?;
+        az_region.launch(l)?;
+        self.regions.insert(region, az_region);
+        Ok(())
+    }
+
+    fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
+        collect!(self.regions)
+    }
+}
+
+impl std::ops::Drop for AzureLauncher {
+    fn drop(&mut self) { }
+}
+
 /// This implementation relies on the [Azure
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest). 
 ///
 /// It also assumes you have previously run `az login` to authenticate with Microsoft.
-///
-/// Unlike AWS spot instances, Azure instacnes *do not* auto-terminate after the max_duration.
-/// Therefore, if your code crashes, you must manually terminate your instances.
 #[derive(Default)]
 pub struct AzureRegion {
     pub log: Option<slog::Logger>,
@@ -343,14 +365,9 @@ impl AzureRegion {
 }
 
 impl super::Launcher for AzureRegion {
-    type Region = Region;
     type Machine = Setup;
 
-    fn region(&self) -> Self::Region {
-        self.region
-    }
-
-    fn launch(&mut self, l: super::LaunchDescriptor<Self::Machine, Self::Region>) -> Result<(), Error> {
+    fn launch(&mut self, l: super::LaunchDescriptor<Self::Machine>) -> Result<(), Error> {
         self.log = Some(l.log);
         let log = self.log.as_ref().unwrap();
         let max_wait = l.max_wait;
@@ -418,7 +435,7 @@ impl super::Launcher for AzureRegion {
         Ok(())
     }
 
-    fn connect_instances<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
+    fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
         let log = self.log.as_ref().expect("AzureRegion uninitialized");
         self.machines
             .iter()

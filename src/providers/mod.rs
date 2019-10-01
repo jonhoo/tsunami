@@ -1,13 +1,9 @@
 use failure::Error;
 use std::collections::HashMap;
 
-pub struct LaunchDescriptor<
-    M: MachineSetup<Region = R>,
-    R: Eq + std::hash::Hash + Clone + std::string::ToString,
-> {
-    pub region: R,
+pub struct LaunchDescriptor<M: MachineSetup> {
+    pub region: M::Region,
     pub log: slog::Logger,
-    pub max_instance_duration: Option<std::time::Duration>,
     pub max_wait: Option<std::time::Duration>,
     pub machines: Vec<(String, M)>,
 }
@@ -22,26 +18,29 @@ pub trait MachineSetup {
 
 /// Implement this trait to implement a new cloud provider for Tsunami.
 /// Tsunami will call `launch` once per unique region, as defined by `MachineSetup`.
-pub trait Launcher: Drop + Send + Sync + Sized + Default {
-    type Region: Send + Eq + std::hash::Hash + Clone + std::string::ToString;
-    type Machine: MachineSetup<Region = Self::Region> + Send;
-
-    fn region(&self) -> Self::Region;
+pub trait Launcher: Drop + Sized {
+    type Machine: MachineSetup + Send;
 
     /// Spawn the instances. Implementors should remember enough information to subsequently answer
     /// calls to `connect_instances`, i.e., the IPs of the machines.
-    fn launch(&mut self, desc: LaunchDescriptor<Self::Machine, Self::Region>) -> Result<(), Error>;
+    fn launch(&mut self, desc: LaunchDescriptor<Self::Machine>) -> Result<(), Error>;
 
-    /// Return connections to the [`Machine`s](crate::Machine) that `init_instances` spawned.
-    fn connect_instances<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error>;
+    /// Return connections to the [`Machine`s](crate::Machine) that `launch` spawned.
+    fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error>;
 }
 
-/// Marker trait for whether the `Launcher` supports a maximum instance duration.
-///
-/// Some cloud providers support launching temporary ("spot", "preemptible", "low-priority") instances.
-/// In these cases, [`TsunamiBuilder`](crate::TsunamiBuilder) will allow the caller to set a
-/// maximum duration for the instances.
-pub trait SupportsDefinedDuration: Launcher {}
+macro_rules! collect {
+    ($x: expr) => {{
+        $x.values()
+            .map(|r| r.connect_all())
+            .fold(Ok(HashMap::default()), |acc, el| {
+                acc.and_then(|mut a| {
+                    a.extend(el?.into_iter());
+                    Ok(a)
+                })
+            })
+    }};
+}
 
 struct Sep(&'static str);
 

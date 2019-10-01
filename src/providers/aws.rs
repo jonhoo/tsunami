@@ -2,7 +2,7 @@ use crate::ssh;
 use crate::Machine;
 use failure::{Error, ResultExt};
 use rusoto_core::request::HttpClient;
-use rusoto_core::{DefaultCredentialsProvider, ProvideAwsCredentials, Region};
+use rusoto_core::{ProvideAwsCredentials, Region};
 use rusoto_ec2::Ec2;
 use std::collections::HashMap;
 use std::io::Write;
@@ -132,6 +132,85 @@ impl MachineSetup {
     }
 }
 
+pub struct AWSLauncher<P: ProvideAwsCredentials> {
+    credential_provider: Option<Box<dyn Fn() -> Result<P, Error>>>,
+    max_instance_duration: Option<std::time::Duration>,
+    regions: HashMap<<MachineSetup as super::MachineSetup>::Region, AWSRegion>,
+}
+
+impl<P: ProvideAwsCredentials> Default for AWSLauncher<P> {
+    fn default() -> Self {
+        AWSLauncher {
+            credential_provider: None,
+            max_instance_duration: None,
+            regions: Default::default(),
+        }
+    }
+}
+
+impl<P> AWSLauncher<P>
+where
+    P: ProvideAwsCredentials + Send + Sync + 'static,
+    <P as ProvideAwsCredentials>::Future: Send,
+{
+    pub fn with_credentials(&mut self, f: impl Fn() -> Result<P, Error> + 'static) -> &mut Self {
+        self.credential_provider = Some(Box::new(f));
+        self
+    }
+
+    pub fn set_max_instance_duration(&mut self, t: std::time::Duration) -> &mut Self {
+        self.max_instance_duration = Some(t);
+        self
+    }
+
+    // TODO with rust specialization (https://github.com/rust-lang/rust/issues/31844), can do:
+    // ```
+    // self.credential_provider.unwrap_or_else(|| Box::new(|| DefaultCredentialProvider::new()))?()
+    // ```
+    fn get_credential_provider(&self) -> Result<P, Error> {
+        self.credential_provider
+            .as_ref()
+            .ok_or_else(|| format_err!("No credential provider given"))?()
+    }
+}
+
+impl<P> super::Launcher for AWSLauncher<P>
+where
+    P: ProvideAwsCredentials + Send + Sync + 'static,
+    <P as ProvideAwsCredentials>::Future: Send,
+{
+    type Machine = MachineSetup;
+
+    fn launch(&mut self, l: super::LaunchDescriptor<Self::Machine>) -> Result<(), Error> {
+        let prov = self.get_credential_provider()?;
+        let mut awsregion = AWSRegion::new(&l.region.to_string(), prov, l.log)?;
+        awsregion.make_spot_instance_requests(
+            self.max_instance_duration
+                .map(|x| (x.as_secs() / 60) as i64)
+                .unwrap_or_else(|| 360),
+            l.machines,
+        )?;
+
+        let start = time::Instant::now();
+        awsregion.wait_for_spot_instance_requests(l.max_wait)?;
+        if let Some(mut d) = l.max_wait {
+            d -= time::Instant::now().duration_since(start);
+        }
+
+        awsregion.wait_for_instances(l.max_wait)?;
+        self.regions.insert(l.region, awsregion);
+        Ok(())
+    }
+
+    fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
+        collect!(self.regions)
+    }
+}
+
+impl<P: ProvideAwsCredentials> std::ops::Drop for AWSLauncher<P> {
+    fn drop(&mut self) {}
+}
+
 /// Launch AWS EC2 spot instances.
 ///
 /// This implementation uses [rusoto](https://crates.io/crates/rusoto_core) to connect to AWS.
@@ -144,7 +223,7 @@ impl MachineSetup {
 /// [`TsunamiBuilder::set_max_duration`](crate::TsunamiBuilder::set_max_duration).
 #[derive(Default)]
 pub struct AWSRegion {
-    region: rusoto_core::region::Region,
+    pub region: rusoto_core::region::Region,
     security_group_id: String,
     ssh_key_name: String,
     private_key_path: Option<tempfile::NamedTempFile>,
@@ -152,75 +231,6 @@ pub struct AWSRegion {
     outstanding_spot_request_ids: HashMap<String, (String, MachineSetup)>,
     instances: HashMap<String, (Option<(String, String)>, (String, MachineSetup))>,
     log: Option<slog::Logger>,
-}
-
-impl super::Launcher for AWSRegion {
-    type Region = String;
-    type Machine = MachineSetup;
-
-    fn region(&self) -> Self::Region {
-        self.region.name().to_string()
-    }
-
-    fn launch(
-        &mut self,
-        l: super::LaunchDescriptor<Self::Machine, Self::Region>,
-    ) -> Result<(), Error> {
-        self.log = Some(l.log);
-        self.make_spot_instance_requests(
-            l.max_instance_duration
-                .map(|x| (x.as_secs() / 60) as i64)
-                .unwrap_or_else(|| 360),
-            l.machines,
-        )?;
-
-        let start = time::Instant::now();
-        self.wait_for_spot_instance_requests(l.max_wait)?;
-        if let Some(mut d) = l.max_wait {
-            d -= time::Instant::now().duration_since(start);
-        }
-
-        self.wait_for_instances(l.max_wait)
-    }
-
-    fn connect_instances<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
-        let log = self.log.as_ref().unwrap();
-        let private_key_path = self.private_key_path.as_ref().unwrap();
-        self.instances
-            .values()
-            .map(|info| match info {
-                (Some((public_ip, public_dns)), (name, MachineSetup { .. })) => {
-                    use std::net::{IpAddr, SocketAddr};
-                    let sess = ssh::Session::connect(
-                        log,
-                        "ubuntu",
-                        SocketAddr::new(
-                            public_ip
-                                .parse::<IpAddr>()
-                                .context("machine ip is not an ip address")?,
-                            22,
-                        ),
-                        Some(private_key_path.path()),
-                        None,
-                    )
-                    .context(format!("failed to ssh to machine {}", public_dns))
-                    .map_err(|e| {
-                        error!(log, "failed to ssh to {}", public_ip);
-                        e
-                    })?;
-                    let machine = Machine {
-                        public_ip: public_ip.clone(),
-                        public_dns: public_dns.clone(),
-                        nickname: name.clone(),
-                        ssh: Some(sess),
-                        _tsunami: Default::default(),
-                    };
-                    Ok((name.clone(), machine))
-                }
-                _ => bail!("Machines not initialized"),
-            })
-            .collect()
-    }
 }
 
 impl AWSRegion {
@@ -628,9 +638,46 @@ impl AWSRegion {
 
         Ok(())
     }
-}
 
-impl super::SupportsDefinedDuration for AWSRegion {}
+    pub fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
+        let log = self.log.as_ref().unwrap();
+        let private_key_path = self.private_key_path.as_ref().unwrap();
+        self.instances
+            .values()
+            .map(|info| match info {
+                (Some((public_ip, public_dns)), (name, MachineSetup { .. })) => {
+                    use std::net::{IpAddr, SocketAddr};
+                    let sess = ssh::Session::connect(
+                        log,
+                        "ubuntu",
+                        SocketAddr::new(
+                            public_ip
+                                .parse::<IpAddr>()
+                                .context("machine ip is not an ip address")?,
+                            22,
+                        ),
+                        Some(private_key_path.path()),
+                        None,
+                    )
+                    .context(format!("failed to ssh to machine {}", public_dns))
+                    .map_err(|e| {
+                        error!(log, "failed to ssh to {}", public_ip);
+                        e
+                    })?;
+                    let machine = Machine {
+                        public_ip: public_ip.clone(),
+                        public_dns: public_dns.clone(),
+                        nickname: name.clone(),
+                        ssh: Some(sess),
+                        _tsunami: Default::default(),
+                    };
+                    Ok((name.clone(), machine))
+                }
+                _ => bail!("Machines not initialized"),
+            })
+            .collect()
+    }
+}
 
 impl std::ops::Drop for AWSRegion {
     fn drop(&mut self) {

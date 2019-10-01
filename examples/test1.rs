@@ -1,9 +1,9 @@
 extern crate tsunami;
 
+use rusoto_core::DefaultCredentialsProvider;
 use rusoto_core::Region;
 use slog::info;
-use std::time;
-use tsunami::providers::aws;
+use tsunami::providers::{aws, Launcher};
 use tsunami::{Machine, TsunamiBuilder};
 
 fn ping(from: &Machine, to: &Machine, log: &slog::Logger) -> Result<(), failure::Error> {
@@ -16,7 +16,7 @@ fn ping(from: &Machine, to: &Machine, log: &slog::Logger) -> Result<(), failure:
 }
 
 fn main() -> Result<(), failure::Error> {
-    let mut b = TsunamiBuilder::<aws::AWSRegion>::default();
+    let mut b = TsunamiBuilder::<aws::AWSLauncher<_>>::default();
     b.use_term_logger();
 
     let m = aws::MachineSetup::default()
@@ -30,16 +30,18 @@ fn main() -> Result<(), failure::Error> {
         .setup(|ssh, _| ssh.cmd("sudo apt update").map(|(_, _)| ()));
     b.add("india", m).unwrap();
 
-    b.wait_limit(time::Duration::from_secs(60));
-    let ts = b.spawn()?;
-    let vms = ts.get_machines()?;
-    let log = ts.logger();
+    let mut l: tsunami::providers::aws::AWSLauncher<_> = Default::default();
+    l.with_credentials(|| Ok(DefaultCredentialsProvider::new()?));
+
+    let log = b.logger();
+    b.spawn(&mut l)?;
+    let vms = l.connect_all()?;
 
     let east = vms.get("east").unwrap();
     let india = vms.get("india").unwrap();
 
-    ping(east, india, log)?;
-    ping(india, east, log)?;
+    ping(east, india, &log)?;
+    ping(india, east, &log)?;
 
     Ok(())
 }

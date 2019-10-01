@@ -93,17 +93,9 @@ pub struct Machine {
 }
 
 impl super::Launcher for Machine {
-    type Region = String;
     type Machine = Setup;
 
-    fn region(&self) -> Self::Region {
-        String::from("bare")
-    }
-
-    fn launch(
-        &mut self,
-        l: super::LaunchDescriptor<Self::Machine, Self::Region>,
-    ) -> Result<(), Error> {
+    fn launch(&mut self, l: super::LaunchDescriptor<Self::Machine>) -> Result<(), Error> {
         self.log = Some(l.log);
         let log = self.log.as_ref().expect("Baremetal machine uninitialized");
         let dscs = l
@@ -157,7 +149,7 @@ impl super::Launcher for Machine {
         Ok(())
     }
 
-    fn connect_instances<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
+    fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
         let log = self.log.as_ref().expect("Baremetal machine uninitialized");
         let addr = self
             .addr
@@ -217,12 +209,11 @@ mod test {
         let desc = crate::providers::LaunchDescriptor {
             region: String::from("localhost"),
             log: crate::test::test_logger(),
-            max_instance_duration: None,
             max_wait: None,
             machines: vec![(String::from("self"), s)],
         };
         m.launch(desc)?;
-        let ms = m.connect_instances()?;
+        let ms = m.connect_all()?;
         ms.get("self")
             .unwrap()
             .ssh

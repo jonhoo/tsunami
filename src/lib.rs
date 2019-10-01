@@ -32,7 +32,6 @@
 #[macro_use]
 extern crate failure;
 extern crate rand;
-extern crate rayon;
 extern crate rusoto_core;
 extern crate rusoto_ec2;
 #[macro_use]
@@ -43,7 +42,6 @@ extern crate tempfile;
 
 use failure::Error;
 use itertools::Itertools;
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::time;
 
@@ -78,7 +76,6 @@ pub struct Machine<'tsunami> {
 pub struct TsunamiBuilder<L: Launcher> {
     descriptors: HashMap<String, L::Machine>,
     log: slog::Logger,
-    max_duration: Option<time::Duration>,
     max_wait: Option<time::Duration>,
 }
 
@@ -87,18 +84,8 @@ impl<L: Launcher> Default for TsunamiBuilder<L> {
         TsunamiBuilder {
             descriptors: Default::default(),
             log: slog::Logger::root(slog::Discard, o!()),
-            max_duration: None, // 6 hours
             max_wait: None,
         }
-    }
-}
-
-impl<L: providers::SupportsDefinedDuration> TsunamiBuilder<L> {
-    /// For an `L` which impls [`SupportsDefinedDuration`](providers::SupportsDefinedDuration),
-    /// set the maximum instance duration.
-    pub fn set_max_duration(&mut self, hours: u64) -> &mut Self {
-        self.max_duration = Some(time::Duration::from_secs(hours * 3600));
-        self
     }
 }
 
@@ -120,7 +107,7 @@ impl<L: Launcher> TsunamiBuilder<L> {
     ///
     /// This includes both waiting for spot requests to be satisfied, and for SSH connections to be
     /// established. Defaults to no limit.
-    pub fn wait_limit(&mut self, t: time::Duration) -> &mut Self {
+    pub fn timeout(&mut self, t: time::Duration) -> &mut Self {
         self.max_wait = Some(t);
         self
     }
@@ -145,22 +132,26 @@ impl<L: Launcher> TsunamiBuilder<L> {
         self
     }
 
+    pub fn logger(&self) -> slog::Logger {
+        self.log.clone()
+    }
+
     /// Start up all the hosts.
     ///
-    /// Returns a handle, a [Tsunami](Tsunami), from which SSH connections
-    /// to each instance are accesssible via [get_machines](Tsunami::get_machines).
-    pub fn spawn(self) -> Result<Tsunami<L>, Error> {
+    /// SSH connections to each instance are accesssible via
+    /// [`connect_all`](providers::Launcher::connect_all).
+    pub fn spawn(self, launcher: &mut L) -> Result<(), Error> {
         let Self {
             descriptors,
-            max_duration,
             max_wait,
             log,
+            ..
         } = self;
 
         info!(log, "spinning up tsunami");
 
         // 1. group machines into regions
-        let mut regions: HashMap<String, providers::LaunchDescriptor<L::Machine, L::Region>> =
+        let mut regions: HashMap<String, providers::LaunchDescriptor<L::Machine>> =
             Default::default();
         for (region_name, setups) in descriptors
             .into_iter()
@@ -172,77 +163,19 @@ impl<L: Launcher> TsunamiBuilder<L> {
             let dsc = providers::LaunchDescriptor {
                 region: region_name.clone(),
                 log: region_log,
-                max_instance_duration: max_duration,
                 max_wait,
                 machines: setups,
             };
+
             regions.insert(region_name.to_string(), dsc);
         }
 
         // 2. launch ze missiles
-        let providers: Vec<L> = regions
-            .into_par_iter()
-            .map(|(_, desc)| {
-                let mut prov: L = Default::default();
-                prov.launch(desc)?;
-                Ok(prov)
-            })
-            .try_fold(Vec::new, |mut provs, res: Result<L, Error>| {
-                res.and_then(|prov| {
-                    provs.push(prov);
-                    Ok(provs)
-                })
-            })
-            .try_reduce(Vec::new, |mut provs, prov| {
-                provs.extend(prov);
-                Ok(provs)
-            })?;
+        for (_, desc) in regions {
+            launcher.launch(desc)?;
+        }
 
-        Ok(Tsunami { providers, log })
-    }
-}
-
-/// When this is dropped, the instances are all terminated automatically.
-///
-/// # Note
-/// See caveats for Azure and Baremetal machines.
-#[must_use]
-pub struct Tsunami<L: Launcher> {
-    providers: Vec<L>,
-    log: slog::Logger,
-}
-
-impl<L: Launcher> Tsunami<L> {
-    /// Use to access the machines.
-    ///
-    /// The `HashMap` of machines is keyed by the friendly names
-    /// assigned by the call to [add](TsunamiBuilder::add).
-    /// The returned `Machine`s will live for the lifetime of self.
-    ///
-    /// It's possible to call this method multiple times to get multiple
-    /// independent connections to the machines. These will *not* be
-    /// synchronized, so take care to avoid any conflicts.
-    pub fn get_machines<'l>(&'l self) -> Result<HashMap<String, Machine<'l>>, Error> {
-        self.providers
-            .par_iter()
-            .map(|prov| prov.connect_instances())
-            .try_fold(
-                HashMap::new,
-                |mut machs, res: Result<HashMap<String, Machine<'l>>, Error>| {
-                    res.and_then(|ms| {
-                        machs.extend(ms);
-                        Ok(machs)
-                    })
-                },
-            )
-            .try_reduce(HashMap::new, |mut machs, ms| {
-                machs.extend(ms);
-                Ok(machs)
-            })
-    }
-
-    pub fn logger(&self) -> &slog::Logger {
-        &self.log
+        Ok(())
     }
 }
 
