@@ -39,7 +39,6 @@ serde_json = "1"
 sessh = "0.1.0"
 slog-term = "2"
 slog = "2"
-#slog = { version = "2", features = ["max_level_trace"] }
 
 [profile.release]
 debug = true

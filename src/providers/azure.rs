@@ -476,6 +476,7 @@ mod test {
     use super::Region;
 
     #[test]
+    #[ignore]
     fn resource_group() {
         static TEST_RG_NAME: &str = "test";
         azcmd::create_resource_group(Region::EastUs, TEST_RG_NAME)

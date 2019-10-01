@@ -739,6 +739,7 @@ mod test {
     use rusoto_ec2::Ec2;
 
     #[test]
+    #[ignore]
     fn make_key() -> Result<(), Error> {
         let region = Region::UsEast1;
         let provider = DefaultCredentialsProvider::new()?;
