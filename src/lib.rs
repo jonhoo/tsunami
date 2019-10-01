@@ -45,7 +45,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::time;
 
-mod ssh;
+pub use sessh as ssh;
 pub use ssh::Session;
 
 pub mod providers;
