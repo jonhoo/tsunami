@@ -306,11 +306,10 @@ impl Setup {
     }
 }
 
-struct Descriptor {
-    name: String,
-    ip: String,
-}
-
+/// This implementation relies on the [Azure
+/// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest). 
+///
+/// It also assumes you have previously run `az login` to authenticate with Microsoft.
 #[derive(Default)]
 pub struct AzureLauncher {
     regions: HashMap<Region, AzureRegion>,
@@ -336,6 +335,14 @@ impl std::ops::Drop for AzureLauncher {
     fn drop(&mut self) { }
 }
 
+struct Descriptor {
+    name: String,
+    ip: String,
+}
+
+/// Region-specific connection to Azure. Each instance of this type creates one Azure
+/// "resource group" and deletes the group on drop.
+///
 /// This implementation relies on the [Azure
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest). 
 ///

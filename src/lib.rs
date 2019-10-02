@@ -78,10 +78,11 @@ pub struct Machine<'tsunami> {
 
 /// Use this to prepare and execute a new tsunami.
 ///
-/// Call [`add`](TsunamiBuilder::add) to add machines to the Tsunami, and
-/// [`spawn`](TsunamiBuilder::spawn) to spawn them and yield a [`Tsunami`].
-/// Then call [`get_machines`](Tsunami::get_machines) to access the machines that were
-/// created.
+/// Call [`add`](TsunamiBuilder::add) to add machines to the TsunamiBuilder, and
+/// [`spawn`](TsunamiBuilder::spawn) to spawn them into the `Launcher`.
+///
+/// Then, call [`Launcher::connect_all`](providers::Launcher::connect_all) to access the spawned
+/// machines.
 #[must_use]
 pub struct TsunamiBuilder<L: Launcher> {
     descriptors: HashMap<String, L::Machine>,
@@ -142,6 +143,9 @@ impl<L: Launcher> TsunamiBuilder<L> {
         self
     }
 
+    /// Get the logger that `use_term_logger` creates (or was passed to `set_logger`).
+    ///
+    /// The default logger discards all records passed to it.
     pub fn logger(&self) -> slog::Logger {
         self.log.clone()
     }
@@ -150,6 +154,8 @@ impl<L: Launcher> TsunamiBuilder<L> {
     ///
     /// SSH connections to each instance are accesssible via
     /// [`connect_all`](providers::Launcher::connect_all).
+    ///
+    /// This method will consume all the `impl L::Machine`s added via `add`.
     pub fn spawn(&mut self, launcher: &mut L) -> Result<(), Error> {
         let descriptors: HashMap<String, L::Machine> = self.descriptors.drain().collect();
         let max_wait = self.max_wait;

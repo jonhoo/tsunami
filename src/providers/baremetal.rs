@@ -79,7 +79,7 @@ impl Setup {
 }
 
 /// Only one machine is supported per instance of this Launcher, further instances of `Setup`
-/// passed to `init_instances` will
+/// passed to `launch` will
 /// be ignored, since it doesn't make sense to connect to the same machine twice.
 ///
 /// The `impl Drop` of this type is a no-op, since Tsunami can't terminate an existing machine.
@@ -184,17 +184,10 @@ impl super::Launcher for Machine {
 impl Drop for Machine {
     fn drop(&mut self) {
         let log = self.log.as_ref().expect("Baremetal machine uninitialized");
-        debug!(log, "Dropping baremetal machine");
+        debug!(log, "Dropping baremetal machine"; "addr" => self.addr.unwrap());
     }
 }
 
-// TODO not working due to some ssh-agent bug:
-// ---- providers::baremetal::test::localhost stdout ----
-// Aug 29 18:59:42.375 TRCE agent identity failed, err: Error { code: -18, msg: "Username/PublicKey
-// combination invalid" }, identity: /Users/akshay/.ssh/id_rsa, username: akshay
-//
-// Aug 29 18:59:42.375 ERRO failed to ssh to [::1]:22
-// Error: ErrorMessage { msg: "failed to authenticate ssh session with ssh-agent" }
 #[cfg(test)]
 mod test {
     use crate::providers::Launcher;

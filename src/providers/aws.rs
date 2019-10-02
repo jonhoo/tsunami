@@ -132,6 +132,12 @@ impl MachineSetup {
     }
 }
 
+/// Launch AWS EC2 spot instances.
+///
+/// This implementation uses [rusoto](https://crates.io/crates/rusoto_core) to connect to AWS.
+/// Therefore, you must call [`with_credentials`](AWSLauncher::with_credentials) to authenticate
+/// with AWS.
+/// Each individual region is handled by `AWSRegion`.
 pub struct AWSLauncher<P: ProvideAwsCredentials> {
     credential_provider: Option<Box<dyn Fn() -> Result<P, Error>>>,
     max_instance_duration: Option<std::time::Duration>,
@@ -153,11 +159,26 @@ where
     P: ProvideAwsCredentials + Send + Sync + 'static,
     <P as ProvideAwsCredentials>::Future: Send,
 {
+    /// A closure which returns [`P:
+    /// ProvideAwsCredentials`](https://docs.rs/rusoto_core/0.40.0/rusoto_core/trait.ProvideAwsCredentials.html).
+    ///
+    /// For example to specify using
+    /// [`DefaultCredentialsProvider`](https://docs.rs/rusoto_core/0.40.0/rusoto_core/struct.DefaultCredentialsProvider.html):
+    /// ```rust
+    /// use rusoto_core::DefaultCredentialsProvider;
+    /// let mut l: tsunami::providers::aws::AWSLauncher<_> = Default::default();
+    /// l.with_credentials(|| Ok(DefaultCredentialsProvider::new()?));
+    /// ```
     pub fn with_credentials(&mut self, f: impl Fn() -> Result<P, Error> + 'static) -> &mut Self {
         self.credential_provider = Some(Box::new(f));
         self
     }
 
+    /// `AWSLauncher` uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+    /// instances.
+    ///
+    /// The lifetime of such instances must be declared in advance (1-6 hours). By default, we use 6 hours (the
+    /// maximum). If `t` > 6 hours, `AWSLauncher` will use a duration of 6 hours.
     pub fn set_max_instance_duration(&mut self, t: std::time::Duration) -> &mut Self {
         self.max_instance_duration = Some(t);
         self
@@ -186,7 +207,7 @@ where
         let mut awsregion = AWSRegion::new(&l.region.to_string(), prov, l.log)?;
         awsregion.make_spot_instance_requests(
             self.max_instance_duration
-                .map(|x| (x.as_secs() / 60) as i64)
+                .map(|x| (std::cmp::min(360, x.as_secs() / 60)) as i64)
                 .unwrap_or_else(|| 360),
             l.machines,
         )?;
@@ -211,7 +232,7 @@ impl<P: ProvideAwsCredentials> std::ops::Drop for AWSLauncher<P> {
     fn drop(&mut self) {}
 }
 
-/// Launch AWS EC2 spot instances.
+/// Region specific. Launch AWS EC2 spot instances.
 ///
 /// This implementation uses [rusoto](https://crates.io/crates/rusoto_core) to connect to AWS.
 ///
@@ -220,7 +241,7 @@ impl<P: ProvideAwsCredentials> std::ops::Drop for AWSLauncher<P> {
 /// instances, which cost slightly more, but are never prematurely terminated.  The lifetime of
 /// such instances must be declared in advance (1-6 hours). By default, we use 6 hours (the
 /// maximum). To change this, AWSRegion respects the limit specified in
-/// [`TsunamiBuilder::set_max_duration`](crate::TsunamiBuilder::set_max_duration).
+/// [`AWSLauncher::set_max_instance_duration`](AWSLauncher::set_max_instance_duration).
 #[derive(Default)]
 pub struct AWSRegion {
     pub region: rusoto_core::region::Region,
