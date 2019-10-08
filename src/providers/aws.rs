@@ -256,6 +256,10 @@ pub struct AWSRegion {
 
 impl AWSRegion {
     /// Connect to AWS region `region`, using credentials provider `provider`.
+    ///
+    /// This is a lower-level API, you may want [`AWSLauncher`] instead.
+    ///
+    /// This will create a temporary security group and SSH key in the given AWS region.
     pub fn new<P>(region: &str, provider: P, log: slog::Logger) -> Result<Self, Error>
     where
         P: ProvideAwsCredentials + Send + Sync + 'static,
@@ -383,7 +387,16 @@ impl AWSRegion {
         Ok(self)
     }
 
-    /// `max_duration` is in minutes.
+    /// Make one-time spot instance requests, which will automatically get terminated after
+    /// `max_duration` minutes.
+    ///
+    /// `machines` is a key-value iterator: keys are friendly names for the machines, and values
+    /// are [`MachineSetup`] describing each machine to launch. Once the machines launch,
+    /// the friendly names are tied to SSH connections ([`crate::Machine`]) in the `HashMap` that
+    /// [`connect_all`](AWSRegion::connect_all) returns.
+    ///
+    /// Will *not* wait for the spot instance requests to complete. To wait, call
+    /// [`wait_for_spot_instance_requests`](AWSRegion::wait_for_spot_instance_requests).
     pub fn make_spot_instance_requests(
         &mut self,
         max_duration: i64,
@@ -439,6 +452,14 @@ impl AWSRegion {
         Ok(())
     }
 
+    /// Poll AWS once a second until either `max_wait` (if not `None`) elapses, or
+    /// the spot requests are fulfilled.
+    ///
+    /// This method will return when the spot requests are fulfilled, *not* when the instances are
+    /// ready.
+    ///
+    /// To wait for the instances to be ready, call
+    /// [`wait_for_instances`](AWSRegion::wait_for_instances).
     pub fn wait_for_spot_instance_requests(
         &mut self,
         max_wait: Option<time::Duration>,
@@ -570,6 +591,7 @@ impl AWSRegion {
         Ok(())
     }
 
+    /// Poll AWS until `max_wait` (if not `None`) or the instances are ready to SSH to.
     pub fn wait_for_instances(&mut self, max_wait: Option<time::Duration>) -> Result<(), Error> {
         let start = time::Instant::now();
         let mut desc_req = rusoto_ec2::DescribeInstancesRequest::default();
@@ -660,6 +682,8 @@ impl AWSRegion {
         Ok(())
     }
 
+    /// Establish SSH connections to the machines. The `Ok` value is a `HashMap` associating the
+    /// friendly name for each `MachineSetup` with the corresponding SSH connection.
     pub fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
         let log = self.log.as_ref().unwrap();
         let private_key_path = self.private_key_path.as_ref().unwrap();
