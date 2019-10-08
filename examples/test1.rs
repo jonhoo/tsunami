@@ -17,7 +17,8 @@ fn ping(from: &Machine, to: &Machine, log: &slog::Logger) -> Result<(), failure:
 
 fn main() -> Result<(), failure::Error> {
     let mut b = TsunamiBuilder::<aws::AWSLauncher<_>>::default();
-    b.use_term_logger();
+    b.use_term_logger()
+        .timeout(std::time::Duration::from_secs(30));
 
     let m = aws::MachineSetup::default()
         .region(Region::UsEast1)
