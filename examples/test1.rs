@@ -16,7 +16,7 @@ fn ping(from: &Machine, to: &Machine, log: &slog::Logger) -> Result<(), failure:
 }
 
 fn main() -> Result<(), failure::Error> {
-    let mut b = TsunamiBuilder::<aws::AWSLauncher<_>>::default();
+    let mut b = TsunamiBuilder::default();
     b.use_term_logger()
         .timeout(std::time::Duration::from_secs(30));
 

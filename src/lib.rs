@@ -16,7 +16,7 @@
 //!     aws.with_credentials(|| Ok(DefaultCredentialsProvider::new()?));
 //!
 //!     // Create a machine descriptor and add it to the Tsunami
-//!     let mut tb = TsunamiBuilder::<aws::AWSLauncher<_>>::default();
+//!     let mut tb = TsunamiBuilder::default();
 //!     let m = aws::MachineSetup::default();
 //!     tb.add("my_vm", m);
 //!
