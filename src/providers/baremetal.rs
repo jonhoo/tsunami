@@ -1,16 +1,18 @@
 use crate::ssh;
 use failure::Error;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Descriptor for a single, existing machine to connect to.
 /// Therefore, the `impl MachineSetup` includes the address of the machine in `region`; i.e.,
 /// each instance of Setup corresponds to a single machine.
+#[derive(Clone)]
 pub struct Setup {
     addr: std::net::SocketAddr,
     username: String,
     key_path: Option<std::path::PathBuf>,
     setup_fn:
-        Option<Box<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
+        Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
 }
 
 impl super::MachineSetup for Setup {
@@ -72,7 +74,7 @@ impl Setup {
         setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
     ) -> Self {
         Self {
-            setup_fn: Some(Box::new(setup)),
+            setup_fn: Some(Arc::new(setup)),
             ..self
         }
     }

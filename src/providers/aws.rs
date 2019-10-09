@@ -6,6 +6,7 @@ use rusoto_core::{ProvideAwsCredentials, Region};
 use rusoto_ec2::Ec2;
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::Arc;
 use std::{thread, time};
 
 struct UbuntuAmi(String);
@@ -51,11 +52,12 @@ impl Into<String> for UbuntuAmi {
 /// The `setup` argument is called once for every spawned instances of this type with a handle
 /// to the target machine. Use [`Machine::ssh`](struct.Machine.html#structfield.ssh) to issue
 /// commands on the host in question.
+#[derive(Clone)]
 pub struct MachineSetup {
     region: Region,
     instance_type: String,
     ami: String,
-    setup: Option<Box<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
+    setup: Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
 }
 
 impl super::MachineSetup for MachineSetup {
@@ -127,7 +129,7 @@ impl MachineSetup {
         mut self,
         setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
     ) -> Self {
-        self.setup = Some(Box::new(setup));
+        self.setup = Some(Arc::new(setup));
         self
     }
 }

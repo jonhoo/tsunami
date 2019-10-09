@@ -154,10 +154,8 @@ impl<L: Launcher> TsunamiBuilder<L> {
     ///
     /// SSH connections to each instance are accesssible via
     /// [`connect_all`](providers::Launcher::connect_all).
-    ///
-    /// This method will consume all the `impl L::Machine`s added via `add`.
-    pub fn spawn(&mut self, launcher: &mut L) -> Result<(), Error> {
-        let descriptors: HashMap<String, L::Machine> = self.descriptors.drain().collect();
+    pub fn spawn(&self, launcher: &mut L) -> Result<(), Error> {
+        let descriptors: HashMap<String, L::Machine> = self.descriptors.clone();
         let max_wait = self.max_wait;
         let log = self.log.clone();
 

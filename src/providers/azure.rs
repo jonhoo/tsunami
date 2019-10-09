@@ -1,6 +1,7 @@
 use crate::ssh;
 use failure::{bail, Error, ResultExt};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::net::{IpAddr, SocketAddr};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -244,11 +245,12 @@ mod azcmd {
 }
 
 /// A descriptor for a single Azure VM type. Only UbuntuLTS VMs are supported.
+#[derive(Clone)]
 pub struct Setup {
     region: Region,
     instance_type: String,
     setup_fn:
-        Option<Box<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
+        Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
 }
 
 impl Default for Setup {
@@ -301,7 +303,7 @@ impl Setup {
         mut self,
         setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
     ) -> Self {
-        self.setup_fn = Some(Box::new(setup));
+        self.setup_fn = Some(Arc::new(setup));
         self
     }
 }
