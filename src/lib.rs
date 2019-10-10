@@ -84,13 +84,13 @@ pub struct Machine<'tsunami> {
 /// Then, call [`Launcher::connect_all`](providers::Launcher::connect_all) to access the spawned
 /// machines.
 #[must_use]
-pub struct TsunamiBuilder<L: Launcher> {
-    descriptors: HashMap<String, L::Machine>,
+pub struct TsunamiBuilder<M: MachineSetup> {
+    descriptors: HashMap<String, M>,
     log: slog::Logger,
     max_wait: Option<time::Duration>,
 }
 
-impl<L: Launcher> Default for TsunamiBuilder<L> {
+impl<M: MachineSetup> Default for TsunamiBuilder<M> {
     fn default() -> Self {
         TsunamiBuilder {
             descriptors: Default::default(),
@@ -100,13 +100,13 @@ impl<L: Launcher> Default for TsunamiBuilder<L> {
     }
 }
 
-impl<L: Launcher> TsunamiBuilder<L> {
+impl<M: MachineSetup> TsunamiBuilder<M> {
     /// Add a machine descriptor to the Tsunami.
     ///
     /// Machine descriptors are specific to the cloud provider they will be used for.
     /// They must be unique for each `TsunamiBuilder`. If `nickname` is a duplicate,
     /// this method will return an `Err` value.
-    pub fn add(&mut self, nickname: &str, m: L::Machine) -> Result<&mut Self, Error> {
+    pub fn add(&mut self, nickname: &str, m: M) -> Result<&mut Self, Error> {
         if let Some(_) = self.descriptors.insert(nickname.to_string(), m) {
             Err(format_err!("Duplicate machine name {}", nickname))
         } else {
@@ -154,8 +154,8 @@ impl<L: Launcher> TsunamiBuilder<L> {
     ///
     /// SSH connections to each instance are accesssible via
     /// [`connect_all`](providers::Launcher::connect_all).
-    pub fn spawn(&self, launcher: &mut L) -> Result<(), Error> {
-        let descriptors: HashMap<String, L::Machine> = self.descriptors.clone();
+    pub fn spawn<L: Launcher<Machine = M>>(&self, launcher: &mut L) -> Result<(), Error> {
+        let descriptors: HashMap<String, M> = self.descriptors.clone();
         let max_wait = self.max_wait;
         let log = self.log.clone();
 
