@@ -11,14 +11,14 @@ pub struct LaunchDescriptor<M: MachineSetup> {
 /// This is used to group machines into connections
 /// to cloud providers. e.g., for AWS we need a separate
 /// connection to each region.
-pub trait MachineSetup: Send + Clone {
-    type Region: Eq + std::hash::Hash + Clone + std::string::ToString;
+pub trait MachineSetup {
+    type Region: Eq + std::hash::Hash + Clone + ToString;
     fn region(&self) -> Self::Region;
 }
 
 /// Implement this trait to implement a new cloud provider for Tsunami.
 /// Tsunami will call `launch` once per unique region, as defined by `MachineSetup`.
-pub trait Launcher: Drop + Sized {
+pub trait Launcher {
     type Machine: MachineSetup;
 
     /// Spawn the instances. Implementors should remember enough information to subsequently answer

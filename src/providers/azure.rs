@@ -45,7 +45,7 @@ impl Default for Region {
     }
 }
 
-impl std::string::ToString for Region {
+impl ToString for Region {
     fn to_string(&self) -> String {
         String::from(match self {
             Region::EastUs => "eastus",

@@ -149,7 +149,9 @@ impl<M: MachineSetup> TsunamiBuilder<M> {
     pub fn logger(&self) -> slog::Logger {
         self.log.clone()
     }
+}
 
+impl<M: MachineSetup + Clone> TsunamiBuilder<M> {
     /// Start up all the hosts.
     ///
     /// SSH connections to each instance are accesssible via

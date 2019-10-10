@@ -110,14 +110,14 @@ impl MachineSetup {
 
     /// The given AWS EC2 instance type will be used. Note that only [EC2 Defined Duration Spot
     /// Instance types](https://aws.amazon.com/ec2/spot/pricing/) are allowed.
-    pub fn instance_type(mut self, typ: impl std::string::ToString) -> Self {
+    pub fn instance_type(mut self, typ: impl ToString) -> Self {
         self.instance_type = typ.to_string();
         self
     }
 
     /// The new instance will start out in the state dictated by the Amazon Machine Image specified
     /// in `ami`. Default is Ubuntu 18.04 LTS.
-    pub fn ami(mut self, ami: impl std::string::ToString) -> Self {
+    pub fn ami(mut self, ami: impl ToString) -> Self {
         self.ami = ami.to_string();
         self
     }
