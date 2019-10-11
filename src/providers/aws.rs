@@ -1,6 +1,7 @@
 use crate::ssh;
 use crate::Machine;
 use failure::{Error, ResultExt};
+use itertools::Itertools;
 use rusoto_core::request::HttpClient;
 use rusoto_core::{ProvideAwsCredentials, Region};
 use rusoto_ec2::Ec2;
@@ -405,10 +406,15 @@ impl AWSRegion {
         machines: impl IntoIterator<Item = (String, MachineSetup)>,
     ) -> Result<(), Error> {
         let log = self.log.as_ref().expect("AWSRegion uninitialized");
-        for (name, m) in machines {
+
+        for (_, reqs) in machines
+            .into_iter()
+            .map(|(name, m)| ((m.ami.clone(), m.instance_type.clone()), (name, m)))
+            .into_group_map()
+        {
             let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
-            launch.image_id = Some(m.ami.clone());
-            launch.instance_type = Some(m.instance_type.clone());
+            launch.image_id = Some(reqs[0].1.ami.clone());
+            launch.instance_type = Some(reqs[0].1.instance_type.clone());
             launch.placement = None;
 
             launch.security_group_ids = Some(vec![self.security_group_id.clone()]);
@@ -417,7 +423,7 @@ impl AWSRegion {
             // TODO: VPC
 
             let req = rusoto_ec2::RequestSpotInstancesRequest {
-                instance_count: Some(1),
+                instance_count: Some(reqs.len() as i64),
                 block_duration_minutes: Some(max_duration),
                 launch_specification: Some(launch),
                 // one-time spot instances are only fulfilled once and therefore do not need to be
@@ -435,7 +441,9 @@ impl AWSRegion {
                 .sync()
                 .context("failed to request spot instance")?;
             let l = log.clone();
-            let spot_req_id = res
+
+            // collect for length check below
+            let spot_instance_requests: Vec<String> = res
                 .spot_instance_requests
                 .expect("request_spot_instances should always return spot instance requests")
                 .into_iter()
@@ -445,10 +453,20 @@ impl AWSRegion {
                     trace!(l, "activated spot request"; "id" => &sir);
                     sir
                 })
-                .next()
-                .ok_or_else(|| failure::format_err!("a"))?;
-            self.outstanding_spot_request_ids
-                .insert(spot_req_id.clone(), (name, m));
+                .collect();
+
+            // zip_eq will panic if lengths not equal, so check beforehand
+            if spot_instance_requests.len() != reqs.len() {
+                bail!(
+                    "Got {} spot instance requests but expected {}",
+                    spot_instance_requests.len(),
+                    reqs.len()
+                )
+            }
+
+            for (sir, req) in spot_instance_requests.into_iter().zip_eq(reqs.into_iter()) {
+                self.outstanding_spot_request_ids.insert(sir, req);
+            }
         }
 
         Ok(())
