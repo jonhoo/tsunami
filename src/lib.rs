@@ -152,6 +152,47 @@ impl<M: MachineSetup> TsunamiBuilder<M> {
 }
 
 impl<M: MachineSetup + Clone> TsunamiBuilder<M> {
+    /// Add multiple machine descriptors to the Tsunami.
+    ///
+    /// This is a convenience wrapper around [`add`](TsunamiBuilder::add).
+    ///
+    /// The `nickname_prefix` is used to name the machines, indexed from 0 to `n`:
+    /// ```rust,no_run
+    /// fn main() -> Result<(), failure::Error> {
+    ///     use tsunami::providers::Launcher;
+    ///
+    ///     let m = tsunami::providers::aws::MachineSetup::default()
+    ///             .region("us-east-1".parse()?)
+    ///             .instance_type("t3.medium");
+    ///
+    ///     let mut aws: tsunami::providers::aws::AWSLauncher<_> = Default::default();
+    ///     aws.with_credentials(|| Ok(rusoto_core::DefaultCredentialsProvider::new()?));
+    ///
+    ///     let mut b = tsunami::TsunamiBuilder::default();
+    ///     b.add_multiple(3, "my_tsunami", m)?.spawn(&mut aws)?;
+    ///
+    ///     let vms = aws.connect_all()?;
+    ///     let my_first_vm = vms.get("my_tsunami-0").unwrap();
+    ///     let my_last_vm = vms.get("my_tsunami-2").unwrap();
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn add_multiple(
+        &mut self,
+        n: usize,
+        nickname_prefix: &str,
+        m: M,
+    ) -> Result<&mut Self, Error> {
+        (0..n)
+            .map(|i| {
+                let d = m.clone();
+                let name = format!("{}-{}", nickname_prefix, i);
+
+                (name, d)
+            })
+            .fold(Ok(self), |r, (name, d)| r.and_then(|s| s.add(&name, d)))
+    }
+
     /// Start up all the hosts.
     ///
     /// SSH connections to each instance are accesssible via
