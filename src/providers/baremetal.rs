@@ -22,20 +22,6 @@ impl super::MachineSetup for Setup {
     }
 }
 
-impl PartialEq for Setup {
-    fn eq(&self, other: &Self) -> bool {
-        self.addr == other.addr
-    }
-}
-
-impl Eq for Setup {}
-
-impl std::hash::Hash for Setup {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.addr.hash(state);
-    }
-}
-
 impl Setup {
     pub fn new(
         addr: impl std::net::ToSocketAddrs,
