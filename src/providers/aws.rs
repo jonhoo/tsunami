@@ -768,27 +768,31 @@ impl std::ops::Drop for AWSRegion {
         }
 
         debug!(log, "cleaning up temporary resources");
-        trace!(log, "cleaning up temporary security group");
-        // clean up security groups and keys
-        // TODO need a retry loop for the security group. Currently, this fails
-        // because AWS takes some time to allow the security group to be deleted.
-        let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
-        req.group_id = Some(self.security_group_id.clone());
-        if let Err(e) = client.delete_security_group(req).sync() {
-            warn!(log, "failed to clean up temporary security group";
-                "group_id" => &self.security_group_id,
-                "error" => ?e,
-            )
+        if !self.security_group_id.trim().is_empty() {
+            trace!(log, "cleaning up temporary security group"; "name" => self.security_group_id.clone());
+            // clean up security groups and keys
+            // TODO need a retry loop for the security group. Currently, this fails
+            // because AWS takes some time to allow the security group to be deleted.
+            let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
+            req.group_id = Some(self.security_group_id.clone());
+            if let Err(e) = client.delete_security_group(req).sync() {
+                warn!(log, "failed to clean up temporary security group";
+                    "group_id" => &self.security_group_id,
+                    "error" => ?e,
+                )
+            }
         }
 
-        trace!(log, "cleaning up temporary keypair");
-        let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
-        req.key_name = self.ssh_key_name.clone();
-        if let Err(e) = client.delete_key_pair(req).sync() {
-            warn!(log, "failed to clean up temporary SSH key";
-                "key_name" => &self.ssh_key_name,
-                "error" => ?e,
-            )
+        if !self.ssh_key_name.trim().is_empty() {
+            trace!(log, "cleaning up temporary keypair"; "name" => self.ssh_key_name.clone());
+            let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
+            req.key_name = self.ssh_key_name.clone();
+            if let Err(e) = client.delete_key_pair(req).sync() {
+                warn!(log, "failed to clean up temporary SSH key";
+                    "key_name" => &self.ssh_key_name,
+                    "error" => ?e,
+                )
+            }
         }
     }
 }
