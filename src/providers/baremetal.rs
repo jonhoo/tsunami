@@ -8,7 +8,7 @@ use std::sync::Arc;
 /// each instance of Setup corresponds to a single machine.
 #[derive(Clone)]
 pub struct Setup {
-    addr: std::net::SocketAddr,
+    addr: Vec<std::net::SocketAddr>,
     username: String,
     key_path: Option<std::path::PathBuf>,
     setup_fn:
@@ -18,7 +18,7 @@ pub struct Setup {
 impl super::MachineSetup for Setup {
     type Region = String;
     fn region(&self) -> Self::Region {
-        format!("bare:{}", self.addr)
+        format!("bare:{}", self.addr[0])
     }
 }
 
@@ -36,13 +36,12 @@ impl Setup {
             Ok(user.to_string())
         });
         let username = username?;
+        let mut addr: Vec<std::net::SocketAddr> = addr.to_socket_addrs()?.collect();
+        addr.reverse(); // so pop() will reutrn in the same order
 
         Ok(Self {
             username,
-            addr: addr
-                .to_socket_addrs()?
-                .next()
-                .ok_or_else(|| format_err!("No socket addresses found"))?,
+            addr,
             key_path: None,
             setup_fn: None,
         })
@@ -64,6 +63,34 @@ impl Setup {
             ..self
         }
     }
+}
+
+fn try_addrs(
+    s: &mut Setup,
+    log: &slog::Logger,
+    max_wait: Option<std::time::Duration>,
+) -> Result<std::net::SocketAddr, Error> {
+    use failure::ResultExt;
+    let mut err = Err(format_err!("SSH failed")).context(String::from("No valid addresses found"));
+    while let Some(addr) = s.addr.pop() {
+        match ssh::Session::connect(
+            log,
+            &s.username,
+            addr,
+            s.key_path.as_ref().map(|p| p.as_path()),
+            max_wait,
+        ) {
+            Err(e) => {
+                trace!(log, "failed to ssh to addr {}", &addr; "err" => ?e);
+                err = err.context(format!("failed to ssh to address {}", addr))
+            }
+            Ok(_) => {
+                return Ok(addr);
+            }
+        }
+    }
+
+    err?
 }
 
 /// Only one machine is supported per instance of this Launcher, further instances of `Setup`
@@ -88,26 +115,26 @@ impl super::Launcher for Machine {
         let log = self.log.as_ref().expect("Baremetal machine uninitialized");
 
         let mut dscs = l.machines.into_iter();
-        let (name, setup) = dscs
+        let (name, mut setup) = dscs
             .next()
             .ok_or_else(|| format_err!("Cannot initialize zero machines"))?;
         for (discarded_name, discarded_setup) in dscs {
             warn!(log, "Discarding duplicate connections to same machine";
                 "name" => &discarded_name,
-                "addr" => &discarded_setup.addr,
+                "addr" => &discarded_setup.addr[0],
             );
         }
 
+        let addr = try_addrs(&mut setup, &log, l.max_wait)?;
+
         if let Setup {
-            addr,
-            setup_fn: Some(f),
-            ..
+            setup_fn: Some(f), ..
         } = setup
         {
             let mut sess = ssh::Session::connect(
                 log,
                 &setup.username,
-                setup.addr,
+                addr,
                 setup.key_path.as_ref().map(|p| p.as_path()),
                 l.max_wait,
             )
@@ -126,9 +153,9 @@ impl super::Launcher for Machine {
             })?;
         }
 
-        info!(log, "finished setting up instance"; "name" => &name, "ip" => &setup.addr);
+        info!(log, "finished setting up instance"; "name" => &name, "ip" => &addr);
         self.name = name;
-        self.addr = Some(setup.addr);
+        self.addr = Some(addr);
         self.username = setup.username;
         self.key_path = setup.key_path;
         Ok(())
