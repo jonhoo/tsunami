@@ -197,7 +197,7 @@ impl<M: MachineSetup + Clone> TsunamiBuilder<M> {
     ///
     /// SSH connections to each instance are accesssible via
     /// [`connect_all`](providers::Launcher::connect_all).
-    pub fn spawn<L: Launcher<Machine = M>>(&self, launcher: &mut L) -> Result<(), Error> {
+    pub fn spawn<L: Launcher<MachineDescriptor = M>>(&self, launcher: &mut L) -> Result<(), Error> {
         let descriptors: HashMap<String, M> = self.descriptors.clone();
         let max_wait = self.max_wait;
         let log = self.log.clone();

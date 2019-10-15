@@ -19,11 +19,11 @@ pub trait MachineSetup {
 /// Implement this trait to implement a new cloud provider for Tsunami.
 /// Tsunami will call `launch` once per unique region, as defined by `MachineSetup`.
 pub trait Launcher {
-    type Machine: MachineSetup;
+    type MachineDescriptor: MachineSetup;
 
     /// Spawn the instances. Implementors should remember enough information to subsequently answer
     /// calls to `connect_instances`, i.e., the IPs of the machines.
-    fn launch(&mut self, desc: LaunchDescriptor<Self::Machine>) -> Result<(), Error>;
+    fn launch(&mut self, desc: LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error>;
 
     /// Return connections to the [`Machine`s](crate::Machine) that `launch` spawned.
     fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error>;

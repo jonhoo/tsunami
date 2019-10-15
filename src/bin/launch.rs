@@ -42,7 +42,7 @@ fn wait_for_continue(log: &slog::Logger) {
     iterator.next().unwrap().unwrap();
 }
 
-fn launch_and_wait<M: MachineSetup + Clone, L: Launcher<Machine = M>>(
+fn launch_and_wait<M: MachineSetup + Clone, L: Launcher<MachineDescriptor = M>>(
     b: TsunamiBuilder<M>,
     l: &mut L,
 ) -> Result<(), failure::Error> {

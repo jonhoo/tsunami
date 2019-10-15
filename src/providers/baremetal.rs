@@ -81,9 +81,9 @@ pub struct Machine {
 }
 
 impl super::Launcher for Machine {
-    type Machine = Setup;
+    type MachineDescriptor = Setup;
 
-    fn launch(&mut self, l: super::LaunchDescriptor<Self::Machine>) -> Result<(), Error> {
+    fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
         self.log = Some(l.log);
         let log = self.log.as_ref().expect("Baremetal machine uninitialized");
 

@@ -318,9 +318,9 @@ pub struct AzureLauncher {
 }
 
 impl super::Launcher for AzureLauncher {
-    type Machine = Setup;
+    type MachineDescriptor = Setup;
 
-    fn launch(&mut self, l: super::LaunchDescriptor<Self::Machine>) -> Result<(), Error> {
+    fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
         let region = l.region;
         let mut az_region = AzureRegion::new(&l.region.to_string(), l.log.clone())?;
         az_region.launch(l)?;
@@ -374,9 +374,9 @@ impl AzureRegion {
 }
 
 impl super::Launcher for AzureRegion {
-    type Machine = Setup;
+    type MachineDescriptor = Setup;
 
-    fn launch(&mut self, l: super::LaunchDescriptor<Self::Machine>) -> Result<(), Error> {
+    fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
         self.log = Some(l.log);
         let log = self.log.as_ref().unwrap();
         let max_wait = l.max_wait;

@@ -203,9 +203,9 @@ where
     P: ProvideAwsCredentials + Send + Sync + 'static,
     <P as ProvideAwsCredentials>::Future: Send,
 {
-    type Machine = MachineSetup;
+    type MachineDescriptor = MachineSetup;
 
-    fn launch(&mut self, l: super::LaunchDescriptor<Self::Machine>) -> Result<(), Error> {
+    fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
         let prov = self.get_credential_provider()?;
         let mut awsregion = AWSRegion::new(&l.region.to_string(), prov, l.log)?;
         awsregion.make_spot_instance_requests(
