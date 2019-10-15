@@ -86,22 +86,17 @@ impl super::Launcher for Machine {
     fn launch(&mut self, l: super::LaunchDescriptor<Self::Machine>) -> Result<(), Error> {
         self.log = Some(l.log);
         let log = self.log.as_ref().expect("Baremetal machine uninitialized");
-        let dscs = l
-            .machines
-            .into_iter()
-            .collect::<Vec<(String, Self::Machine)>>();
-        if dscs.is_empty() {
-            bail!("Cannot initialize zero machines");
-        }
 
-        if dscs.len() > 1 {
+        let mut dscs = l.machines.into_iter();
+        let (name, setup) = dscs
+            .next()
+            .ok_or_else(|| format_err!("Cannot initialize zero machines"))?;
+        for (discarded_name, discarded_setup) in dscs {
             warn!(log, "Discarding duplicate connections to same machine";
-                "name" => &dscs[0].0,
-                "addr" => &dscs[0].1.addr,
+                "name" => &discarded_name,
+                "addr" => &discarded_setup.addr,
             );
         }
-
-        let (name, setup) = dscs.into_iter().next().unwrap();
 
         if let Setup {
             addr,
