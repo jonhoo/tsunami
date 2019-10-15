@@ -833,4 +833,26 @@ mod test {
 
         Ok(())
     }
+
+    #[test]
+    #[ignore]
+    fn multi_instance_spot_request() -> Result<(), Error> {
+        let region = "us-east-1";
+        let provider = DefaultCredentialsProvider::new()?;
+        let logger = test_logger();
+        let mut ec2 = AWSRegion::new(region, provider, logger.clone())?;
+
+        use super::MachineSetup;
+
+        let names = (1..).map(|x| format!("{}", x));
+        let setup = MachineSetup::default();
+        let ms: Vec<(String, MachineSetup)> = names.zip(itertools::repeat_n(setup, 5)).collect();
+
+        debug!(&logger, "make spot instance requests"; "num" => ms.len());
+        ec2.make_spot_instance_requests(60, ms)?;
+        assert_eq!(ec2.outstanding_spot_request_ids.len(), 5);
+        debug!(&logger, "wait for spot instance requests");
+        ec2.wait_for_spot_instance_requests(None)?;
+        Ok(())
+    }
 }
