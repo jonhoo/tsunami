@@ -103,22 +103,24 @@ impl super::Launcher for Machine {
 
         let (name, setup) = dscs.into_iter().next().unwrap();
 
-        let mut sess = ssh::Session::connect(
-            log,
-            &setup.username,
-            setup.addr,
-            setup.key_path.as_ref().map(|p| p.as_path()),
-            l.max_wait,
-        )
-        .map_err(|e| {
-            error!(log, "failed to ssh to {}", &setup.addr);
-            e.context(format!("failed to ssh to machine {}", setup.addr))
-        })?;
-
         if let Setup {
-            setup_fn: Some(f), ..
+            addr,
+            setup_fn: Some(f),
+            ..
         } = setup
         {
+            let mut sess = ssh::Session::connect(
+                log,
+                &setup.username,
+                setup.addr,
+                setup.key_path.as_ref().map(|p| p.as_path()),
+                l.max_wait,
+            )
+            .map_err(|e| {
+                error!(log, "failed to ssh to {}", &addr);
+                e.context(format!("failed to ssh to machine {}", addr))
+            })?;
+
             f(&mut sess, log).map_err(|e| {
                 error!(
                     log,
