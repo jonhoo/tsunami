@@ -296,8 +296,8 @@ impl Setup {
         }
     }
 
-    /// The `setup` argument is called once for every spawned instances of this type with a handle
-    /// to the target machine. Use [`Machine::ssh`](struct.Machine.html#structfield.ssh) to issue
+    /// The provided callback (`setup`) is called once for every spawned instances of this type with a handle
+    /// to the target machine. Use [`Machine::ssh`](crate::Machine::ssh) to issue
     /// commands on the host in question.
     pub fn setup(
         mut self,

@@ -51,7 +51,7 @@ impl Into<String> for UbuntuAmi {
 /// A descriptor for a particular machine setup in a tsunami.
 ///
 /// The `setup` argument is called once for every spawned instances of this type with a handle
-/// to the target machine. Use [`Machine::ssh`](struct.Machine.html#structfield.ssh) to issue
+/// to the target machine. Use [`Machine::ssh`] to issue
 /// commands on the host in question.
 #[derive(Clone)]
 pub struct MachineSetup {
@@ -116,7 +116,7 @@ impl MachineSetup {
     }
 
     /// The `setup` argument is called once for every spawned instances of this type with a handle
-    /// to the target machine. Use [`Machine::ssh`](struct.Machine.html#structfield.ssh) to issue
+    /// to the target machine. Use [`Machine::ssh`] to issue
     /// commands on the host in question.
     pub fn setup(
         mut self,
@@ -127,7 +127,7 @@ impl MachineSetup {
     }
 }
 
-/// Launch AWS EC2 spot instances.
+/// AWS EC2 spot instance launcher.
 ///
 /// This implementation uses [rusoto](https://crates.io/crates/rusoto_core) to connect to AWS.
 /// Therefore, you must call [`with_credentials`](AWSLauncher::with_credentials) to authenticate
