@@ -228,10 +228,6 @@ where
     }
 }
 
-impl<P: ProvideAwsCredentials> std::ops::Drop for AWSLauncher<P> {
-    fn drop(&mut self) {}
-}
-
 /// Region specific. Launch AWS EC2 spot instances.
 ///
 /// This implementation uses [rusoto](https://crates.io/crates/rusoto_core) to connect to AWS.
