@@ -69,14 +69,6 @@ impl super::MachineSetup for MachineSetup {
     }
 }
 
-impl PartialEq for MachineSetup {
-    fn eq(&self, other: &Self) -> bool {
-        self.ami == other.ami && self.instance_type == other.instance_type
-    }
-}
-
-impl Eq for MachineSetup {}
-
 impl std::hash::Hash for MachineSetup {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.instance_type.hash(state);
