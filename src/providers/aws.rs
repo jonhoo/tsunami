@@ -48,16 +48,24 @@ impl Into<String> for UbuntuAmi {
     }
 }
 
+/// Marker type for [`MachineSetup`] indicating that it does not have an AMI.
+#[derive(Clone, Copy)]
+pub struct NoAmi;
+/// Marker type for [`MachineSetup`] indicating that it has been initialized with an AMI.
+#[derive(Clone, Copy)]
+pub struct YesAmi;
+
 /// A descriptor for a particular machine setup in a tsunami.
 #[derive(Clone)]
-pub struct MachineSetup {
+pub struct MachineSetup<HasAmi = YesAmi> {
     region: Region,
     instance_type: String,
-    ami: String,
+    ami: Option<String>,
     setup: Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
+    _phantom: std::marker::PhantomData<HasAmi>,
 }
 
-impl super::MachineSetup for MachineSetup {
+impl super::MachineSetup for MachineSetup<YesAmi> {
     type Region = String;
 
     fn region(&self) -> Self::Region {
@@ -65,49 +73,56 @@ impl super::MachineSetup for MachineSetup {
     }
 }
 
-impl std::hash::Hash for MachineSetup {
+impl std::hash::Hash for MachineSetup<YesAmi> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.instance_type.hash(state);
-        self.ami.hash(state);
+        self.ami.as_ref().unwrap().hash(state);
     }
 }
 
-impl Default for MachineSetup {
+impl Default for MachineSetup<YesAmi> {
     fn default() -> Self {
         MachineSetup {
             region: Region::UsEast1,
             instance_type: "t3.small".into(),
-            ami: UbuntuAmi::from(Region::UsEast1).into(),
+            ami: Some(UbuntuAmi::from(Region::UsEast1).into()),
             setup: None,
+            _phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl MachineSetup {
+impl<A> MachineSetup<A> {
     /// Set up the machine in a specific EC2
     /// [`Region`](http://rusoto.github.io/rusoto/rusoto_core/region/enum.Region.html).
     ///
     /// The default region is us-east-1. [Available regions are listed
     /// here](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#concepts-available-regions)
+    ///
     /// AMIs are region-specific. This will overwrite the ami field to
     /// the Ubuntu 18.04 LTS AMI in the selected region.
-    pub fn region(mut self, region: Region) -> Self {
+    pub fn region_with_ubuntu_ami(mut self, region: Region) -> MachineSetup<YesAmi> {
         self.region = region.clone();
-        self.ami = UbuntuAmi::from(region).into();
-        self
+        let ami: String = UbuntuAmi::from(region).into();
+        self.ami(ami)
+    }
+
+    /// The new instance will start out in the state dictated by the Amazon Machine Image specified
+    /// in `ami`. Default is Ubuntu 18.04 LTS.
+    pub fn ami(self, ami: impl ToString) -> MachineSetup<YesAmi> {
+        MachineSetup {
+            region: self.region,
+            instance_type: self.instance_type,
+            ami: Some(ami.to_string()),
+            setup: self.setup,
+            _phantom: std::marker::PhantomData,
+        }
     }
 
     /// The given AWS EC2 instance type will be used. Note that only [EC2 Defined Duration Spot
     /// Instance types](https://aws.amazon.com/ec2/spot/pricing/) are allowed.
     pub fn instance_type(mut self, typ: impl ToString) -> Self {
         self.instance_type = typ.to_string();
-        self
-    }
-
-    /// The new instance will start out in the state dictated by the Amazon Machine Image specified
-    /// in `ami`. Default is Ubuntu 18.04 LTS.
-    pub fn ami(mut self, ami: impl ToString) -> Self {
-        self.ami = ami.to_string();
         self
     }
 
@@ -136,6 +151,26 @@ impl MachineSetup {
     }
 }
 
+impl MachineSetup<YesAmi> {
+    /// Set up the machine in a specific EC2
+    /// [`Region`](http://rusoto.github.io/rusoto/rusoto_core/region/enum.Region.html).
+    ///
+    /// The default region is us-east-1. [Available regions are listed
+    /// here](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#concepts-available-regions)
+    ///
+    /// AMIs are region-specific.
+    /// This will clear the AMI field, which must be set for this struct to be useful.
+    pub fn region(self, region: Region) -> MachineSetup<NoAmi> {
+        MachineSetup {
+            region,
+            instance_type: self.instance_type,
+            ami: None,
+            setup: self.setup,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
 /// AWS EC2 spot instance launcher.
 ///
 /// This implementation uses [rusoto](https://crates.io/crates/rusoto_core) to connect to AWS.
@@ -145,7 +180,7 @@ impl MachineSetup {
 pub struct AWSLauncher<P: ProvideAwsCredentials> {
     credential_provider: Option<Box<dyn Fn() -> Result<P, Error>>>,
     max_instance_duration: std::time::Duration,
-    regions: HashMap<<MachineSetup as super::MachineSetup>::Region, AWSRegion>,
+    regions: HashMap<<MachineSetup<YesAmi> as super::MachineSetup>::Region, AWSRegion>,
 }
 
 impl<P: ProvideAwsCredentials> Default for AWSLauncher<P> {
@@ -208,7 +243,7 @@ where
     P: ProvideAwsCredentials + Send + Sync + 'static,
     <P as ProvideAwsCredentials>::Future: Send,
 {
-    type MachineDescriptor = MachineSetup;
+    type MachineDescriptor = MachineSetup<YesAmi>;
 
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
         let prov = self.get_credential_provider()?;
@@ -411,11 +446,16 @@ impl AWSRegion {
 
         for (_, reqs) in machines
             .into_iter()
-            .map(|(name, m)| ((m.ami.clone(), m.instance_type.clone()), (name, m)))
+            .map(|(name, m)| {
+                (
+                    (m.ami.as_ref().unwrap().clone(), m.instance_type.clone()),
+                    (name, m),
+                )
+            })
             .into_group_map()
         {
             let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
-            launch.image_id = Some(reqs[0].1.ami.clone());
+            launch.image_id = Some(reqs[0].1.ami.as_ref().unwrap().clone());
             launch.instance_type = Some(reqs[0].1.instance_type.clone());
             launch.placement = None;
 

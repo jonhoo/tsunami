@@ -161,9 +161,7 @@ impl<M: MachineSetup + Clone> TsunamiBuilder<M> {
     /// fn main() -> Result<(), failure::Error> {
     ///     use tsunami::providers::Launcher;
     ///
-    ///     let m = tsunami::providers::aws::MachineSetup::default()
-    ///             .region("us-east-1".parse()?)
-    ///             .instance_type("t3.medium");
+    ///     let m = tsunami::providers::aws::MachineSetup::default();
     ///
     ///     let mut aws: tsunami::providers::aws::AWSLauncher<_> = Default::default();
     ///     aws.with_credentials(|| Ok(rusoto_core::DefaultCredentialsProvider::new()?));

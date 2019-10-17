@@ -61,7 +61,7 @@ fn main() -> Result<(), failure::Error> {
             let mut b = TsunamiBuilder::default();
             b.use_term_logger();
             let m = tsunami::providers::aws::MachineSetup::default()
-                .region(opt.region.parse()?)
+                .region_with_ubuntu_ami(opt.region.parse()?)
                 .instance_type("t3.medium");
 
             b.add("machine", m).unwrap();
