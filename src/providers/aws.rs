@@ -114,6 +114,19 @@ impl MachineSetup {
     /// The provided callback, `setup`, is called once for every spawned instances of this type with a handle
     /// to the target machine. Use [`Machine::ssh`] to issue
     /// commands on the host in question.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tsunami::providers::aws::MachineSetup;
+    ///
+    /// let m = MachineSetup::default()
+    ///     .setup(|ssh, log| {
+    ///         slog::info!(log, "running setup!");
+    ///         ssh.cmd("sudo apt update")?;
+    ///         Ok(())
+    ///     });
+    /// ```
     pub fn setup(
         mut self,
         setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
