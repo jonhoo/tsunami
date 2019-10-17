@@ -187,9 +187,10 @@ impl<P> AWSLauncher<P> {
     /// `AWSLauncher` uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
     /// instances.
     ///
-    /// The lifetime of such instances must be declared in advance (1-6 hours). By default, we use 6 hours (the
-    /// maximum). If `t` > 6 hours, `AWSLauncher` will use a duration of 6 hours. If `t` == 0
-    /// hours, `AWSLauncher` will use a duration of 1 hour.
+    /// The lifetime of such instances must be declared in advance (1-6 hours).
+    /// This method thus clamps `t` to be between 1 and 6.
+    ///
+    /// By default, we use 6 hours (the maximum).
     pub fn set_max_instance_duration(&mut self, t: usize) -> &mut Self {
         let t = std::cmp::min(t, 6);
         let t = std::cmp::max(t, 1);
@@ -197,8 +198,11 @@ impl<P> AWSLauncher<P> {
         self
     }
 
-    /// To override the credential provider, the provided callback should return [`P:
-    /// ProvideAwsCredentials`](https://docs.rs/rusoto_core/0.40.0/rusoto_core/trait.ProvideAwsCredentials.html).
+    /// Set the credential provider used to authenticate to EC2.
+    ///
+    /// The provided function is called once for each region, and is expected to produce a
+    /// [`P: ProvideAwsCredentials`](https://docs.rs/rusoto_core/0.40.0/rusoto_core/trait.ProvideAwsCredentials.html)
+    /// that gives access to the region in question.
     pub fn with_credentials<P2>(
         self,
         f: impl Fn() -> Result<P2, Error> + 'static,
@@ -232,10 +236,7 @@ where
         let prov = self.get_credential_provider()?;
         let mut awsregion = AWSRegion::new(&l.region.to_string(), prov, l.log)?;
         awsregion.make_spot_instance_requests(
-            std::cmp::min(
-                360,                                   // 360 mins = 6 hrs
-                self.max_instance_duration_hours * 60, // 60 mins/hr
-            ),
+            self.max_instance_duration_hours * 60, // 60 mins/hr
             l.machines,
         )?;
 
