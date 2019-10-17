@@ -169,7 +169,7 @@ impl MachineSetup<YesAmi> {
 /// Each individual region is handled by `AWSRegion`.
 pub struct AWSLauncher<P = DefaultCredentialsProvider> {
     credential_provider: Box<dyn Fn() -> Result<P, Error>>,
-    max_instance_duration: std::time::Duration,
+    max_instance_duration_hours: i64,
     regions: HashMap<<MachineSetup<YesAmi> as super::MachineSetup>::Region, AWSRegion>,
 }
 
@@ -177,11 +177,7 @@ impl Default for AWSLauncher {
     fn default() -> Self {
         AWSLauncher {
             credential_provider: Box::new(|| Ok(DefaultCredentialsProvider::new()?)),
-            max_instance_duration: std::time::Duration::from_secs(
-                60 /* secs/min */ *
-                60 /* mins/hr */ *
-                6, /* hrs */
-            ),
+            max_instance_duration_hours: 6,
             regions: Default::default(),
         }
     }
@@ -193,8 +189,9 @@ impl<P> AWSLauncher<P> {
     ///
     /// The lifetime of such instances must be declared in advance (1-6 hours). By default, we use 6 hours (the
     /// maximum). If `t` > 6 hours, `AWSLauncher` will use a duration of 6 hours.
-    pub fn set_max_instance_duration(&mut self, t: std::time::Duration) -> &mut Self {
-        self.max_instance_duration = t;
+    pub fn set_max_instance_duration(&mut self, t: i64) -> &mut Self {
+        let t = std::cmp::min(t, 6);
+        self.max_instance_duration_hours = t;
         self
     }
 
@@ -206,7 +203,7 @@ impl<P> AWSLauncher<P> {
     ) -> AWSLauncher<P2> {
         AWSLauncher {
             credential_provider: Box::new(f),
-            max_instance_duration: self.max_instance_duration,
+            max_instance_duration_hours: self.max_instance_duration_hours,
             regions: self.regions,
         }
     }
@@ -233,10 +230,7 @@ where
         let prov = self.get_credential_provider()?;
         let mut awsregion = AWSRegion::new(&l.region.to_string(), prov, l.log)?;
         awsregion.make_spot_instance_requests(
-            std::cmp::min(
-                360,
-                (self.max_instance_duration.as_secs() as i64 / 60) as i64,
-            ),
+            std::cmp::min(360, self.max_instance_duration_hours * 60),
             l.machines,
         )?;
 
