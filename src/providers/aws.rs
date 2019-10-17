@@ -73,13 +73,6 @@ impl super::MachineSetup for MachineSetup<YesAmi> {
     }
 }
 
-impl std::hash::Hash for MachineSetup<YesAmi> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.instance_type.hash(state);
-        self.ami.as_ref().unwrap().hash(state);
-    }
-}
-
 impl Default for MachineSetup<YesAmi> {
     fn default() -> Self {
         MachineSetup {
