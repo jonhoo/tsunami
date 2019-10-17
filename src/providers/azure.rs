@@ -396,45 +396,41 @@ impl super::Launcher for AzureRegion {
 
                 azcmd::open_ports(&self.resource_group_name, &vm_name)?;
 
-                let mut sess = ssh::Session::connect(
-                    log,
-                    "ubuntu",
-                    SocketAddr::new(
-                        pub_ip
-                            .clone()
-                            .parse::<IpAddr>()
-                            .context("machine ip is not an ip address")?,
-                        22,
-                    ),
-                    None,
-                    max_wait,
-                )
-                .context(format!("failed to ssh to machine {}", nickname.clone()))
-                .map_err(|e| {
-                    error!(log, "failed to ssh to {}", &pub_ip.clone());
-                    e
-                })?;
+                if let Setup { setup_fn: Some(f), .. } = desc {
+                    let mut sess = ssh::Session::connect(
+                        log,
+                        "ubuntu",
+                        SocketAddr::new(
+                            pub_ip
+                                .clone()
+                                .parse::<IpAddr>()
+                                .context("machine ip is not an ip address")?,
+                            22,
+                        ),
+                        None,
+                        max_wait,
+                    )
+                    .context(format!("failed to ssh to machine {}", nickname.clone()))
+                    .map_err(|e| {
+                        error!(log, "failed to ssh to {}", &pub_ip.clone());
+                        e
+                    })?;
 
-
-                match desc {
-                    Setup { setup_fn: Some(f), .. } => {
-                        debug!(log, "setting up instance"; "ip" => &pub_ip);
-                        f(&mut sess, log)
-                            .context(format!(
+                    debug!(log, "setting up instance"; "ip" => &pub_ip);
+                    f(&mut sess, log)
+                        .context(format!(
                                 "setup procedure for {} machine failed",
                                 &nickname
-                            ))
-                            .map_err(|e| {
-                                error!(
-                                    log,
-                                    "machine setup failed";
-                                    "name" => &nickname,
-                                    "ssh" => format!("ssh ubuntu@{}", &pub_ip),
+                        ))
+                        .map_err(|e| {
+                            error!(
+                                log,
+                                "machine setup failed";
+                                "name" => &nickname,
+                                "ssh" => format!("ssh ubuntu@{}", &pub_ip),
                                 );
-                                e
-                            })?;
-                    }
-                    _ => {},
+                            e
+                        })?;
                 }
 
                 info!(log, "finished setting up instance"; "name" => &nickname, "ip" => &pub_ip);
@@ -485,6 +481,7 @@ impl super::Launcher for AzureRegion {
 
 impl Drop for AzureRegion {
     fn drop(&mut self) {
+        debug!(self.log.as_ref().unwrap(), "Cleaning up resource group");
         azcmd::delete_resource_group(&self.resource_group_name).unwrap();
     }
 }

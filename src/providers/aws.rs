@@ -663,30 +663,32 @@ impl AWSRegion {
                                 "instance_id" => instance_id.clone(),
                                 "ip" => &public_ip,
                             );
-                            use std::net::{IpAddr, SocketAddr};
-                            let mut sess = ssh::Session::connect(
-                                log,
-                                "ubuntu",
-                                SocketAddr::new(
-                                    public_ip
-                                        .clone()
-                                        .parse::<IpAddr>()
-                                        .context("machine ip is not an ip address")?,
-                                    22,
-                                ),
-                                Some(private_key_path.path()),
-                                None,
-                            )
-                            .context(format!("failed to ssh to machine {}", &public_dns))
-                            .map_err(|e| {
-                                error!(log, "failed to ssh to {}", &public_ip);
-                                e
-                            })?;
 
                             let (ipinfo, (name, m_setup)) =
                                 self.instances.get_mut(&instance_id).unwrap();
-                            *ipinfo = Some((public_ip.clone(), public_dns));
+                            *ipinfo = Some((public_ip.clone(), public_dns.clone()));
+
                             if let MachineSetup { setup: Some(f), .. } = m_setup {
+                                use std::net::{IpAddr, SocketAddr};
+                                let mut sess = ssh::Session::connect(
+                                    log,
+                                    "ubuntu",
+                                    SocketAddr::new(
+                                        public_ip
+                                            .clone()
+                                            .parse::<IpAddr>()
+                                            .context("machine ip is not an ip address")?,
+                                        22,
+                                    ),
+                                    Some(private_key_path.path()),
+                                    None,
+                                )
+                                .context(format!("failed to ssh to machine {}", &public_dns))
+                                .map_err(|e| {
+                                    error!(log, "failed to ssh to {}", &public_ip);
+                                    e
+                                })?;
+
                                 debug!(log, "setting up instance"; "ip" => &public_ip);
                                 f(&mut sess, log)
                                     .context(format!(
