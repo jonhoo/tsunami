@@ -169,7 +169,7 @@ impl MachineSetup<YesAmi> {
 /// Each individual region is handled by `AWSRegion`.
 pub struct AWSLauncher<P = DefaultCredentialsProvider> {
     credential_provider: Box<dyn Fn() -> Result<P, Error>>,
-    max_instance_duration_hours: i64,
+    max_instance_duration_hours: usize,
     regions: HashMap<<MachineSetup<YesAmi> as super::MachineSetup>::Region, AWSRegion>,
 }
 
@@ -188,14 +188,16 @@ impl<P> AWSLauncher<P> {
     /// instances.
     ///
     /// The lifetime of such instances must be declared in advance (1-6 hours). By default, we use 6 hours (the
-    /// maximum). If `t` > 6 hours, `AWSLauncher` will use a duration of 6 hours.
-    pub fn set_max_instance_duration(&mut self, t: i64) -> &mut Self {
+    /// maximum). If `t` > 6 hours, `AWSLauncher` will use a duration of 6 hours. If `t` == 0
+    /// hours, `AWSLauncher` will use a duration of 1 hour.
+    pub fn set_max_instance_duration(&mut self, t: usize) -> &mut Self {
         let t = std::cmp::min(t, 6);
+        let t = std::cmp::max(t, 1);
         self.max_instance_duration_hours = t;
         self
     }
 
-    /// A closure which returns [`P:
+    /// To override the credential provider, the provided callback should return [`P:
     /// ProvideAwsCredentials`](https://docs.rs/rusoto_core/0.40.0/rusoto_core/trait.ProvideAwsCredentials.html).
     pub fn with_credentials<P2>(
         self,
@@ -230,7 +232,10 @@ where
         let prov = self.get_credential_provider()?;
         let mut awsregion = AWSRegion::new(&l.region.to_string(), prov, l.log)?;
         awsregion.make_spot_instance_requests(
-            std::cmp::min(360, self.max_instance_duration_hours * 60),
+            std::cmp::min(
+                360,                                   // 360 mins = 6 hrs
+                self.max_instance_duration_hours * 60, // 60 mins/hr
+            ),
             l.machines,
         )?;
 
@@ -417,7 +422,7 @@ impl AWSRegion {
     /// [`wait_for_spot_instance_requests`](AWSRegion::wait_for_spot_instance_requests).
     pub fn make_spot_instance_requests(
         &mut self,
-        max_duration: i64,
+        max_duration: usize,
         machines: impl IntoIterator<Item = (String, MachineSetup)>,
     ) -> Result<(), Error> {
         let log = self.log.as_ref().expect("AWSRegion uninitialized");
@@ -444,7 +449,7 @@ impl AWSRegion {
 
             let req = rusoto_ec2::RequestSpotInstancesRequest {
                 instance_count: Some(reqs.len() as i64),
-                block_duration_minutes: Some(max_duration),
+                block_duration_minutes: Some(max_duration as i64),
                 launch_specification: Some(launch),
                 // one-time spot instances are only fulfilled once and therefore do not need to be
                 // cancelled.
