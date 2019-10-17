@@ -13,7 +13,6 @@
 //! fn main() -> Result<(), failure::Error> {
 //!     // Initialize AWS
 //!     let mut aws: tsunami::providers::aws::AWSLauncher<_> = Default::default();
-//!     aws.with_credentials(|| Ok(DefaultCredentialsProvider::new()?));
 //!
 //!     // Create a machine descriptor and add it to the Tsunami
 //!     let mut tb = TsunamiBuilder::default();
@@ -162,10 +161,7 @@ impl<M: MachineSetup + Clone> TsunamiBuilder<M> {
     ///     use tsunami::providers::Launcher;
     ///
     ///     let m = tsunami::providers::aws::MachineSetup::default();
-    ///
     ///     let mut aws: tsunami::providers::aws::AWSLauncher<_> = Default::default();
-    ///     aws.with_credentials(|| Ok(rusoto_core::DefaultCredentialsProvider::new()?));
-    ///
     ///     let mut b = tsunami::TsunamiBuilder::default();
     ///     b.add_multiple(3, "my_tsunami", m)?.spawn(&mut aws)?;
     ///

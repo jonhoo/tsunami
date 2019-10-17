@@ -1,6 +1,5 @@
 extern crate tsunami;
 
-use rusoto_core::DefaultCredentialsProvider;
 use rusoto_core::Region;
 use slog::info;
 use tsunami::providers::{aws, Launcher};
@@ -32,7 +31,6 @@ fn main() -> Result<(), failure::Error> {
     b.add("india", m).unwrap();
 
     let mut l: tsunami::providers::aws::AWSLauncher<_> = Default::default();
-    l.with_credentials(|| Ok(DefaultCredentialsProvider::new()?));
 
     let log = b.logger();
     b.spawn(&mut l)?;

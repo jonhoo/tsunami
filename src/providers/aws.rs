@@ -3,7 +3,7 @@ use crate::Machine;
 use failure::{Error, ResultExt};
 use itertools::Itertools;
 use rusoto_core::request::HttpClient;
-use rusoto_core::{ProvideAwsCredentials, Region};
+use rusoto_core::{DefaultCredentialsProvider, ProvideAwsCredentials, Region};
 use rusoto_ec2::Ec2;
 use std::collections::HashMap;
 use std::io::Write;
@@ -166,20 +166,17 @@ impl MachineSetup<YesAmi> {
 
 /// AWS EC2 spot instance launcher.
 ///
-/// This implementation uses [rusoto](https://crates.io/crates/rusoto_core) to connect to AWS.
-/// Therefore, you must call [`with_credentials`](AWSLauncher::with_credentials) to authenticate
-/// with AWS.
 /// Each individual region is handled by `AWSRegion`.
-pub struct AWSLauncher<P: ProvideAwsCredentials> {
-    credential_provider: Option<Box<dyn Fn() -> Result<P, Error>>>,
+pub struct AWSLauncher<P = DefaultCredentialsProvider> {
+    credential_provider: Box<dyn Fn() -> Result<P, Error>>,
     max_instance_duration: std::time::Duration,
     regions: HashMap<<MachineSetup<YesAmi> as super::MachineSetup>::Region, AWSRegion>,
 }
 
-impl<P: ProvideAwsCredentials> Default for AWSLauncher<P> {
+impl Default for AWSLauncher {
     fn default() -> Self {
         AWSLauncher {
-            credential_provider: None,
+            credential_provider: Box::new(|| Ok(DefaultCredentialsProvider::new()?)),
             max_instance_duration: std::time::Duration::from_secs(
                 60 /* secs/min */ *
                 60 /* mins/hr */ *
@@ -190,26 +187,7 @@ impl<P: ProvideAwsCredentials> Default for AWSLauncher<P> {
     }
 }
 
-impl<P> AWSLauncher<P>
-where
-    P: ProvideAwsCredentials + Send + Sync + 'static,
-    <P as ProvideAwsCredentials>::Future: Send,
-{
-    /// A closure which returns [`P:
-    /// ProvideAwsCredentials`](https://docs.rs/rusoto_core/0.40.0/rusoto_core/trait.ProvideAwsCredentials.html).
-    ///
-    /// For example to specify using
-    /// [`DefaultCredentialsProvider`](https://docs.rs/rusoto_core/0.40.0/rusoto_core/struct.DefaultCredentialsProvider.html):
-    /// ```rust
-    /// use rusoto_core::DefaultCredentialsProvider;
-    /// let mut l: tsunami::providers::aws::AWSLauncher<_> = Default::default();
-    /// l.with_credentials(|| Ok(DefaultCredentialsProvider::new()?));
-    /// ```
-    pub fn with_credentials(&mut self, f: impl Fn() -> Result<P, Error> + 'static) -> &mut Self {
-        self.credential_provider = Some(Box::new(f));
-        self
-    }
-
+impl<P> AWSLauncher<P> {
     /// `AWSLauncher` uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
     /// instances.
     ///
@@ -220,14 +198,27 @@ where
         self
     }
 
-    // TODO with rust specialization (https://github.com/rust-lang/rust/issues/31844), can do:
-    // ```
-    // self.credential_provider.unwrap_or_else(|| Box::new(|| DefaultCredentialProvider::new()))?()
-    // ```
+    /// A closure which returns [`P:
+    /// ProvideAwsCredentials`](https://docs.rs/rusoto_core/0.40.0/rusoto_core/trait.ProvideAwsCredentials.html).
+    pub fn with_credentials<P2>(
+        self,
+        f: impl Fn() -> Result<P2, Error> + 'static,
+    ) -> AWSLauncher<P2> {
+        AWSLauncher {
+            credential_provider: Box::new(f),
+            max_instance_duration: self.max_instance_duration,
+            regions: self.regions,
+        }
+    }
+}
+
+impl<P> AWSLauncher<P>
+where
+    P: ProvideAwsCredentials + Send + Sync + 'static,
+    <P as ProvideAwsCredentials>::Future: Send,
+{
     fn get_credential_provider(&self) -> Result<P, Error> {
-        self.credential_provider
-            .as_ref()
-            .ok_or_else(|| format_err!("No credential provider given"))?()
+        (*self.credential_provider)()
     }
 }
 

@@ -1,5 +1,4 @@
 use failure::bail;
-use rusoto_core::DefaultCredentialsProvider;
 use structopt::StructOpt;
 use tsunami::providers::{Launcher, MachineSetup};
 use tsunami::TsunamiBuilder;
@@ -66,7 +65,6 @@ fn main() -> Result<(), failure::Error> {
 
             b.add("machine", m).unwrap();
             let mut l: tsunami::providers::aws::AWSLauncher<_> = Default::default();
-            l.with_credentials(|| Ok(DefaultCredentialsProvider::new()?));
             launch_and_wait(b, &mut l)?;
         }
         Providers::Azure => {
