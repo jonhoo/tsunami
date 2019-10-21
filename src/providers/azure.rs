@@ -1,9 +1,46 @@
+//! Azure backend for tsunami.
+//!
+//! The primary `impl Launcher` type is [`AzureLauncher`].
+//! It internally uses the lower-level, region-specific [`AzureRegion`].
+//! Both these types use [`Setup`] as their descriptor type.
+//!
+//! Azure does not support Spot or Defined Duration instances.
+//! As a result, if your tsunami crashes (i.e., exits without calling `drop()` on [`AzureLauncher`], you must manually terminate your instances
+//! to avoid extra costs.
+//! The easiest way to do this is to delete resource groups beginning with `tsunami_`:
+//! `az group delete --name <name> --yes`.
+//!
+//! To use this provider, you must [install the Azure
+//! CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest),
+//! and the `az` command must be in your `$PATH`.
+//! Also, you must run `az login` to authenticate with Microsoft.
+//!
+//! # Example
+//! ```rust,no_run
+//! use rusoto_core::Region;
+//! use slog::info;
+//! use tsunami::providers::{azure, Launcher};
+//! use tsunami::{Machine, TsunamiBuilder};
+//!
+//! let mut b = TsunamiBuilder::default();
+//! b.add("my machine", azure::Setup::default()).unwrap();
+//! let mut l: tsunami::providers::azure::AzureLauncher = Default::default();
+//! b.spawn(&mut l).unwrap();
+//! let vms = l.connect_all().unwrap();
+//! let my_machine = vms.get("my machine").unwrap();
+//! let (stdout, stderr) = my_machine.ssh.as_ref().unwrap().cmd("echo \"Hello, Azure\"").unwrap();
+//! println!("{}", stdout);
+//! ```
+
 use crate::ssh;
 use failure::{bail, Error, ResultExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::net::{IpAddr, SocketAddr};
 
+/// Available regions to launch VMs in.
+///
+/// See https://azure.microsoft.com/en-us/global-infrastructure/locations/ for more information.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Region {
     EastUs,
@@ -244,7 +281,9 @@ mod azcmd {
     }
 }
 
-/// A descriptor for a single Azure VM type. Only UbuntuLTS VMs are supported.
+/// A descriptor for a single Azure VM type.
+///
+/// The default is an UbuntuLTS, Standard_DS1_V2 VM in the East US region.
 #[derive(Clone)]
 pub struct Setup {
     region: Region,
@@ -311,7 +350,7 @@ impl Setup {
 /// This implementation relies on the [Azure
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest). 
 ///
-/// It also assumes you have previously run `az login` to authenticate with Microsoft.
+/// It also assumes you have previously run `az login` to authenticate.
 #[derive(Default)]
 pub struct AzureLauncher {
     regions: HashMap<Region, AzureRegion>,

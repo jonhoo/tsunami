@@ -1,3 +1,29 @@
+//! AWS backend for tsunami.
+//!
+//! The primary `impl Launcher` type is [`AWSLauncher`].
+//! It internally uses the lower-level, region-specific [`AWSRegion`].
+//! Both these types use [`MachineSetup`] as their descriptor type.
+//!
+//! This implementation uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+//! instances.
+//!
+//! # Example
+//! ```rust,no_run
+//! use rusoto_core::Region;
+//! use slog::info;
+//! use tsunami::providers::{aws, Launcher};
+//! use tsunami::{Machine, TsunamiBuilder};
+//!
+//! let mut b = TsunamiBuilder::default();
+//! b.add("my machine", aws::MachineSetup::default()).unwrap();
+//! let mut l: tsunami::providers::aws::AWSLauncher = Default::default();
+//! b.spawn(&mut l).unwrap();
+//! let vms = l.connect_all().unwrap();
+//! let my_machine = vms.get("my machine").unwrap();
+//! let (stdout, stderr) = my_machine.ssh.as_ref().unwrap().cmd("echo \"Hello, EC2\"").unwrap();
+//! println!("{}", stdout);
+//! ```
+
 use crate::ssh;
 use crate::Machine;
 use failure::{Error, ResultExt};
@@ -428,16 +454,20 @@ impl AWSRegion {
     ) -> Result<(), Error> {
         let log = self.log.as_ref().expect("AWSRegion uninitialized");
 
+        // minimize the number of spot requests:
         for (_, reqs) in machines
             .into_iter()
             .map(|(name, m)| {
+                // attach labels (ami name, instance type)
                 (
                     (m.ami.as_ref().unwrap().clone(), m.instance_type.clone()),
                     (name, m),
                 )
             })
             .into_group_map()
+        // group by the labels
         {
+            // and issue one spot request per group
             let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
             launch.image_id = Some(reqs[0].1.ami.as_ref().unwrap().clone());
             launch.instance_type = Some(reqs[0].1.instance_type.clone());
