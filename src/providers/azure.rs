@@ -209,7 +209,7 @@ mod azcmd {
         Ok(())
     }
 
-    pub fn create_vm(rg: &str, name: &str, size: &str, username: &str) -> Result<String, Error> {
+    pub fn create_vm(rg: &str, name: &str, size: &str, image: &str, username: &str) -> Result<String, Error> {
         #[allow(non_snake_case)]
         #[derive(Debug, Deserialize, Serialize)]
         struct VmCreateOut {
@@ -227,7 +227,7 @@ mod azcmd {
                 "--name",
                 name,
                 "--image",
-                "UbuntuLTS",
+                image,
                 "--size",
                 size,
                 "--admin-username",
@@ -288,6 +288,8 @@ mod azcmd {
 pub struct Setup {
     region: Region,
     instance_type: String,
+    image: String,
+    username: String,
     setup_fn:
         Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
 }
@@ -297,6 +299,8 @@ impl Default for Setup {
         Setup {
             region: "eastus".parse().unwrap(),
             instance_type: "Standard_DS1_v2".to_string(),
+            image: "UbuntuLTS".to_string(),
+            username: "ubuntu".to_string(),
             setup_fn: None,
         }
     }
@@ -311,21 +315,21 @@ impl super::MachineSetup for Setup {
 }
 
 impl Setup {
-    pub fn region(self, r: Region) -> Self {
-        Self { region: r, ..self }
+    /// See also [`Region`].
+    pub fn region(&mut self, r: Region) -> &mut Self {
+        self.region = r;
+        self
     }
 
     /// To view the available sizes in the relevant region, use:
     /// `az vm list-sizes -l <region_name>`.
-    pub fn instance_type(self, inst_type: String) -> Result<Self, Error> {
+    pub fn instance_type(&mut self, inst_type: String) -> Result<&mut Self, Error> {
         if azcmd::available_instances_in_region(self.region)?
             .iter()
             .any(|x| x == &inst_type)
         {
-            Ok(Self {
-                instance_type: inst_type,
-                ..self
-            })
+            self.instance_type = inst_type;
+            Ok(self)
         } else {
             Err(format_err!(
                 "{} not valid instance type in {:?}",
@@ -335,13 +339,39 @@ impl Setup {
         }
     }
 
-    /// The provided callback (`setup`) is called once for every spawned instances of this type with a handle
-    /// to the target machine. Use [`Machine::ssh`](crate::Machine::ssh) to issue
+    /// Set the image.
+    ///
+    /// See `az vm image list` for valid options.
+    pub fn image(&mut self, image: String) -> &mut Self {
+        self.image = image;
+        self
+    }
+    
+    pub fn username(&mut self, username: String) -> &mut Self {
+        self.username = username;
+        self
+    }
+
+    /// The provided callback, `setup`, is called once for every spawned instances of this type with a handle
+    /// to the target machine. Use [`Machine::ssh`] to issue
     /// commands on the host in question.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tsunami::providers::azure::Setup;
+    ///
+    /// let m = Setup::default()
+    ///     .setup(|ssh, log| {
+    ///         slog::info!(log, "running setup!");
+    ///         ssh.cmd("sudo apt update")?;
+    ///         Ok(())
+    ///     });
+    /// ```
     pub fn setup(
-        mut self,
+        &mut self,
         setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
-    ) -> Self {
+    ) -> &mut Self {
         self.setup_fn = Some(Arc::new(setup));
         self
     }
@@ -361,7 +391,7 @@ impl super::Launcher for AzureLauncher {
 
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
         let region = l.region;
-        let mut az_region = AzureRegion::new(&l.region.to_string(), l.log.clone())?;
+        let mut az_region = AzureRegion::new(l.region, l.log.clone())?;
         az_region.launch(l)?;
         self.regions.insert(region, az_region);
         Ok(())
@@ -370,10 +400,6 @@ impl super::Launcher for AzureLauncher {
     fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
         collect!(self.regions)
     }
-}
-
-impl std::ops::Drop for AzureLauncher {
-    fn drop(&mut self) { }
 }
 
 struct Descriptor {
@@ -397,8 +423,7 @@ pub struct AzureRegion {
 }
 
 impl AzureRegion {
-    pub fn new(region: &str, log: slog::Logger) -> Result<Self, Error> {
-        let region = region.parse()?;
+    pub fn new(region: Region, log: slog::Logger) -> Result<Self, Error> {
         let rg_name = super::rand_name("resourcegroup");
 
         azcmd::create_resource_group(region, &rg_name)?;
@@ -430,15 +455,16 @@ impl super::Launcher for AzureRegion {
                     &self.resource_group_name,
                     &vm_name,
                     &desc.instance_type,
-                    "ubuntu",
+                    &desc.image,
+                    &desc.username,
                 )?;
 
                 azcmd::open_ports(&self.resource_group_name, &vm_name)?;
 
-                if let Setup { setup_fn: Some(f), .. } = desc {
+                if let Setup { username, setup_fn: Some(f), .. } = desc {
                     let mut sess = ssh::Session::connect(
                         log,
-                        "ubuntu",
+                        &username,
                         SocketAddr::new(
                             pub_ip
                                 .clone()
