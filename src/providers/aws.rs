@@ -9,14 +9,12 @@
 //!
 //! # Example
 //! ```rust,no_run
-//! use rusoto_core::Region;
-//! use slog::info;
 //! use tsunami::providers::{aws, Launcher};
-//! use tsunami::{Machine, TsunamiBuilder};
+//! use tsunami::TsunamiBuilder;
 //!
 //! let mut b = TsunamiBuilder::default();
 //! b.add("my machine", aws::MachineSetup::default()).unwrap();
-//! let mut l: tsunami::providers::aws::AWSLauncher = Default::default();
+//! let mut l = aws::AWSLauncher::default();
 //! b.spawn(&mut l).unwrap();
 //! let vms = l.connect_all().unwrap();
 //! let my_machine = vms.get("my machine").unwrap();
@@ -458,7 +456,8 @@ impl AWSRegion {
         for (_, reqs) in machines
             .into_iter()
             .map(|(name, m)| {
-                // attach labels (ami name, instance type)
+                // attach labels (ami name, instance type):
+                // the only fields that vary between tsunami spot instance requests
                 (
                     (m.ami.as_ref().unwrap().clone(), m.instance_type.clone()),
                     (name, m),

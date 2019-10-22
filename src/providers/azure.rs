@@ -9,6 +9,8 @@
 //! to avoid extra costs.
 //! The easiest way to do this is to delete resource groups beginning with `tsunami_`:
 //! `az group delete --name <name> --yes`.
+//! You can find such resource groups using:
+//! `az group list`.
 //!
 //! To use this provider, you must [install the Azure
 //! CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest),
@@ -17,14 +19,12 @@
 //!
 //! # Example
 //! ```rust,no_run
-//! use rusoto_core::Region;
-//! use slog::info;
 //! use tsunami::providers::{azure, Launcher};
-//! use tsunami::{Machine, TsunamiBuilder};
+//! use tsunami::TsunamiBuilder;
 //!
 //! let mut b = TsunamiBuilder::default();
 //! b.add("my machine", azure::Setup::default()).unwrap();
-//! let mut l: tsunami::providers::azure::AzureLauncher = Default::default();
+//! let mut l = azure::AzureLauncher::default();
 //! b.spawn(&mut l).unwrap();
 //! let vms = l.connect_all().unwrap();
 //! let my_machine = vms.get("my machine").unwrap();
