@@ -316,14 +316,14 @@ impl super::MachineSetup for Setup {
 
 impl Setup {
     /// See also [`Region`].
-    pub fn region(&mut self, r: Region) -> &mut Self {
+    pub fn region(mut self, r: Region) -> Self {
         self.region = r;
         self
     }
 
     /// To view the available sizes in the relevant region, use:
     /// `az vm list-sizes -l <region_name>`.
-    pub fn instance_type(&mut self, inst_type: String) -> Result<&mut Self, Error> {
+    pub fn instance_type(mut self, inst_type: String) -> Result<Self, Error> {
         if azcmd::available_instances_in_region(self.region)?
             .iter()
             .any(|x| x == &inst_type)
@@ -342,12 +342,12 @@ impl Setup {
     /// Set the image.
     ///
     /// See `az vm image list` for valid options.
-    pub fn image(&mut self, image: String) -> &mut Self {
+    pub fn image(mut self, image: String) -> Self {
         self.image = image;
         self
     }
     
-    pub fn username(&mut self, username: String) -> &mut Self {
+    pub fn username(mut self, username: String) -> Self {
         self.username = username;
         self
     }
@@ -369,9 +369,9 @@ impl Setup {
     ///     });
     /// ```
     pub fn setup(
-        &mut self,
+        mut self,
         setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
-    ) -> &mut Self {
+    ) -> Self {
         self.setup_fn = Some(Arc::new(setup));
         self
     }
