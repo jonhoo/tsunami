@@ -35,8 +35,8 @@
 use crate::ssh;
 use failure::{bail, Error, ResultExt};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 
 /// Available regions to launch VMs in.
 ///
@@ -209,7 +209,13 @@ mod azcmd {
         Ok(())
     }
 
-    pub fn create_vm(rg: &str, name: &str, size: &str, image: &str, username: &str) -> Result<String, Error> {
+    pub fn create_vm(
+        rg: &str,
+        name: &str,
+        size: &str,
+        image: &str,
+        username: &str,
+    ) -> Result<String, Error> {
         #[allow(non_snake_case)]
         #[derive(Debug, Deserialize, Serialize)]
         struct VmCreateOut {
@@ -346,7 +352,7 @@ impl Setup {
         self.image = image;
         self
     }
-    
+
     pub fn username(mut self, username: String) -> Self {
         self.username = username;
         self
@@ -378,7 +384,7 @@ impl Setup {
 }
 
 /// This implementation relies on the [Azure
-/// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest). 
+/// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
 ///
 /// It also assumes you have previously run `az login` to authenticate.
 #[derive(Default)]
@@ -411,7 +417,7 @@ struct Descriptor {
 /// "resource group" and deletes the group on drop.
 ///
 /// This implementation relies on the [Azure
-/// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest). 
+/// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
 ///
 /// It also assumes you have previously run `az login` to authenticate with Microsoft.
 #[derive(Default)]
@@ -444,8 +450,7 @@ impl super::Launcher for RegionLauncher {
         self.log = Some(l.log);
         let log = self.log.as_ref().unwrap();
         let max_wait = l.max_wait;
-        self.machines = 
-        l.machines
+        let vms: Result<Vec<(String, String, _)>, Error> = l.machines
             .into_iter()
             .map(|(nickname, desc)| {
                 let vm_name = super::rand_name_sep("vm", "-");
@@ -461,47 +466,37 @@ impl super::Launcher for RegionLauncher {
 
                 azcmd::open_ports(&self.resource_group_name, &vm_name)?;
 
-                if let Setup { username, setup_fn: Some(f), .. } = desc {
-                    let mut sess = ssh::Session::connect(
-                        log,
-                        &username,
-                        SocketAddr::new(
-                            pub_ip
-                                .clone()
-                                .parse::<IpAddr>()
-                                .context("machine ip is not an ip address")?,
-                            22,
-                        ),
-                        None,
-                        max_wait,
-                    )
-                    .context(format!("failed to ssh to machine {}", nickname.clone()))
-                    .map_err(|e| {
-                        error!(log, "failed to ssh to {}", &pub_ip.clone());
-                        e
-                    })?;
+                Ok((nickname, pub_ip, desc))
+            }).collect();
 
-                    debug!(log, "setting up instance"; "ip" => &pub_ip);
-                    f(&mut sess, log)
-                        .context(format!(
-                                "setup procedure for {} machine failed",
-                                &nickname
-                        ))
-                        .map_err(|e| {
-                            error!(
-                                log,
-                                "machine setup failed";
-                                "name" => &nickname,
-                                "ssh" => format!("ssh ubuntu@{}", &pub_ip),
-                                );
-                            e
-                        })?;
+        use rayon::prelude::*;
+        self.machines = vms?
+            .into_par_iter()
+            .map(|(nickname, pub_ip, desc)| {
+                if let Setup {
+                    username,
+                    setup_fn: Some(f),
+                    ..
+                } = desc
+                {
+                    super::setup_machine(
+                        log,
+                        &nickname,
+                        &pub_ip,
+                        &username,
+                        max_wait,
+                        None,
+                        f.as_ref(),
+                    )?;
                 }
 
-                info!(log, "finished setting up instance"; "name" => &nickname, "ip" => &pub_ip);
-                Ok(Descriptor { name: nickname, ip: pub_ip })
+                Ok(Descriptor {
+                    name: nickname,
+                    ip: pub_ip,
+                })
             })
             .collect::<Result<Vec<Descriptor>, Error>>()?;
+
         Ok(())
     }
 

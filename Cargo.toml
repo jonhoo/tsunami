@@ -31,6 +31,7 @@ rusoto_ec2 = "0.40"
 ssh2 = "0.3.2"
 failure = "0.1.1"
 rand = "0.7"
+rayon = "1"
 tempfile = "3.0.0"
 serde = { version = "1", features = ["derive"]}
 structopt = "0.2"

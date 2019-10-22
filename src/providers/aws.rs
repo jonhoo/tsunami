@@ -701,48 +701,8 @@ impl RegionLauncher {
                                 "ip" => &public_ip,
                             );
 
-                            let (ipinfo, (name, m_setup)) =
-                                self.instances.get_mut(&instance_id).unwrap();
+                            let (ipinfo, _) = self.instances.get_mut(&instance_id).unwrap();
                             *ipinfo = Some((public_ip.clone(), public_dns.clone()));
-
-                            if let Setup { setup: Some(f), .. } = m_setup {
-                                use std::net::{IpAddr, SocketAddr};
-                                let mut sess = ssh::Session::connect(
-                                    log,
-                                    "ubuntu",
-                                    SocketAddr::new(
-                                        public_ip
-                                            .clone()
-                                            .parse::<IpAddr>()
-                                            .context("machine ip is not an ip address")?,
-                                        22,
-                                    ),
-                                    Some(private_key_path.path()),
-                                    None,
-                                )
-                                .context(format!("failed to ssh to machine {}", &public_dns))
-                                .map_err(|e| {
-                                    error!(log, "failed to ssh to {}", &public_ip);
-                                    e
-                                })?;
-
-                                debug!(log, "setting up instance"; "ip" => &public_ip);
-                                f(&mut sess, log)
-                                    .context(format!(
-                                        "setup procedure for {} machine failed",
-                                        name
-                                    ))
-                                    .map_err(|e| {
-                                        error!(
-                                            log,
-                                            "machine setup failed";
-                                            "name" => name.clone(),
-                                            "ssh" => format!("ssh -i {} ubuntu@{}", private_key_path.path().display(), public_ip),
-                                        );
-                                        e
-                                    })?;
-                                info!(log, "finished setting up {} instance", name; "ip" => &public_ip);
-                            }
                         }
                         _ => {
                             all_ready = false;
@@ -758,7 +718,25 @@ impl RegionLauncher {
             }
         }
 
-        Ok(())
+        use rayon::prelude::*;
+        self.instances
+            .par_iter()
+            .try_for_each(|(_instance_id, (ipinfo, (name, m_setup)))| {
+                let (public_ip, _) = ipinfo.as_ref().unwrap();
+                if let Setup { setup: Some(f), .. } = m_setup {
+                    super::setup_machine(
+                        log,
+                        &name,
+                        &public_ip,
+                        "ubuntu",
+                        max_wait,
+                        Some(private_key_path.path()),
+                        f.as_ref(),
+                    )?;
+                }
+
+                Ok(())
+            })
     }
 
     /// Establish SSH connections to the machines. The `Ok` value is a `HashMap` associating the

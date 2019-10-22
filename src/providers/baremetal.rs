@@ -128,14 +128,17 @@ impl super::Launcher for Machine {
         let addr = try_addrs(&mut setup, &log, l.max_wait)?;
 
         if let Setup {
-            setup_fn: Some(f), ..
+            ref username,
+            ref key_path,
+            setup_fn: Some(ref f),
+            ..
         } = setup
         {
             let mut sess = ssh::Session::connect(
                 log,
-                &setup.username,
+                &username,
                 addr,
-                setup.key_path.as_ref().map(|p| p.as_path()),
+                key_path.as_ref().map(|p| p.as_path()),
                 l.max_wait,
             )
             .map_err(|e| {

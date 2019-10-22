@@ -74,3 +74,50 @@ fn rand_name_sep(prefix: &str, sep: impl Into<Sep>) -> String {
 pub mod aws;
 pub mod azure;
 pub mod baremetal;
+
+fn setup_machine(
+    log: &slog::Logger,
+    nickname: &str,
+    pub_ip: &str,
+    username: &str,
+    max_wait: Option<std::time::Duration>,
+    private_key: Option<&std::path::Path>,
+    f: &dyn Fn(&mut crate::ssh::Session, &slog::Logger) -> Result<(), Error>,
+) -> Result<(), Error> {
+    use crate::ssh;
+    use failure::ResultExt;
+    use std::net::{IpAddr, SocketAddr};
+
+    let mut sess = ssh::Session::connect(
+        log,
+        username,
+        SocketAddr::new(
+            pub_ip
+                .parse::<IpAddr>()
+                .context("machine ip is not an ip address")?,
+            22,
+        ),
+        private_key,
+        max_wait,
+    )
+    .context(format!("failed to ssh to machine {}", nickname))
+    .map_err(|e| {
+        error!(log, "failed to ssh to {}", pub_ip);
+        e
+    })?;
+
+    debug!(log, "setting up instance"; "ip" => &pub_ip);
+    f(&mut sess, log)
+        .context(format!("setup procedure for {} machine failed", &nickname))
+        .map_err(|e| {
+            error!(
+            log,
+            "machine setup failed";
+            "name" => &nickname,
+            "ssh" => format!("ssh ubuntu@{}", &pub_ip),
+            );
+            e
+        })?;
+    info!(log, "finished setting up instance"; "name" => &nickname, "ip" => &pub_ip);
+    Ok(())
+}
