@@ -38,232 +38,6 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-/// Available regions to launch VMs in.
-///
-/// See https://azure.microsoft.com/en-us/global-infrastructure/locations/ for more information.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum Region {
-    EastUs,
-    EastUs2,
-    WestUs,
-    CentralUs,
-    NorthCentralUs,
-    SouthCentralUs,
-    NorthEurope,
-    WestEurope,
-    EastUsia,
-    SouthEastUsia,
-    JapanEast,
-    JapanWest,
-    AustraliaEast,
-    AustraliaSoutheast,
-    AustraliaCentral,
-    BrazilSouth,
-    SouthIndia,
-    CentralIndia,
-    WestIndia,
-    CanadaCentral,
-    CanadaEast,
-    WestUs2,
-    WestCentralus,
-    UkSouth,
-    UkWest,
-    KoreaCentral,
-    KoreaSouth,
-    FranceCentral,
-    SouthAfricaNorth,
-    UaeNorth,
-    GermanyWestCentral,
-}
-
-impl Default for Region {
-    fn default() -> Self {
-        Region::EastUs
-    }
-}
-
-impl ToString for Region {
-    fn to_string(&self) -> String {
-        String::from(match self {
-            Region::EastUs => "eastus",
-            Region::EastUs2 => "eastus2",
-            Region::WestUs => "westus",
-            Region::CentralUs => "centralus",
-            Region::NorthCentralUs => "northcentralus",
-            Region::SouthCentralUs => "southcentralus",
-            Region::NorthEurope => "northeurope",
-            Region::WestEurope => "westeurope",
-            Region::EastUsia => "eastasia",
-            Region::SouthEastUsia => "southeastasia",
-            Region::JapanEast => "japaneast",
-            Region::JapanWest => "japanwest",
-            Region::AustraliaEast => "australiaeast",
-            Region::AustraliaSoutheast => "australiasoutheast",
-            Region::AustraliaCentral => "australiacentral",
-            Region::BrazilSouth => "brazilsouth",
-            Region::SouthIndia => "southindia",
-            Region::CentralIndia => "centralindia",
-            Region::WestIndia => "westindia",
-            Region::CanadaCentral => "canadacentral",
-            Region::CanadaEast => "canadaeast",
-            Region::WestUs2 => "westus2",
-            Region::WestCentralus => "westcentralus",
-            Region::UkSouth => "uksouth",
-            Region::UkWest => "ukwest",
-            Region::KoreaCentral => "koreacentral",
-            Region::KoreaSouth => "koreasouth",
-            Region::FranceCentral => "francecentral",
-            Region::SouthAfricaNorth => "southafricanorth",
-            Region::UaeNorth => "uaenorth",
-            Region::GermanyWestCentral => "germanywestcentral",
-        })
-    }
-}
-
-impl std::str::FromStr for Region {
-    type Err = Error;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "eastus" => Region::EastUs,
-            "eastus2" => Region::EastUs2,
-            "westus" => Region::WestUs,
-            "centralus" => Region::CentralUs,
-            "northcentralus" => Region::NorthCentralUs,
-            "southcentralus" => Region::SouthCentralUs,
-            "northeurope" => Region::NorthEurope,
-            "westeurope" => Region::WestEurope,
-            "eastasia" => Region::EastUsia,
-            "southeastasia" => Region::SouthEastUsia,
-            "japaneast" => Region::JapanEast,
-            "japanwest" => Region::JapanWest,
-            "australiaeast" => Region::AustraliaEast,
-            "australiasoutheast" => Region::AustraliaSoutheast,
-            "australiacentral" => Region::AustraliaCentral,
-            "brazilsouth" => Region::BrazilSouth,
-            "southindia" => Region::SouthIndia,
-            "centralindia" => Region::CentralIndia,
-            "westindia" => Region::WestIndia,
-            "canadacentral" => Region::CanadaCentral,
-            "canadaeast" => Region::CanadaEast,
-            "westus2" => Region::WestUs2,
-            "westcentralus" => Region::WestCentralus,
-            "uksouth" => Region::UkSouth,
-            "ukwest" => Region::UkWest,
-            "koreacentral" => Region::KoreaCentral,
-            "koreasouth" => Region::KoreaSouth,
-            "francecentral" => Region::FranceCentral,
-            "southafricanorth" => Region::SouthAfricaNorth,
-            "uaenorth" => Region::UaeNorth,
-            "germanywestcentral" => Region::GermanyWestCentral,
-            u => bail!("Unknown azure region {}", u),
-        })
-    }
-}
-
-mod azcmd {
-    use super::Error;
-    use super::Region;
-    use failure::ResultExt;
-    use serde::{Deserialize, Serialize};
-    use std::process::Command;
-
-    pub fn create_resource_group(r: Region, name: &str) -> Result<(), Error> {
-        let out = Command::new("az")
-            .args(&[
-                "group",
-                "create",
-                "--name",
-                name,
-                "--location",
-                &r.to_string(),
-            ])
-            .output()?;
-
-        if !out.status.success() {
-            bail!("Failed to create resource group {} in region {:?}", name, r)
-        }
-
-        Ok(())
-    }
-
-    pub fn create_vm(
-        rg: &str,
-        name: &str,
-        size: &str,
-        image: &str,
-        username: &str,
-    ) -> Result<String, Error> {
-        #[allow(non_snake_case)]
-        #[derive(Debug, Deserialize, Serialize)]
-        struct VmCreateOut {
-            powerState: String,
-            publicIpAddress: String,
-            resourceGroup: String,
-        }
-
-        let out = Command::new("az")
-            .args(&[
-                "vm",
-                "create",
-                "--resource-group",
-                rg,
-                "--name",
-                name,
-                "--image",
-                image,
-                "--size",
-                size,
-                "--admin-username",
-                username,
-                "--ssh-key-value",
-                "@~/.ssh/id_rsa.pub",
-            ])
-            .output()?;
-
-        if !out.status.success() {
-            return Err(format_err!("Failed to create vm {}", name))
-                .context(String::from_utf8(out.stderr).unwrap())?;
-        }
-
-        let vm: VmCreateOut = serde_json::from_slice(&out.stdout)?;
-        ensure!(vm.powerState == "VM running", "VM power state incorrect");
-        ensure!(vm.resourceGroup == rg, "VM resource group incorrect");
-        Ok(vm.publicIpAddress)
-    }
-
-    pub fn open_ports(rg: &str, vm_name: &str) -> Result<(), Error> {
-        let out = Command::new("az")
-            .args(&[
-                "vm",
-                "open-port",
-                "--port",
-                "0-65535",
-                "--resource-group",
-                rg,
-                "--name",
-                vm_name,
-            ])
-            .output()?;
-        if !out.status.success() {
-            return Err(format_err!("Failed to open ports for {}", vm_name))
-                .context(String::from_utf8(out.stderr).unwrap())?;
-        }
-
-        Ok(())
-    }
-
-    pub fn delete_resource_group(rg: &str) -> Result<(), Error> {
-        let out = Command::new("az")
-            .args(&["group", "delete", "--name", rg, "--yes"])
-            .output()?;
-        if !out.status.success() {
-            bail!("Failed to delete resource group {}", rg)
-        }
-
-        Ok(())
-    }
-}
-
 /// A descriptor for a single Azure VM type.
 ///
 /// The default is an UbuntuLTS, Standard_DS1_V2 VM in the East US region.
@@ -512,6 +286,232 @@ impl Drop for RegionLauncher {
     fn drop(&mut self) {
         debug!(self.log.as_ref().unwrap(), "Cleaning up resource group");
         azcmd::delete_resource_group(&self.resource_group_name).unwrap();
+    }
+}
+
+/// Available regions to launch VMs in.
+///
+/// See https://azure.microsoft.com/en-us/global-infrastructure/locations/ for more information.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Region {
+    EastUs,
+    EastUs2,
+    WestUs,
+    CentralUs,
+    NorthCentralUs,
+    SouthCentralUs,
+    NorthEurope,
+    WestEurope,
+    EastUsia,
+    SouthEastUsia,
+    JapanEast,
+    JapanWest,
+    AustraliaEast,
+    AustraliaSoutheast,
+    AustraliaCentral,
+    BrazilSouth,
+    SouthIndia,
+    CentralIndia,
+    WestIndia,
+    CanadaCentral,
+    CanadaEast,
+    WestUs2,
+    WestCentralus,
+    UkSouth,
+    UkWest,
+    KoreaCentral,
+    KoreaSouth,
+    FranceCentral,
+    SouthAfricaNorth,
+    UaeNorth,
+    GermanyWestCentral,
+}
+
+impl Default for Region {
+    fn default() -> Self {
+        Region::EastUs
+    }
+}
+
+impl ToString for Region {
+    fn to_string(&self) -> String {
+        String::from(match self {
+            Region::EastUs => "eastus",
+            Region::EastUs2 => "eastus2",
+            Region::WestUs => "westus",
+            Region::CentralUs => "centralus",
+            Region::NorthCentralUs => "northcentralus",
+            Region::SouthCentralUs => "southcentralus",
+            Region::NorthEurope => "northeurope",
+            Region::WestEurope => "westeurope",
+            Region::EastUsia => "eastasia",
+            Region::SouthEastUsia => "southeastasia",
+            Region::JapanEast => "japaneast",
+            Region::JapanWest => "japanwest",
+            Region::AustraliaEast => "australiaeast",
+            Region::AustraliaSoutheast => "australiasoutheast",
+            Region::AustraliaCentral => "australiacentral",
+            Region::BrazilSouth => "brazilsouth",
+            Region::SouthIndia => "southindia",
+            Region::CentralIndia => "centralindia",
+            Region::WestIndia => "westindia",
+            Region::CanadaCentral => "canadacentral",
+            Region::CanadaEast => "canadaeast",
+            Region::WestUs2 => "westus2",
+            Region::WestCentralus => "westcentralus",
+            Region::UkSouth => "uksouth",
+            Region::UkWest => "ukwest",
+            Region::KoreaCentral => "koreacentral",
+            Region::KoreaSouth => "koreasouth",
+            Region::FranceCentral => "francecentral",
+            Region::SouthAfricaNorth => "southafricanorth",
+            Region::UaeNorth => "uaenorth",
+            Region::GermanyWestCentral => "germanywestcentral",
+        })
+    }
+}
+
+impl std::str::FromStr for Region {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "eastus" => Region::EastUs,
+            "eastus2" => Region::EastUs2,
+            "westus" => Region::WestUs,
+            "centralus" => Region::CentralUs,
+            "northcentralus" => Region::NorthCentralUs,
+            "southcentralus" => Region::SouthCentralUs,
+            "northeurope" => Region::NorthEurope,
+            "westeurope" => Region::WestEurope,
+            "eastasia" => Region::EastUsia,
+            "southeastasia" => Region::SouthEastUsia,
+            "japaneast" => Region::JapanEast,
+            "japanwest" => Region::JapanWest,
+            "australiaeast" => Region::AustraliaEast,
+            "australiasoutheast" => Region::AustraliaSoutheast,
+            "australiacentral" => Region::AustraliaCentral,
+            "brazilsouth" => Region::BrazilSouth,
+            "southindia" => Region::SouthIndia,
+            "centralindia" => Region::CentralIndia,
+            "westindia" => Region::WestIndia,
+            "canadacentral" => Region::CanadaCentral,
+            "canadaeast" => Region::CanadaEast,
+            "westus2" => Region::WestUs2,
+            "westcentralus" => Region::WestCentralus,
+            "uksouth" => Region::UkSouth,
+            "ukwest" => Region::UkWest,
+            "koreacentral" => Region::KoreaCentral,
+            "koreasouth" => Region::KoreaSouth,
+            "francecentral" => Region::FranceCentral,
+            "southafricanorth" => Region::SouthAfricaNorth,
+            "uaenorth" => Region::UaeNorth,
+            "germanywestcentral" => Region::GermanyWestCentral,
+            u => bail!("Unknown azure region {}", u),
+        })
+    }
+}
+
+mod azcmd {
+    use super::Error;
+    use super::Region;
+    use failure::ResultExt;
+    use serde::{Deserialize, Serialize};
+    use std::process::Command;
+
+    pub(crate) fn create_resource_group(r: Region, name: &str) -> Result<(), Error> {
+        let out = Command::new("az")
+            .args(&[
+                "group",
+                "create",
+                "--name",
+                name,
+                "--location",
+                &r.to_string(),
+            ])
+            .output()?;
+
+        if !out.status.success() {
+            bail!("Failed to create resource group {} in region {:?}", name, r)
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn create_vm(
+        rg: &str,
+        name: &str,
+        size: &str,
+        image: &str,
+        username: &str,
+    ) -> Result<String, Error> {
+        #[allow(non_snake_case)]
+        #[derive(Debug, Deserialize, Serialize)]
+        struct VmCreateOut {
+            powerState: String,
+            publicIpAddress: String,
+            resourceGroup: String,
+        }
+
+        let out = Command::new("az")
+            .args(&[
+                "vm",
+                "create",
+                "--resource-group",
+                rg,
+                "--name",
+                name,
+                "--image",
+                image,
+                "--size",
+                size,
+                "--admin-username",
+                username,
+                "--ssh-key-value",
+                "@~/.ssh/id_rsa.pub",
+            ])
+            .output()?;
+
+        if !out.status.success() {
+            return Err(format_err!("Failed to create vm {}", name))
+                .context(String::from_utf8(out.stderr).unwrap())?;
+        }
+
+        let vm: VmCreateOut = serde_json::from_slice(&out.stdout)?;
+        ensure!(vm.powerState == "VM running", "VM power state incorrect");
+        ensure!(vm.resourceGroup == rg, "VM resource group incorrect");
+        Ok(vm.publicIpAddress)
+    }
+
+    pub(crate) fn open_ports(rg: &str, vm_name: &str) -> Result<(), Error> {
+        let out = Command::new("az")
+            .args(&[
+                "vm",
+                "open-port",
+                "--port",
+                "0-65535",
+                "--resource-group",
+                rg,
+                "--name",
+                vm_name,
+            ])
+            .output()?;
+        if !out.status.success() {
+            return Err(format_err!("Failed to open ports for {}", vm_name))
+                .context(String::from_utf8(out.stderr).unwrap())?;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn delete_resource_group(rg: &str) -> Result<(), Error> {
+        let out = Command::new("az")
+            .args(&["group", "delete", "--name", rg, "--yes"])
+            .output()?;
+        if !out.status.success() {
+            bail!("Failed to delete resource group {}", rg)
+        }
+
+        Ok(())
     }
 }
 
