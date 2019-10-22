@@ -37,17 +37,16 @@
 //! are already somewhat familiar with Rust, and who want to see something larger and more involved
 //! be built. You can find the recordings of past sessions [on
 //! YouTube](https://www.youtube.com/playlist?list=PLqbS7AVVErFgY2faCIYjJZv_RluGkTlKt).
+#![warn(unreachable_pub)]
+#![warn(missing_copy_implementations)]
+#![warn(trivial_casts)]
+#![warn(trivial_numeric_casts)]
+#![warn(unused_extern_crates)]
 
 #[macro_use]
 extern crate failure;
-extern crate rand;
-extern crate rusoto_core;
-extern crate rusoto_ec2;
 #[macro_use]
 extern crate slog;
-extern crate slog_term;
-extern crate ssh2;
-extern crate tempfile;
 
 use failure::Error;
 use itertools::Itertools;
