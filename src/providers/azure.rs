@@ -167,29 +167,6 @@ mod azcmd {
     use serde::{Deserialize, Serialize};
     use std::process::Command;
 
-    pub fn available_instances_in_region(r: Region) -> Result<Vec<String>, Error> {
-        #[allow(non_snake_case)]
-        #[derive(Debug, Deserialize, Serialize)]
-        struct VmSizeDescriptor {
-            maxDataDiskCount: usize,
-            memoryInMb: usize,
-            name: String,
-            numberOfCores: usize,
-            osDiskSizeInMb: usize,
-            resourceDiskSizeInMb: usize,
-        }
-
-        let out = Command::new("az")
-            .args(&["vm", "list-sizes", "-l", &r.to_string()])
-            .output()?;
-        if !out.status.success() {
-            bail!("Failed to get available instance sizes");
-        }
-
-        let v: Vec<VmSizeDescriptor> = serde_json::from_slice(&out.stdout)?;
-        Ok(v.into_iter().map(|x| x.name).collect())
-    }
-
     pub fn create_resource_group(r: Region, name: &str) -> Result<(), Error> {
         let out = Command::new("az")
             .args(&[
@@ -329,20 +306,9 @@ impl Setup {
 
     /// To view the available sizes in the relevant region, use:
     /// `az vm list-sizes -l <region_name>`.
-    pub fn instance_type(mut self, inst_type: String) -> Result<Self, Error> {
-        if azcmd::available_instances_in_region(self.region)?
-            .iter()
-            .any(|x| x == &inst_type)
-        {
-            self.instance_type = inst_type;
-            Ok(self)
-        } else {
-            Err(format_err!(
-                "{} not valid instance type in {:?}",
-                inst_type,
-                self.region
-            ))
-        }
+    pub fn instance_type(mut self, inst_type: String) -> Self {
+        self.instance_type = inst_type;
+        self
     }
 
     /// Set the image.
@@ -383,6 +349,8 @@ impl Setup {
     }
 }
 
+/// Launcher type for the Microsoft Azure cloud.
+///
 /// This implementation relies on the [Azure
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
 ///
@@ -413,12 +381,13 @@ struct Descriptor {
     ip: String,
 }
 
-/// Region-specific connection to Azure. Each instance of this type creates one Azure
+/// Region-specific connection to Azure.
+///
+/// Each instance of this type creates one Azure
 /// "resource group" and deletes the group on drop.
 ///
 /// This implementation relies on the [Azure
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
-///
 /// It also assumes you have previously run `az login` to authenticate with Microsoft.
 #[derive(Default)]
 pub struct RegionLauncher {
