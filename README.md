@@ -11,16 +11,17 @@ instances. Most interaction with this library happens through
 # Example
 
 ```rust,no-run
+use tsunami::providers::{aws, Launcher};
+use tsunami::TsunamiBuilder;
 fn main() -> Result<(), failure::Error> {
-    use tsunami::providers::aws;
-    let mut aws = TsunamiBuilder::<aws::AWSRegion>::default();
-    let m = aws::MachineSetup::default();
-    aws.add("my_vm".into(), m);
-    let tsunami = aws.spawn()?;
-    let vms = tsunami.get_machines()?;
-    let my_vm = vms.get("my_vm").unwrap();
-    let ssh = my_vm.ssh.as_ref().unwrap();
-    ssh.cmd("hostname").map(|(stdout, _)| println!("{}", stdout))?;
+    let mut b = TsunamiBuilder::default();
+    b.add("my machine", aws::Setup::default()).unwrap();
+    let mut l = aws::Launcher::default();
+    b.spawn(&mut l).unwrap();
+    let vms = l.connect_all().unwrap();
+    let my_machine = vms.get("my machine").unwrap();
+    let (stdout, stderr) = my_machine.ssh.as_ref().unwrap().cmd("echo \"Hello, EC2\"").unwrap();
+    println!("{}", stdout);
 }
 ```
 

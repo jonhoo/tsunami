@@ -1,11 +1,11 @@
 //! Azure backend for tsunami.
 //!
-//! The primary `impl Launcher` type is [`AzureLauncher`].
-//! It internally uses the lower-level, region-specific [`AzureRegion`].
+//! The primary `impl Launcher` type is [`Launcher`].
+//! It internally uses the lower-level, region-specific [`RegionLauncher`].
 //! Both these types use [`Setup`] as their descriptor type.
 //!
 //! Azure does not support Spot or Defined Duration instances.
-//! As a result, if your tsunami crashes (i.e., exits without calling `drop()` on [`AzureLauncher`], you must manually terminate your instances
+//! As a result, if your tsunami crashes (i.e., exits without calling `drop()` on [`Launcher`], you must manually terminate your instances
 //! to avoid extra costs.
 //! The easiest way to do this is to delete resource groups beginning with `tsunami_`:
 //! `az group delete --name <name> --yes`.
@@ -24,7 +24,7 @@
 //!
 //! let mut b = TsunamiBuilder::default();
 //! b.add("my machine", azure::Setup::default()).unwrap();
-//! let mut l = azure::AzureLauncher::default();
+//! let mut l = azure::Launcher::default();
 //! b.spawn(&mut l).unwrap();
 //! let vms = l.connect_all().unwrap();
 //! let my_machine = vms.get("my machine").unwrap();
@@ -382,16 +382,16 @@ impl Setup {
 ///
 /// It also assumes you have previously run `az login` to authenticate.
 #[derive(Default)]
-pub struct AzureLauncher {
-    regions: HashMap<Region, AzureRegion>,
+pub struct Launcher {
+    regions: HashMap<Region, RegionLauncher>,
 }
 
-impl super::Launcher for AzureLauncher {
+impl super::Launcher for Launcher {
     type MachineDescriptor = Setup;
 
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
         let region = l.region;
-        let mut az_region = AzureRegion::new(l.region, l.log.clone())?;
+        let mut az_region = RegionLauncher::new(l.region, l.log.clone())?;
         az_region.launch(l)?;
         self.regions.insert(region, az_region);
         Ok(())
@@ -415,14 +415,14 @@ struct Descriptor {
 ///
 /// It also assumes you have previously run `az login` to authenticate with Microsoft.
 #[derive(Default)]
-pub struct AzureRegion {
+pub struct RegionLauncher {
     pub log: Option<slog::Logger>,
     pub region: Region,
     resource_group_name: String,
     machines: Vec<Descriptor>,
 }
 
-impl AzureRegion {
+impl RegionLauncher {
     pub fn new(region: Region, log: slog::Logger) -> Result<Self, Error> {
         let rg_name = super::rand_name("resourcegroup");
 
@@ -437,7 +437,7 @@ impl AzureRegion {
     }
 }
 
-impl super::Launcher for AzureRegion {
+impl super::Launcher for RegionLauncher {
     type MachineDescriptor = Setup;
 
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
@@ -506,7 +506,7 @@ impl super::Launcher for AzureRegion {
     }
 
     fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
-        let log = self.log.as_ref().expect("AzureRegion uninitialized");
+        let log = self.log.as_ref().expect("RegionLauncher uninitialized");
         self.machines
             .iter()
             .map(|desc| {
@@ -544,7 +544,7 @@ impl super::Launcher for AzureRegion {
     }
 }
 
-impl Drop for AzureRegion {
+impl Drop for RegionLauncher {
     fn drop(&mut self) {
         debug!(self.log.as_ref().unwrap(), "Cleaning up resource group");
         azcmd::delete_resource_group(&self.resource_group_name).unwrap();

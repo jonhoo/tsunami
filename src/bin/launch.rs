@@ -59,12 +59,12 @@ fn main() -> Result<(), failure::Error> {
         Providers::AWS => {
             let mut b = TsunamiBuilder::default();
             b.use_term_logger();
-            let m = tsunami::providers::aws::MachineSetup::default()
+            let m = tsunami::providers::aws::Setup::default()
                 .region_with_ubuntu_ami(opt.region.parse()?)
                 .instance_type("t3.medium");
 
             b.add("machine", m).unwrap();
-            let mut l: tsunami::providers::aws::AWSLauncher<_> = Default::default();
+            let mut l: tsunami::providers::aws::Launcher<_> = Default::default();
             launch_and_wait(b, &mut l)?;
         }
         Providers::Azure => {
@@ -73,7 +73,7 @@ fn main() -> Result<(), failure::Error> {
             let m = tsunami::providers::azure::Setup::default().region(opt.region.parse()?);
 
             b.add("machine", m).unwrap();
-            let mut l: tsunami::providers::azure::AzureLauncher = Default::default();
+            let mut l: tsunami::providers::azure::Launcher = Default::default();
             launch_and_wait(b, &mut l)?;
         }
     }

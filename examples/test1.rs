@@ -19,18 +19,18 @@ fn main() -> Result<(), failure::Error> {
     b.use_term_logger()
         .timeout(std::time::Duration::from_secs(30));
 
-    let m = aws::MachineSetup::default()
+    let m = aws::Setup::default()
         .region_with_ubuntu_ami(Region::UsEast1)
         .setup(|ssh, _| ssh.cmd("sudo apt update").map(|(_, _)| ()));
     b.add("east", m).unwrap();
 
-    let m = aws::MachineSetup::default()
+    let m = aws::Setup::default()
         .region_with_ubuntu_ami(Region::ApSouth1)
         .instance_type("t3.small")
         .setup(|ssh, _| ssh.cmd("sudo apt update").map(|(_, _)| ()));
     b.add("india", m).unwrap();
 
-    let mut l: tsunami::providers::aws::AWSLauncher<_> = Default::default();
+    let mut l: tsunami::providers::aws::Launcher<_> = Default::default();
 
     let log = b.logger();
     b.spawn(&mut l)?;

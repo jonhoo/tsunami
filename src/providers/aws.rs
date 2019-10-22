@@ -1,8 +1,8 @@
 //! AWS backend for tsunami.
 //!
-//! The primary `impl Launcher` type is [`AWSLauncher`].
-//! It internally uses the lower-level, region-specific [`AWSRegion`].
-//! Both these types use [`MachineSetup`] as their descriptor type.
+//! The primary `impl Launcher` type is [`Launcher`].
+//! It internally uses the lower-level, region-specific [`RegionLauncher`].
+//! Both these types use [`Setup`] as their descriptor type.
 //!
 //! This implementation uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
 //! instances.
@@ -13,8 +13,8 @@
 //! use tsunami::TsunamiBuilder;
 //!
 //! let mut b = TsunamiBuilder::default();
-//! b.add("my machine", aws::MachineSetup::default()).unwrap();
-//! let mut l = aws::AWSLauncher::default();
+//! b.add("my machine", aws::Setup::default()).unwrap();
+//! let mut l = aws::Launcher::default();
 //! b.spawn(&mut l).unwrap();
 //! let vms = l.connect_all().unwrap();
 //! let my_machine = vms.get("my machine").unwrap();
@@ -72,16 +72,16 @@ impl Into<String> for UbuntuAmi {
     }
 }
 
-/// Marker type for [`MachineSetup`] indicating that it does not have an AMI.
+/// Marker type for [`Setup`] indicating that it does not have an AMI.
 #[derive(Clone, Copy)]
 pub struct NoAmi;
-/// Marker type for [`MachineSetup`] indicating that it has been initialized with an AMI.
+/// Marker type for [`Setup`] indicating that it has been initialized with an AMI.
 #[derive(Clone, Copy)]
 pub struct YesAmi;
 
 /// A descriptor for a particular machine setup in a tsunami.
 #[derive(Clone)]
-pub struct MachineSetup<HasAmi = YesAmi> {
+pub struct Setup<HasAmi = YesAmi> {
     region: Region,
     instance_type: String,
     ami: Option<String>,
@@ -89,7 +89,7 @@ pub struct MachineSetup<HasAmi = YesAmi> {
     _phantom: std::marker::PhantomData<HasAmi>,
 }
 
-impl super::MachineSetup for MachineSetup<YesAmi> {
+impl super::MachineSetup for Setup<YesAmi> {
     type Region = String;
 
     fn region(&self) -> Self::Region {
@@ -97,9 +97,9 @@ impl super::MachineSetup for MachineSetup<YesAmi> {
     }
 }
 
-impl Default for MachineSetup<YesAmi> {
+impl Default for Setup<YesAmi> {
     fn default() -> Self {
-        MachineSetup {
+        Setup {
             region: Region::UsEast1,
             instance_type: "t3.small".into(),
             ami: Some(UbuntuAmi::from(Region::UsEast1).into()),
@@ -109,7 +109,7 @@ impl Default for MachineSetup<YesAmi> {
     }
 }
 
-impl<A> MachineSetup<A> {
+impl<A> Setup<A> {
     /// Set up the machine in a specific EC2
     /// [`Region`](http://rusoto.github.io/rusoto/rusoto_core/region/enum.Region.html).
     ///
@@ -118,7 +118,7 @@ impl<A> MachineSetup<A> {
     ///
     /// AMIs are region-specific. This will overwrite the ami field to
     /// the Ubuntu 18.04 LTS AMI in the selected region.
-    pub fn region_with_ubuntu_ami(mut self, region: Region) -> MachineSetup<YesAmi> {
+    pub fn region_with_ubuntu_ami(mut self, region: Region) -> Setup<YesAmi> {
         self.region = region.clone();
         let ami: String = UbuntuAmi::from(region).into();
         self.ami(ami)
@@ -126,8 +126,8 @@ impl<A> MachineSetup<A> {
 
     /// The new instance will start out in the state dictated by the Amazon Machine Image specified
     /// in `ami`. Default is Ubuntu 18.04 LTS.
-    pub fn ami(self, ami: impl ToString) -> MachineSetup<YesAmi> {
-        MachineSetup {
+    pub fn ami(self, ami: impl ToString) -> Setup<YesAmi> {
+        Setup {
             region: self.region,
             instance_type: self.instance_type,
             ami: Some(ami.to_string()),
@@ -150,9 +150,9 @@ impl<A> MachineSetup<A> {
     /// # Example
     ///
     /// ```rust
-    /// use tsunami::providers::aws::MachineSetup;
+    /// use tsunami::providers::aws::Setup;
     ///
-    /// let m = MachineSetup::default()
+    /// let m = Setup::default()
     ///     .setup(|ssh, log| {
     ///         slog::info!(log, "running setup!");
     ///         ssh.cmd("sudo apt update")?;
@@ -168,7 +168,7 @@ impl<A> MachineSetup<A> {
     }
 }
 
-impl MachineSetup<YesAmi> {
+impl Setup<YesAmi> {
     /// Set up the machine in a specific EC2
     /// [`Region`](http://rusoto.github.io/rusoto/rusoto_core/region/enum.Region.html).
     ///
@@ -177,8 +177,8 @@ impl MachineSetup<YesAmi> {
     ///
     /// AMIs are region-specific.
     /// This will clear the AMI field, which must be set for this struct to be useful.
-    pub fn region(self, region: Region) -> MachineSetup<NoAmi> {
-        MachineSetup {
+    pub fn region(self, region: Region) -> Setup<NoAmi> {
+        Setup {
             region,
             instance_type: self.instance_type,
             ami: None,
@@ -190,16 +190,16 @@ impl MachineSetup<YesAmi> {
 
 /// AWS EC2 spot instance launcher.
 ///
-/// Each individual region is handled by `AWSRegion`.
-pub struct AWSLauncher<P = DefaultCredentialsProvider> {
+/// Each individual region is handled by `RegionLauncher`.
+pub struct Launcher<P = DefaultCredentialsProvider> {
     credential_provider: Box<dyn Fn() -> Result<P, Error>>,
     max_instance_duration_hours: usize,
-    regions: HashMap<<MachineSetup<YesAmi> as super::MachineSetup>::Region, AWSRegion>,
+    regions: HashMap<<Setup<YesAmi> as super::MachineSetup>::Region, RegionLauncher>,
 }
 
-impl Default for AWSLauncher {
+impl Default for Launcher {
     fn default() -> Self {
-        AWSLauncher {
+        Launcher {
             credential_provider: Box::new(|| Ok(DefaultCredentialsProvider::new()?)),
             max_instance_duration_hours: 6,
             regions: Default::default(),
@@ -207,8 +207,8 @@ impl Default for AWSLauncher {
     }
 }
 
-impl<P> AWSLauncher<P> {
-    /// `AWSLauncher` uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+impl<P> Launcher<P> {
+    /// `Launcher` uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
     /// instances.
     ///
     /// The lifetime of such instances must be declared in advance (1-6 hours).
@@ -227,11 +227,8 @@ impl<P> AWSLauncher<P> {
     /// The provided function is called once for each region, and is expected to produce a
     /// [`P: ProvideAwsCredentials`](https://docs.rs/rusoto_core/0.40.0/rusoto_core/trait.ProvideAwsCredentials.html)
     /// that gives access to the region in question.
-    pub fn with_credentials<P2>(
-        self,
-        f: impl Fn() -> Result<P2, Error> + 'static,
-    ) -> AWSLauncher<P2> {
-        AWSLauncher {
+    pub fn with_credentials<P2>(self, f: impl Fn() -> Result<P2, Error> + 'static) -> Launcher<P2> {
+        Launcher {
             credential_provider: Box::new(f),
             max_instance_duration_hours: self.max_instance_duration_hours,
             regions: self.regions,
@@ -239,7 +236,7 @@ impl<P> AWSLauncher<P> {
     }
 }
 
-impl<P> AWSLauncher<P>
+impl<P> Launcher<P>
 where
     P: ProvideAwsCredentials + Send + Sync + 'static,
     <P as ProvideAwsCredentials>::Future: Send,
@@ -249,16 +246,16 @@ where
     }
 }
 
-impl<P> super::Launcher for AWSLauncher<P>
+impl<P> super::Launcher for Launcher<P>
 where
     P: ProvideAwsCredentials + Send + Sync + 'static,
     <P as ProvideAwsCredentials>::Future: Send,
 {
-    type MachineDescriptor = MachineSetup<YesAmi>;
+    type MachineDescriptor = Setup<YesAmi>;
 
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
         let prov = self.get_credential_provider()?;
-        let mut awsregion = AWSRegion::new(&l.region.to_string(), prov, l.log)?;
+        let mut awsregion = RegionLauncher::new(&l.region.to_string(), prov, l.log)?;
         awsregion.make_spot_instance_requests(
             self.max_instance_duration_hours * 60, // 60 mins/hr
             l.machines,
@@ -288,24 +285,24 @@ where
 /// uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
 /// instances, which cost slightly more, but are never prematurely terminated.  The lifetime of
 /// such instances must be declared in advance (1-6 hours). By default, we use 6 hours (the
-/// maximum). To change this, AWSRegion respects the limit specified in
-/// [`AWSLauncher::set_max_instance_duration`](AWSLauncher::set_max_instance_duration).
+/// maximum). To change this, RegionLauncher respects the limit specified in
+/// [`Launcher::set_max_instance_duration`](Launcher::set_max_instance_duration).
 #[derive(Default)]
-pub struct AWSRegion {
+pub struct RegionLauncher {
     pub region: rusoto_core::region::Region,
     security_group_id: String,
     ssh_key_name: String,
     private_key_path: Option<tempfile::NamedTempFile>,
     client: Option<rusoto_ec2::Ec2Client>,
-    outstanding_spot_request_ids: HashMap<String, (String, MachineSetup)>,
-    instances: HashMap<String, (Option<(String, String)>, (String, MachineSetup))>,
+    outstanding_spot_request_ids: HashMap<String, (String, Setup)>,
+    instances: HashMap<String, (Option<(String, String)>, (String, Setup))>,
     log: Option<slog::Logger>,
 }
 
-impl AWSRegion {
+impl RegionLauncher {
     /// Connect to AWS region `region`, using credentials provider `provider`.
     ///
-    /// This is a lower-level API, you may want [`AWSLauncher`] instead.
+    /// This is a lower-level API, you may want [`Launcher`] instead.
     ///
     /// This will create a temporary security group and SSH key in the given AWS region.
     pub fn new<P>(region: &str, provider: P, log: slog::Logger) -> Result<Self, Error>
@@ -314,7 +311,7 @@ impl AWSRegion {
         <P as ProvideAwsCredentials>::Future: Send,
     {
         let region = region.parse()?;
-        let ec2 = AWSRegion::connect(region, provider, log)?
+        let ec2 = RegionLauncher::connect(region, provider, log)?
             .make_security_group()?
             .make_ssh_key()?;
 
@@ -349,8 +346,8 @@ impl AWSRegion {
     }
 
     fn make_security_group(mut self) -> Result<Self, Error> {
-        let log = self.log.as_ref().expect("AWSRegion uninitialized");
-        let ec2 = self.client.as_mut().expect("AWSRegion unconnected");
+        let log = self.log.as_ref().expect("RegionLauncher uninitialized");
+        let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
 
         // set up network firewall for machines
         let group_name = super::rand_name("security");
@@ -404,12 +401,12 @@ impl AWSRegion {
     }
 
     fn make_ssh_key(mut self) -> Result<Self, Error> {
-        let log = self.log.as_ref().expect("AWSRegion uninitialized");
-        let ec2 = self.client.as_mut().expect("AWSRegion unconnected");
+        let log = self.log.as_ref().expect("RegionLauncher uninitialized");
+        let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
         let private_key_path = self
             .private_key_path
             .as_mut()
-            .expect("AWSRegion unconnected");
+            .expect("RegionLauncher unconnected");
 
         // construct keypair for ssh access
         trace!(log, "creating keypair");
@@ -439,18 +436,18 @@ impl AWSRegion {
     /// `max_duration` minutes.
     ///
     /// `machines` is a key-value iterator: keys are friendly names for the machines, and values
-    /// are [`MachineSetup`] describing each machine to launch. Once the machines launch,
+    /// are [`Setup`] describing each machine to launch. Once the machines launch,
     /// the friendly names are tied to SSH connections ([`crate::Machine`]) in the `HashMap` that
-    /// [`connect_all`](AWSRegion::connect_all) returns.
+    /// [`connect_all`](RegionLauncher::connect_all) returns.
     ///
     /// Will *not* wait for the spot instance requests to complete. To wait, call
-    /// [`wait_for_spot_instance_requests`](AWSRegion::wait_for_spot_instance_requests).
+    /// [`wait_for_spot_instance_requests`](RegionLauncher::wait_for_spot_instance_requests).
     pub fn make_spot_instance_requests(
         &mut self,
         max_duration: usize,
-        machines: impl IntoIterator<Item = (String, MachineSetup)>,
+        machines: impl IntoIterator<Item = (String, Setup)>,
     ) -> Result<(), Error> {
-        let log = self.log.as_ref().expect("AWSRegion uninitialized");
+        let log = self.log.as_ref().expect("RegionLauncher uninitialized");
 
         // minimize the number of spot requests:
         for (_, reqs) in machines
@@ -534,12 +531,17 @@ impl AWSRegion {
     /// ready.
     ///
     /// To wait for the instances to be ready, call
-    /// [`wait_for_instances`](AWSRegion::wait_for_instances).
+    /// [`wait_for_instances`](RegionLauncher::wait_for_instances).
     pub fn wait_for_spot_instance_requests(
         &mut self,
         max_wait: Option<time::Duration>,
     ) -> Result<(), Error> {
-        let log = { self.log.as_ref().expect("AWSRegion uninitialized").clone() };
+        let log = {
+            self.log
+                .as_ref()
+                .expect("RegionLauncher uninitialized")
+                .clone()
+        };
         let start = time::Instant::now();
         let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
         req.spot_instance_request_ids =
@@ -703,7 +705,7 @@ impl AWSRegion {
                                 self.instances.get_mut(&instance_id).unwrap();
                             *ipinfo = Some((public_ip.clone(), public_dns.clone()));
 
-                            if let MachineSetup { setup: Some(f), .. } = m_setup {
+                            if let Setup { setup: Some(f), .. } = m_setup {
                                 use std::net::{IpAddr, SocketAddr};
                                 let mut sess = ssh::Session::connect(
                                     log,
@@ -760,14 +762,14 @@ impl AWSRegion {
     }
 
     /// Establish SSH connections to the machines. The `Ok` value is a `HashMap` associating the
-    /// friendly name for each `MachineSetup` with the corresponding SSH connection.
+    /// friendly name for each `Setup` with the corresponding SSH connection.
     pub fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
         let log = self.log.as_ref().unwrap();
         let private_key_path = self.private_key_path.as_ref().unwrap();
         self.instances
             .values()
             .map(|info| match info {
-                (Some((public_ip, public_dns)), (name, MachineSetup { .. })) => {
+                (Some((public_ip, public_dns)), (name, Setup { .. })) => {
                     use std::net::{IpAddr, SocketAddr};
                     let sess = ssh::Session::connect(
                         log,
@@ -801,10 +803,10 @@ impl AWSRegion {
     }
 }
 
-impl std::ops::Drop for AWSRegion {
+impl std::ops::Drop for RegionLauncher {
     fn drop(&mut self) {
         let client = self.client.as_ref().unwrap();
-        let log = self.log.as_ref().expect("AWSRegion uninitialized");
+        let log = self.log.as_ref().expect("RegionLauncher uninitialized");
         // terminate instances
         if !self.instances.is_empty() {
             info!(log, "terminating instances");
@@ -856,7 +858,7 @@ impl std::ops::Drop for AWSRegion {
 
 #[cfg(test)]
 mod test {
-    use super::AWSRegion;
+    use super::RegionLauncher;
     use crate::test::test_logger;
     use failure::{Error, ResultExt};
     use rusoto_core::region::Region;
@@ -868,7 +870,7 @@ mod test {
     fn make_key() -> Result<(), Error> {
         let region = Region::UsEast1;
         let provider = DefaultCredentialsProvider::new()?;
-        let ec2 = AWSRegion::connect(region, provider, test_logger())?;
+        let ec2 = RegionLauncher::connect(region, provider, test_logger())?;
 
         let mut ec2 = ec2.make_ssh_key()?;
         println!("==> key name: {}", ec2.ssh_key_name);
@@ -897,13 +899,13 @@ mod test {
         let region = "us-east-1";
         let provider = DefaultCredentialsProvider::new()?;
         let logger = test_logger();
-        let mut ec2 = AWSRegion::new(region, provider, logger.clone())?;
+        let mut ec2 = RegionLauncher::new(region, provider, logger.clone())?;
 
-        use super::MachineSetup;
+        use super::Setup;
 
         let names = (1..).map(|x| format!("{}", x));
-        let setup = MachineSetup::default();
-        let ms: Vec<(String, MachineSetup)> = names.zip(itertools::repeat_n(setup, 5)).collect();
+        let setup = Setup::default();
+        let ms: Vec<(String, Setup)> = names.zip(itertools::repeat_n(setup, 5)).collect();
 
         debug!(&logger, "make spot instance requests"; "num" => ms.len());
         ec2.make_spot_instance_requests(60, ms)?;
