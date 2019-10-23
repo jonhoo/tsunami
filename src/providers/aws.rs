@@ -756,32 +756,16 @@ impl RegionLauncher {
             .values()
             .map(|info| match info {
                 (Some((public_ip, public_dns)), (name, Setup { .. })) => {
-                    use std::net::{IpAddr, SocketAddr};
-                    let sess = ssh::Session::connect(
-                        log,
-                        "ubuntu",
-                        SocketAddr::new(
-                            public_ip
-                                .parse::<IpAddr>()
-                                .context("machine ip is not an ip address")?,
-                            22,
-                        ),
-                        Some(private_key_path.path()),
-                        None,
-                    )
-                    .context(format!("failed to ssh to machine {}", public_dns))
-                    .map_err(|e| {
-                        error!(log, "failed to ssh to {}", public_ip);
-                        e
-                    })?;
-                    let machine = Machine {
+                    let mut m = Machine {
                         public_ip: public_ip.clone(),
                         public_dns: public_dns.clone(),
                         nickname: name.clone(),
-                        ssh: Some(sess),
+                        ssh: None,
                         _tsunami: Default::default(),
                     };
-                    Ok((name.clone(), machine))
+
+                    m.connect_ssh(log, "ubuntu", Some(private_key_path.path()))?;
+                    Ok((name.clone(), m))
                 }
                 _ => bail!("Machines not initialized"),
             })

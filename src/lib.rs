@@ -80,6 +80,38 @@ pub struct Machine<'tsunami> {
     _tsunami: std::marker::PhantomData<&'tsunami ()>,
 }
 
+impl<'t> Machine<'t> {
+    fn connect_ssh(
+        &mut self,
+        log: &slog::Logger,
+        username: &str,
+        key_path: Option<&std::path::Path>,
+    ) -> Result<(), Error> {
+        use failure::ResultExt;
+        use std::net::{IpAddr, SocketAddr};
+        let sess = ssh::Session::connect(
+            log,
+            username,
+            SocketAddr::new(
+                self.public_ip
+                    .parse::<IpAddr>()
+                    .context("machine ip is not an ip address")?,
+                22,
+            ),
+            key_path,
+            None,
+        )
+        .context(format!("failed to ssh to machine {}", self.public_dns))
+        .map_err(|e| {
+            error!(log, "failed to ssh to {}", self.public_ip);
+            e
+        })?;
+
+        self.ssh = Some(sess);
+        Ok(())
+    }
+}
+
 /// Use this to prepare and execute a new tsunami.
 ///
 /// Call [`add`](TsunamiBuilder::add) to add machines to the TsunamiBuilder, and

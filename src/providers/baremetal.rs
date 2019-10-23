@@ -172,29 +172,22 @@ impl super::Launcher for Machine {
         let addr = self
             .addr
             .ok_or_else(|| format_err!("Address uninitialized"))?;
-        let sess = ssh::Session::connect(
+        let mut m = crate::Machine {
+            nickname: self.name.clone(),
+            public_dns: addr.to_string(),
+            public_ip: addr.ip().to_string(),
+            ssh: None,
+            _tsunami: Default::default(),
+        };
+
+        m.connect_ssh(
             log,
             &self.username,
-            addr,
             self.key_path.as_ref().map(|p| p.as_path()),
-            None,
-        )
-        .map_err(|e| {
-            error!(log, "failed to ssh to {}", &addr);
-            e.context(format!("failed to ssh to machine {}", addr))
-        })?;
+        )?;
 
         let mut hmap: HashMap<String, crate::Machine<'l>> = Default::default();
-        hmap.insert(
-            self.name.clone(),
-            crate::Machine {
-                nickname: self.name.clone(),
-                public_dns: addr.to_string(),
-                public_ip: addr.ip().to_string(),
-                ssh: Some(sess),
-                _tsunami: Default::default(),
-            },
-        );
+        hmap.insert(self.name.clone(), m);
         Ok(hmap)
     }
 }

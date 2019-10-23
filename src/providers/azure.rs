@@ -255,34 +255,16 @@ impl super::Launcher for RegionLauncher {
             .iter()
             .map(|desc| {
                 let Descriptor { name, username, ip } = desc;
-                let sess = ssh::Session::connect(
-                    log,
-                    &username,
-                    SocketAddr::new(
-                        ip.clone()
-                            .parse::<IpAddr>()
-                            .context("machine ip is not an ip address")?,
-                        22,
-                    ),
-                    None,
-                    None,
-                )
-                .context(format!("failed to ssh to machine {}", name.clone()))
-                .map_err(|e| {
-                    error!(log, "failed to ssh to {}", &ip.clone());
-                    e
-                })?;
-                use crate::Machine;
-                Ok((
-                    name.clone(),
-                    Machine {
-                        nickname: name.clone(),
-                        public_dns: ip.clone(),
-                        public_ip: ip.clone(),
-                        ssh: Some(sess),
-                        _tsunami: Default::default(),
-                    },
-                ))
+                let mut m = crate::Machine {
+                    nickname: name.clone(),
+                    public_dns: ip.clone(),
+                    public_ip: ip.clone(),
+                    ssh: None,
+                    _tsunami: Default::default(),
+                };
+
+                m.connect_ssh(log, username, None)?;
+                Ok((name.clone(), m))
             })
             .collect()
     }
