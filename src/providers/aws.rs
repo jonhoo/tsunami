@@ -24,6 +24,7 @@
 
 use crate::ssh;
 use crate::Machine;
+use educe::Educe;
 use failure::{Error, ResultExt};
 use itertools::Itertools;
 use rusoto_core::request::HttpClient;
@@ -73,18 +74,20 @@ impl Into<String> for UbuntuAmi {
 }
 
 /// Marker type for [`Setup`] indicating that it does not have an AMI.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct NoAmi;
 /// Marker type for [`Setup`] indicating that it has been initialized with an AMI.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct YesAmi;
 
 /// A descriptor for a particular machine setup in a tsunami.
-#[derive(Clone)]
+#[derive(Clone, Educe)]
+#[educe(Debug)]
 pub struct Setup<HasAmi = YesAmi> {
     region: Region,
     instance_type: String,
     ami: Option<String>,
+    #[educe(Debug(ignore))]
     setup: Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
     _phantom: std::marker::PhantomData<HasAmi>,
 }
@@ -191,7 +194,10 @@ impl Setup<YesAmi> {
 /// AWS EC2 spot instance launcher.
 ///
 /// Each individual region is handled by `RegionLauncher`.
+#[derive(Educe)]
+#[educe(Debug)]
 pub struct Launcher<P = DefaultCredentialsProvider> {
+    #[educe(Debug(ignore))]
     credential_provider: Box<dyn Fn() -> Result<P, Error>>,
     max_instance_duration_hours: usize,
     regions: HashMap<<Setup<YesAmi> as super::MachineSetup>::Region, RegionLauncher>,
@@ -287,12 +293,14 @@ where
 /// such instances must be declared in advance (1-6 hours). By default, we use 6 hours (the
 /// maximum). To change this, RegionLauncher respects the limit specified in
 /// [`Launcher::set_max_instance_duration`](Launcher::set_max_instance_duration).
-#[derive(Default)]
+#[derive(Educe, Default)]
+#[educe(Debug)]
 pub struct RegionLauncher {
     pub region: rusoto_core::region::Region,
     security_group_id: String,
     ssh_key_name: String,
     private_key_path: Option<tempfile::NamedTempFile>,
+    #[educe(Debug(ignore))]
     client: Option<rusoto_ec2::Ec2Client>,
     outstanding_spot_request_ids: HashMap<String, (String, Setup)>,
     instances: HashMap<String, (Option<(String, String)>, (String, Setup))>,

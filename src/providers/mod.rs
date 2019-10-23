@@ -1,6 +1,7 @@
 use failure::Error;
 use std::collections::HashMap;
 
+#[derive(Debug)]
 pub struct LaunchDescriptor<M: MachineSetup> {
     pub region: M::Region,
     pub log: slog::Logger,

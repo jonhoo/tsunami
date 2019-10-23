@@ -42,12 +42,15 @@
 #![warn(trivial_casts)]
 #![warn(trivial_numeric_casts)]
 #![warn(unused_extern_crates)]
+#![warn(rust_2018_idioms)]
+#![warn(missing_debug_implementations)]
 
 #[macro_use]
 extern crate failure;
 #[macro_use]
 extern crate slog;
 
+use educe::Educe;
 use failure::Error;
 use itertools::Itertools;
 use std::collections::HashMap;
@@ -62,12 +65,15 @@ use providers::{Launcher, MachineSetup};
 /// A handle to an instance currently running as part of a tsunami.
 ///
 /// Run commands on the machine using the [`ssh::Session`] via the `ssh` field.
+#[derive(Educe)]
+#[educe(Debug)]
 pub struct Machine<'tsunami> {
     pub nickname: String,
     pub public_dns: String,
     pub public_ip: String,
 
     /// If `Some(_)`, an established SSH session to this host.
+    #[educe(Debug(ignore))]
     pub ssh: Option<ssh::Session>,
 
     // tie the lifetime of the machine to the Tsunami.
@@ -82,6 +88,7 @@ pub struct Machine<'tsunami> {
 /// Then, call [`Launcher::connect_all`](providers::Launcher::connect_all) to access the spawned
 /// machines.
 #[must_use]
+#[derive(Debug)]
 pub struct TsunamiBuilder<M: MachineSetup> {
     descriptors: HashMap<String, M>,
     log: slog::Logger,
@@ -219,7 +226,7 @@ impl<M: MachineSetup + Clone> TsunamiBuilder<M> {
 
 #[cfg(test)]
 mod test {
-    pub fn test_logger() -> slog::Logger {
+    pub(crate) fn test_logger() -> slog::Logger {
         use slog::Drain;
         let plain = slog_term::PlainSyncDecorator::new(slog_term::TestStdoutWriter);
         let drain = slog_term::FullFormat::new(plain).build().fuse();

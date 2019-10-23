@@ -1,4 +1,5 @@
 use crate::ssh;
+use educe::Educe;
 use failure::Error;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -6,11 +7,13 @@ use std::sync::Arc;
 /// Descriptor for a single, existing machine to connect to.
 /// Therefore, the `impl MachineSetup` includes the address of the machine in `region`; i.e.,
 /// each instance of Setup corresponds to a single machine.
-#[derive(Clone)]
+#[derive(Clone, Educe)]
+#[educe(Debug)]
 pub struct Setup {
     addr: Vec<std::net::SocketAddr>,
     username: String,
     key_path: Option<std::path::PathBuf>,
+    #[educe(Debug(ignore))]
     setup_fn:
         Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
 }
@@ -98,7 +101,7 @@ fn try_addrs(
 /// be ignored, since it doesn't make sense to connect to the same machine twice.
 ///
 /// The `impl Drop` of this type is a no-op, since Tsunami can't terminate an existing machine.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Machine {
     pub log: Option<slog::Logger>,
     name: String,

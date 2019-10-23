@@ -33,6 +33,7 @@
 //! ```
 
 use crate::ssh;
+use educe::Educe;
 use failure::{bail, Error, ResultExt};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -41,12 +42,14 @@ use std::sync::Arc;
 /// A descriptor for a single Azure VM type.
 ///
 /// The default is an UbuntuLTS, Standard_DS1_V2 VM in the East US region.
-#[derive(Clone)]
+#[derive(Clone, Educe)]
+#[educe(Debug)]
 pub struct Setup {
     region: Region,
     instance_type: String,
     image: String,
     username: String,
+    #[educe(Debug(ignore))]
     setup_fn:
         Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
 }
@@ -129,7 +132,7 @@ impl Setup {
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
 ///
 /// It also assumes you have previously run `az login` to authenticate.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Launcher {
     regions: HashMap<Region, RegionLauncher>,
 }
@@ -150,6 +153,7 @@ impl super::Launcher for Launcher {
     }
 }
 
+#[derive(Debug)]
 struct Descriptor {
     name: String,
     ip: String,
@@ -163,7 +167,7 @@ struct Descriptor {
 /// This implementation relies on the [Azure
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
 /// It also assumes you have previously run `az login` to authenticate with Microsoft.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct RegionLauncher {
     pub log: Option<slog::Logger>,
     pub region: Region,
