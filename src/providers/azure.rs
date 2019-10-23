@@ -156,6 +156,7 @@ impl super::Launcher for Launcher {
 #[derive(Debug)]
 struct Descriptor {
     name: String,
+    username: String,
     ip: String,
 }
 
@@ -221,8 +222,8 @@ impl super::Launcher for RegionLauncher {
             .into_par_iter()
             .map(|(nickname, pub_ip, desc)| {
                 if let Setup {
-                    username,
-                    setup_fn: Some(f),
+                    ref username,
+                    setup_fn: Some(ref f),
                     ..
                 } = desc
                 {
@@ -239,6 +240,7 @@ impl super::Launcher for RegionLauncher {
 
                 Ok(Descriptor {
                     name: nickname,
+                    username: desc.username,
                     ip: pub_ip,
                 })
             })
@@ -252,10 +254,10 @@ impl super::Launcher for RegionLauncher {
         self.machines
             .iter()
             .map(|desc| {
-                let Descriptor { name, ip } = desc;
+                let Descriptor { name, username, ip } = desc;
                 let sess = ssh::Session::connect(
                     log,
-                    "ubuntu",
+                    &username,
                     SocketAddr::new(
                         ip.clone()
                             .parse::<IpAddr>()
