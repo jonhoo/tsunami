@@ -112,7 +112,7 @@ impl<M: MachineSetup> TsunamiBuilder<M> {
     /// They must be unique for each `TsunamiBuilder`. If `nickname` is a duplicate,
     /// this method will return an `Err` value.
     pub fn add(&mut self, nickname: &str, m: M) -> Result<&mut Self, Error> {
-        if let Some(_) = self.descriptors.insert(nickname.to_string(), m) {
+        if self.descriptors.insert(nickname.to_string(), m).is_some() {
             Err(format_err!("Duplicate machine name {}", nickname))
         } else {
             Ok(self)
