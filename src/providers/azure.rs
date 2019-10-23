@@ -34,9 +34,8 @@
 
 use crate::ssh;
 use educe::Educe;
-use failure::{bail, Error, ResultExt};
+use failure::{bail, Error};
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 /// A descriptor for a single Azure VM type.
