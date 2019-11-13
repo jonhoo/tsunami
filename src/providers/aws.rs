@@ -320,6 +320,7 @@ where
 #[derive(Educe, Default)]
 #[educe(Debug)]
 pub struct RegionLauncher {
+    /// The region this RegionLauncher is connected to.
     pub region: rusoto_core::region::Region,
     security_group_id: String,
     ssh_key_name: String,

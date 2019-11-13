@@ -1,3 +1,8 @@
+//! Baremetal backend for tsunami.
+//!
+//! Use this to use machines that are already in existence with
+//! tsunami.
+
 use crate::ssh;
 use educe::Educe;
 use failure::Error;
@@ -26,6 +31,7 @@ impl super::MachineSetup for Setup {
 }
 
 impl Setup {
+    /// Create a new instance of Setup.
     pub fn new(
         addr: impl std::net::ToSocketAddrs,
         username: Option<String>,
@@ -50,6 +56,7 @@ impl Setup {
         })
     }
 
+    /// Set the location of the user's key.
     pub fn key_path(self, p: impl AsRef<std::path::Path>) -> Self {
         Self {
             key_path: Some(p.as_ref().to_path_buf()),
@@ -57,6 +64,12 @@ impl Setup {
         }
     }
 
+    /// Specify instance setup.
+    ///
+    /// The provided callback, `setup`, is called once
+    /// for every spawned instances of this type with a handle
+    /// to the target machine. Use [`Machine::ssh`] to issue
+    /// commands on the host in question.
     pub fn setup(
         self,
         setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
@@ -103,6 +116,7 @@ fn try_addrs(
 /// The `impl Drop` of this type is a no-op, since Tsunami can't terminate an existing machine.
 #[derive(Debug, Default)]
 pub struct Machine {
+    /// A logger.
     pub log: Option<slog::Logger>,
     name: String,
     addr: Option<std::net::SocketAddr>,

@@ -95,6 +95,7 @@ impl Setup {
         self
     }
 
+    /// Set the username.
     pub fn username(mut self, username: String) -> Self {
         self.username = username;
         self
@@ -169,13 +170,16 @@ struct Descriptor {
 /// It also assumes you have previously run `az login` to authenticate with Microsoft.
 #[derive(Debug, Default)]
 pub struct RegionLauncher {
+    /// A logger.
     pub log: Option<slog::Logger>,
+    /// The region this [`RegionLauncher`] is connected to.
     pub region: Region,
     resource_group_name: String,
     machines: Vec<Descriptor>,
 }
 
 impl RegionLauncher {
+    /// Create a new instance of RegionLauncher.
     pub fn new(region: Region, log: slog::Logger) -> Result<Self, Error> {
         let rg_name = super::rand_name("resourcegroup");
 
@@ -279,6 +283,7 @@ impl Drop for RegionLauncher {
 /// Available regions to launch VMs in.
 ///
 /// See https://azure.microsoft.com/en-us/global-infrastructure/locations/ for more information.
+#[allow(missing_docs)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Region {
     EastUs,

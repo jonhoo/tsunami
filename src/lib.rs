@@ -38,6 +38,7 @@
 //! be built. You can find the recordings of past sessions [on
 //! YouTube](https://www.youtube.com/playlist?list=PLqbS7AVVErFgY2faCIYjJZv_RluGkTlKt).
 #![warn(unreachable_pub)]
+#![warn(missing_docs)]
 #![warn(missing_copy_implementations)]
 #![warn(trivial_casts)]
 #![warn(trivial_numeric_casts)]
@@ -69,9 +70,17 @@ use providers::{Launcher, MachineSetup};
 #[derive(Educe)]
 #[educe(Debug)]
 pub struct Machine<'tsunami> {
+    /// The friendly name for this machine.
+    ///
+    /// Corresponds to the name set in [`add()`].
     pub nickname: String,
-    pub public_dns: String,
+    /// The public IP address of the machine.
     pub public_ip: String,
+    /// The public DNS name of the machine.
+    ///
+    /// If the instance doesn't have a DNS name, this fields will be 
+    /// equivalent to `public_ip`.
+    pub public_dns: String,
 
     /// If `Some(_)`, an established SSH session to this host.
     #[educe(Debug(ignore))]

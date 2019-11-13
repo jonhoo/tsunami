@@ -1,11 +1,21 @@
+//! Implements backend functionality to spawn machines.
+
 use failure::Error;
 use std::collections::HashMap;
 
+/// A description of a set of machines to launch.
 #[derive(Debug)]
 pub struct LaunchDescriptor<M: MachineSetup> {
+    /// The region to launch into.
     pub region: M::Region,
+    /// A logger.
     pub log: slog::Logger,
+    /// An optional timeout.
+    ///
+    /// If specified and the LaunchDescriptor is not launched in the given time, 
+    /// [`crate::TsunamiBuilder::spawn`] will fail with an error.
     pub max_wait: Option<std::time::Duration>,
+    /// The machines to launch. 
     pub machines: Vec<(String, M)>,
 }
 
@@ -13,13 +23,16 @@ pub struct LaunchDescriptor<M: MachineSetup> {
 /// to cloud providers. e.g., for AWS we need a separate
 /// connection to each region.
 pub trait MachineSetup {
+    /// Grouping type.
     type Region: Eq + std::hash::Hash + Clone + ToString;
+    /// Get the region.
     fn region(&self) -> Self::Region;
 }
 
 /// Implement this trait to implement a new cloud provider for Tsunami.
 /// Tsunami will call `launch` once per unique region, as defined by `MachineSetup`.
 pub trait Launcher {
+    /// A type describing a single instance to launch.
     type MachineDescriptor: MachineSetup;
 
     /// Spawn the instances. Implementors should remember enough information to subsequently answer
