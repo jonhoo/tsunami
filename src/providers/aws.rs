@@ -297,18 +297,7 @@ where
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
         let prov = self.get_credential_provider()?;
         let mut awsregion = RegionLauncher::new(&l.region.to_string(), prov, l.log)?;
-        awsregion.make_spot_instance_requests(
-            self.max_instance_duration_hours * 60, // 60 mins/hr
-            l.machines,
-        )?;
-
-        let start = time::Instant::now();
-        awsregion.wait_for_spot_instance_requests(l.max_wait)?;
-        if let Some(mut d) = l.max_wait {
-            d -= time::Instant::now().duration_since(start);
-        }
-
-        awsregion.wait_for_instances(l.max_wait)?;
+        awsregion.launch(self.max_instance_duration_hours, l.max_wait, l.machines)?;
         self.regions.insert(l.region, awsregion);
         Ok(())
     }
@@ -386,6 +375,26 @@ impl RegionLauncher {
             client: Some(ec2),
             log: Some(log),
         })
+    }
+
+    /// Region-specific instance setup.
+    ///
+    /// Make spot instance requests, wait for the instances, and then call the
+    /// instance setup functions. 
+    pub fn launch(&mut self, max_instance_duration_hours: usize, max_wait: Option<time::Duration>, machines: impl IntoIterator<Item = (String, Setup)>) -> Result<(), Error> {
+        self.make_spot_instance_requests(
+            max_instance_duration_hours * 60, // 60 mins/hr
+            machines,
+        )?;
+
+        let start = time::Instant::now();
+        self.wait_for_spot_instance_requests(max_wait)?;
+        if let Some(mut d) = max_wait {
+            d -= time::Instant::now().duration_since(start);
+        }
+
+        self.wait_for_instances(max_wait)?;
+        Ok(())
     }
 
     fn make_security_group(mut self) -> Result<Self, Error> {
@@ -485,7 +494,7 @@ impl RegionLauncher {
     ///
     /// Will *not* wait for the spot instance requests to complete. To wait, call
     /// [`wait_for_spot_instance_requests`](RegionLauncher::wait_for_spot_instance_requests).
-    pub fn make_spot_instance_requests(
+    fn make_spot_instance_requests(
         &mut self,
         max_duration: usize,
         machines: impl IntoIterator<Item = (String, Setup)>,
@@ -575,7 +584,7 @@ impl RegionLauncher {
     ///
     /// To wait for the instances to be ready, call
     /// [`wait_for_instances`](RegionLauncher::wait_for_instances).
-    pub fn wait_for_spot_instance_requests(
+    fn wait_for_spot_instance_requests(
         &mut self,
         max_wait: Option<time::Duration>,
     ) -> Result<(), Error> {
@@ -657,54 +666,56 @@ impl RegionLauncher {
             }
 
             if let Some(wait_limit) = max_wait {
-                if start.elapsed() > wait_limit {
-                    warn!(log, "wait time exceeded -- cancelling run");
-                    let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
-                    cancel.spot_instance_request_ids = req
-                        .spot_instance_request_ids
-                        .clone()
-                        .expect("we set this to Some above");
-                    client
-                        .cancel_spot_instance_requests(cancel)
-                        .sync()
-                        .context("failed to cancel spot instances")
-                        .map_err(|e| {
-                            warn!(log, "failed to cancel spot instance request: {:?}", e);
-                            e
-                        })?;
+                if start.elapsed() <= wait_limit {
+                    continue;
+                }
 
-                    trace!(
-                        log,
-                        "spot instances cancelled -- gathering remaining instances"
-                    );
-                    // wait for a little while for the cancelled spot requests to settle
-                    // and any that were *just* made active to be associated with their instances
-                    thread::sleep(time::Duration::from_secs(1));
+                warn!(log, "wait time exceeded -- cancelling run");
+                let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
+                cancel.spot_instance_request_ids = req
+                    .spot_instance_request_ids
+                    .clone()
+                    .expect("we set this to Some above");
+                client
+                    .cancel_spot_instance_requests(cancel)
+                    .sync()
+                    .context("failed to cancel spot instances")
+                    .map_err(|e| {
+                        warn!(log, "failed to cancel spot instance request: {:?}", e);
+                        e
+                    })?;
 
-                    let sirs = client
-                        .describe_spot_instance_requests(req)
-                        .sync()?
-                        .spot_instance_requests
-                        .unwrap_or_else(Vec::new);
-                    for sir in sirs {
-                        match sir.instance_id {
-                            Some(instance_id) => {
-                                trace!(log, "spot request cancelled";
-                                    "req_id" => sir.spot_instance_request_id,
-                                    "iid" => &instance_id,
-                                );
-                            }
-                            _ => {
-                                error!(
-                                    log,
-                                    "spot request failed: {:?}", &sir.status;
-                                    "req_id" => sir.spot_instance_request_id,
-                                );
-                            }
+                trace!(
+                    log,
+                    "spot instances cancelled -- gathering remaining instances"
+                );
+                // wait for a little while for the cancelled spot requests to settle
+                // and any that were *just* made active to be associated with their instances
+                thread::sleep(time::Duration::from_secs(1));
+
+                let sirs = client
+                    .describe_spot_instance_requests(req)
+                    .sync()?
+                    .spot_instance_requests
+                    .unwrap_or_else(Vec::new);
+                for sir in sirs {
+                    match sir.instance_id {
+                        Some(instance_id) => {
+                            trace!(log, "spot request cancelled";
+                                "req_id" => sir.spot_instance_request_id,
+                                "iid" => &instance_id,
+                            );
+                        }
+                        _ => {
+                            error!(
+                                log,
+                                "spot request failed: {:?}", &sir.status;
+                                "req_id" => sir.spot_instance_request_id,
+                            );
                         }
                     }
-                    bail!("wait limit reached");
                 }
+                bail!("wait limit reached");
             }
         }
 
@@ -712,7 +723,7 @@ impl RegionLauncher {
     }
 
     /// Poll AWS until `max_wait` (if not `None`) or the instances are ready to SSH to.
-    pub fn wait_for_instances(&mut self, max_wait: Option<time::Duration>) -> Result<(), Error> {
+    fn wait_for_instances(&mut self, max_wait: Option<time::Duration>) -> Result<(), Error> {
         let start = time::Instant::now();
         let mut desc_req = rusoto_ec2::DescribeInstancesRequest::default();
         let client = self.client.as_ref().unwrap();
