@@ -228,8 +228,24 @@ impl<M: MachineSetup + Clone> TsunamiBuilder<M> {
 
     /// Start up all the hosts.
     ///
+    /// This call will block until the instances are spawned into the provided launcher.
     /// SSH connections to each instance are accesssible via
     /// [`connect_all`](providers::Launcher::connect_all).
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// fn main() -> Result<(), failure::Error> {
+    ///     use tsunami::providers::Launcher;
+    ///     let mut b = tsunami::TsunamiBuilder::default();
+    ///     // make a launcher
+    ///     let mut aws: tsunami::providers::aws::Launcher<_> = Default::default();
+    ///     // spawn hosts into the launcher
+    ///     b.add("my_tsunami", Default::default())?.spawn(&mut aws)?;
+    ///     // access hosts via the launcher
+    ///     let vms = aws.connect_all()?;
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn spawn<L: Launcher<MachineDescriptor = M>>(&self, launcher: &mut L) -> Result<(), Error> {
         let descriptors: HashMap<String, M> = self.descriptors.clone();
         let max_wait = self.max_wait;
