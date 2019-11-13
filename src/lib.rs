@@ -72,7 +72,7 @@ use providers::{Launcher, MachineSetup};
 pub struct Machine<'tsunami> {
     /// The friendly name for this machine.
     ///
-    /// Corresponds to the name set in [`add()`].
+    /// Corresponds to the name set in [`TsunamiBuilder::add`].
     pub nickname: String,
     /// The public IP address of the machine.
     pub public_ip: String,

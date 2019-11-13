@@ -81,7 +81,11 @@ impl Setup {
     }
 
     /// To view the available sizes in the relevant region, use:
-    /// `az vm list-sizes -l <region_name>`.
+    /// ```bash
+    /// az vm list-sizes -l <region_name>
+    /// ```
+    ///
+    /// The default is "Standard_DS1_v2".
     pub fn instance_type(mut self, inst_type: String) -> Self {
         self.instance_type = inst_type;
         self
@@ -89,7 +93,10 @@ impl Setup {
 
     /// Set the image.
     ///
-    /// See `az vm image list` for valid options.
+    /// ```bash
+    /// az vm image list
+    /// ```
+    /// shows the valid options.
     pub fn image(mut self, image: String) -> Self {
         self.image = image;
         self
@@ -128,10 +135,14 @@ impl Setup {
 
 /// Launcher type for the Microsoft Azure cloud.
 ///
+/// This is a lower-level API. Most users will use [`crate::TsunamiBuilder::spawn`].
+///
 /// This implementation relies on the [Azure
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
-///
 /// It also assumes you have previously run `az login` to authenticate.
+///
+/// While the regions are initialized serially, the setup functions for each machine are executed 
+/// in parallel (within each region).
 #[derive(Debug, Default)]
 pub struct Launcher {
     regions: HashMap<Region, RegionLauncher>,

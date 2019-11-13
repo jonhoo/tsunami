@@ -68,7 +68,7 @@ impl Setup {
     ///
     /// The provided callback, `setup`, is called once
     /// for every spawned instances of this type with a handle
-    /// to the target machine. Use [`Machine::ssh`] to issue
+    /// to the target machine. Use [`crate::Machine::ssh`] to issue
     /// commands on the host in question.
     pub fn setup(
         self,

@@ -35,8 +35,14 @@ pub trait Launcher {
     /// A type describing a single instance to launch.
     type MachineDescriptor: MachineSetup;
 
-    /// Spawn the instances. Implementors should remember enough information to subsequently answer
+    /// Spawn the instances. 
+    ///
+    /// Implementors should remember enough information to subsequently answer
     /// calls to `connect_instances`, i.e., the IPs of the machines.
+    ///
+    /// This method can be called multiple times. Subsequent calls to 
+    /// `connect_instances` should return the new machines as well as any previously
+    /// spawned machines.
     fn launch(&mut self, desc: LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error>;
 
     /// Return connections to the [`Machine`s](crate::Machine) that `launch` spawned.
