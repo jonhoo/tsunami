@@ -1,8 +1,8 @@
 //! Azure backend for tsunami.
 //!
 //! The primary `impl Launcher` type is [`Launcher`].
-//! It internally uses the lower-level, region-specific [`RegionLauncher`].
-//! Both these types use [`Setup`] as their descriptor type.
+//! It internally uses the lower-level, region-specific [`azure::RegionLauncher`].
+//! Both these types use [`azure::Setup`] as their descriptor type.
 //!
 //! Azure does not support Spot or Defined Duration instances.
 //! As a result, if your tsunami crashes (i.e., exits without calling `drop()` on [`Launcher`], you must manually terminate your instances
@@ -101,7 +101,7 @@ impl Setup {
     }
 
     /// The provided callback, `setup`, is called once for every spawned instances of this type with a handle
-    /// to the target machine. Use [`Machine::ssh`] to issue
+    /// to the target machine. Use [`crate::Machine::ssh`] to issue
     /// commands on the host in question.
     ///
     /// # Example

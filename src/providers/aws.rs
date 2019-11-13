@@ -1,8 +1,8 @@
 //! AWS backend for tsunami.
 //!
 //! The primary `impl Launcher` type is [`Launcher`].
-//! It internally uses the lower-level, region-specific [`RegionLauncher`].
-//! Both these types use [`Setup`] as their descriptor type.
+//! It internally uses the lower-level, region-specific [`aws::RegionLauncher`].
+//! Both these types use [`aws::Setup`] as their descriptor type.
 //!
 //! This implementation uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
 //! instances.
@@ -15,6 +15,8 @@
 //! let mut b = TsunamiBuilder::default();
 //! b.add("my machine", aws::Setup::default()).unwrap();
 //! let mut l = aws::Launcher::default();
+//! // make the defined-duration instances expire after 1 hour
+//! l.set_max_instance_duration(1);
 //! b.spawn(&mut l).unwrap();
 //! let vms = l.connect_all().unwrap();
 //! let my_machine = vms.get("my machine").unwrap();
@@ -139,14 +141,19 @@ impl<A> Setup<A> {
         }
     }
 
-    /// The given AWS EC2 instance type will be used. Note that only [EC2 Defined Duration Spot
+    /// The given AWS EC2 instance type will be used. 
+    ///
+    /// Note that only [EC2 Defined Duration Spot
     /// Instance types](https://aws.amazon.com/ec2/spot/pricing/) are allowed.
     pub fn instance_type(mut self, typ: impl ToString) -> Self {
         self.instance_type = typ.to_string();
         self
     }
 
-    /// The provided callback, `setup`, is called once for every spawned instances of this type with a handle
+    /// Specify instance setup.
+    ///
+    /// The provided callback, `setup`, is called once
+    /// for every spawned instances of this type with a handle
     /// to the target machine. Use [`Machine::ssh`] to issue
     /// commands on the host in question.
     ///
@@ -192,6 +199,8 @@ impl Setup<YesAmi> {
 }
 
 /// AWS EC2 spot instance launcher.
+///
+/// This is a lower-level API. Most users will use [`crate::TsunamiBuilder::spawn`].
 ///
 /// Each individual region is handled by `RegionLauncher`.
 #[derive(Educe)]
@@ -697,6 +706,8 @@ impl RegionLauncher {
             {
                 for instance in reservation.instances.unwrap_or_else(Vec::new) {
                     match instance {
+                        // https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_InstanceState.html
+                        // code 16 means "Running"
                         rusoto_ec2::Instance {
                             state: Some(rusoto_ec2::InstanceState { code: Some(16), .. }),
                             instance_id: Some(instance_id),
@@ -773,7 +784,7 @@ impl RegionLauncher {
     }
 }
 
-impl std::ops::Drop for RegionLauncher {
+impl Drop for RegionLauncher {
     fn drop(&mut self) {
         let client = self.client.as_ref().unwrap();
         let log = self.log.as_ref().expect("RegionLauncher uninitialized");
