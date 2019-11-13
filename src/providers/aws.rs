@@ -200,6 +200,7 @@ pub struct Launcher<P = DefaultCredentialsProvider> {
     #[educe(Debug(ignore))]
     credential_provider: Box<dyn Fn() -> Result<P, Error>>,
     max_instance_duration_hours: usize,
+    use_open_ports: bool,
     regions: HashMap<<Setup as super::MachineSetup>::Region, RegionLauncher>,
 }
 
@@ -208,6 +209,7 @@ impl Default for Launcher {
         Launcher {
             credential_provider: Box::new(|| Ok(DefaultCredentialsProvider::new()?)),
             max_instance_duration_hours: 6,
+            use_open_ports: false,
             regions: Default::default(),
         }
     }
@@ -228,6 +230,13 @@ impl<P> Launcher<P> {
         self
     }
 
+    /// The machines spawned on this launcher will have 
+    /// ports open to the public Internet.
+    pub fn open_ports(&mut self) -> &mut Self {
+        self.use_open_ports = true;
+        self
+    }
+
     /// Set the credential provider used to authenticate to EC2.
     ///
     /// The provided function is called once for each region, and is expected to produce a
@@ -237,6 +246,7 @@ impl<P> Launcher<P> {
         Launcher {
             credential_provider: Box::new(f),
             max_instance_duration_hours: self.max_instance_duration_hours,
+            use_open_ports: self.use_open_ports,
             regions: self.regions,
         }
     }
@@ -261,7 +271,7 @@ where
 
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
         let prov = self.get_credential_provider()?;
-        let mut awsregion = RegionLauncher::new(&l.region.to_string(), prov, l.log)?;
+        let mut awsregion = RegionLauncher::new(&l.region.to_string(), prov, self.use_open_ports, l.log)?;
         awsregion.launch(self.max_instance_duration_hours, l.max_wait, l.machines)?;
         self.regions.insert(l.region, awsregion);
         Ok(())
@@ -305,14 +315,14 @@ impl RegionLauncher {
     /// This is a lower-level API, you may want [`Launcher`] instead.
     ///
     /// This will create a temporary security group and SSH key in the given AWS region.
-    pub fn new<P>(region: &str, provider: P, log: slog::Logger) -> Result<Self, Error>
+    pub fn new<P>(region: &str, provider: P, use_open_ports: bool, log: slog::Logger) -> Result<Self, Error>
     where
         P: ProvideAwsCredentials + Send + Sync + 'static,
         <P as ProvideAwsCredentials>::Future: Send,
     {
         let region = region.parse()?;
         let ec2 = RegionLauncher::connect(region, provider, log)?
-            .make_security_group()?
+            .make_security_group(use_open_ports)?
             .make_ssh_key()?;
 
         Ok(ec2)
@@ -365,7 +375,7 @@ impl RegionLauncher {
         Ok(())
     }
 
-    fn make_security_group(mut self) -> Result<Self, Error> {
+    fn make_security_group(mut self, use_open_ports: bool) -> Result<Self, Error> {
         let log = self.log.as_ref().expect("RegionLauncher uninitialized");
         let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
 
@@ -397,11 +407,15 @@ impl RegionLauncher {
             .sync()
             .context("failed to fill in security group for new machines")?;
 
-        // cross-VM talk
         req.ip_protocol = Some("tcp".to_string());
         req.from_port = Some(0);
         req.to_port = Some(65535);
-        req.cidr_ip = Some("0.0.0.0/0".to_string());
+        if use_open_ports {
+            req.cidr_ip = Some("0.0.0.0/0".to_string());
+        } else {
+            req.cidr_ip = Some("172.31.0.0/16".to_string());
+        }
+
         trace!(log, "adding internal VM access to security group");
         ec2.authorize_security_group_ingress(req.clone())
             .sync()
@@ -410,7 +424,12 @@ impl RegionLauncher {
         req.ip_protocol = Some("udp".to_string());
         req.from_port = Some(0);
         req.to_port = Some(65535);
-        req.cidr_ip = Some("0.0.0.0/0".to_string());
+        if use_open_ports {
+            req.cidr_ip = Some("0.0.0.0/0".to_string());
+        } else {
+            req.cidr_ip = Some("172.31.0.0/16".to_string());
+        }
+
         trace!(log, "adding internal VM access to security group");
         ec2.authorize_security_group_ingress(req)
             .sync()
