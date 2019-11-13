@@ -75,26 +75,34 @@ impl Into<String> for UbuntuAmi {
     }
 }
 
-/// Marker type for [`Setup`] indicating that it does not have an AMI.
+/// Marker type for [`Setup`] indicating that it does not have the given field.
 #[derive(Clone, Copy, Debug)]
-pub struct NoAmi;
-/// Marker type for [`Setup`] indicating that it has been initialized with an AMI.
+pub struct No;
+/// Marker type for [`Setup`] indicating that it has the given field.
 #[derive(Clone, Copy, Debug)]
-pub struct YesAmi;
+pub struct Yes;
 
 /// A descriptor for a particular machine setup in a tsunami.
+///
+/// An AMI and username must be set (indicated by marker type [`Yes`]) for this to be useful.
+/// The default region and ami is Ubuntu 18.04 LTS in us-east-1. Users can call one of: 
+/// - [`Setup::region_with_ubuntu_ami`]
+/// - [`Setup::ami`]
+/// - [`Setup::region`] followed by [`Setup::ami`] 
+/// to change these defaults.
 #[derive(Clone, Educe)]
 #[educe(Debug)]
-pub struct Setup<HasAmi = YesAmi> {
+pub struct Setup<HasAmi = Yes, HasUsername = Yes> {
     region: Region,
     instance_type: String,
     ami: Option<String>,
+    username: String,
     #[educe(Debug(ignore))]
     setup: Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
-    _phantom: std::marker::PhantomData<HasAmi>,
+    _phantom: std::marker::PhantomData<(HasAmi, HasUsername)>,
 }
 
-impl super::MachineSetup for Setup<YesAmi> {
+impl super::MachineSetup for Setup<Yes, Yes> {
     type Region = String;
 
     fn region(&self) -> Self::Region {
@@ -102,19 +110,20 @@ impl super::MachineSetup for Setup<YesAmi> {
     }
 }
 
-impl Default for Setup<YesAmi> {
+impl Default for Setup<Yes, Yes> {
     fn default() -> Self {
         Setup {
             region: Region::UsEast1,
             instance_type: "t3.small".into(),
             ami: Some(UbuntuAmi::from(Region::UsEast1).into()),
+            username: "ubuntu".into(),
             setup: None,
             _phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl<A> Setup<A> {
+impl<A, B> Setup<A, B> {
     /// Set up the machine in a specific EC2
     /// [`Region`](http://rusoto.github.io/rusoto/rusoto_core/region/enum.Region.html).
     ///
@@ -123,19 +132,20 @@ impl<A> Setup<A> {
     ///
     /// AMIs are region-specific. This will overwrite the ami field to
     /// the Ubuntu 18.04 LTS AMI in the selected region.
-    pub fn region_with_ubuntu_ami(mut self, region: Region) -> Setup<YesAmi> {
+    pub fn region_with_ubuntu_ami(mut self, region: Region) -> Setup<Yes, Yes> {
         self.region = region.clone();
         let ami: String = UbuntuAmi::from(region).into();
-        self.ami(ami)
+        self.ami(ami).username("ubuntu")
     }
 
     /// The new instance will start out in the state dictated by the Amazon Machine Image specified
     /// in `ami`. Default is Ubuntu 18.04 LTS.
-    pub fn ami(self, ami: impl ToString) -> Setup<YesAmi> {
+    pub fn ami(self, ami: impl ToString) -> Setup<Yes, No> {
         Setup {
             region: self.region,
             instance_type: self.instance_type,
             ami: Some(ami.to_string()),
+            username: "".to_string(),
             setup: self.setup,
             _phantom: std::marker::PhantomData,
         }
@@ -176,9 +186,7 @@ impl<A> Setup<A> {
         self.setup = Some(Arc::new(setup));
         self
     }
-}
 
-impl Setup<YesAmi> {
     /// Set up the machine in a specific EC2
     /// [`Region`](http://rusoto.github.io/rusoto/rusoto_core/region/enum.Region.html).
     ///
@@ -187,11 +195,29 @@ impl Setup<YesAmi> {
     ///
     /// AMIs are region-specific.
     /// This will clear the AMI field, which must be set for this struct to be useful.
-    pub fn region(self, region: Region) -> Setup<NoAmi> {
+    pub fn region(self, region: Region) -> Setup<No, No> {
         Setup {
             region,
             instance_type: self.instance_type,
             ami: None,
+            username: "".into(),
+            setup: self.setup,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<A> Setup<Yes, A> {
+    /// Set the username used to ssh into the machine.
+    ///
+    /// If the user sets a custom AMI, they must call this method to
+    /// set a username.
+    pub fn username(self, username: impl ToString) -> Setup<Yes, Yes> {
+        Setup {
+            region: self.region,
+            instance_type: self.instance_type,
+            ami:self.ami,
+            username: username.to_string(),
             setup: self.setup,
             _phantom: std::marker::PhantomData,
         }
@@ -209,7 +235,7 @@ pub struct Launcher<P = DefaultCredentialsProvider> {
     #[educe(Debug(ignore))]
     credential_provider: Box<dyn Fn() -> Result<P, Error>>,
     max_instance_duration_hours: usize,
-    regions: HashMap<<Setup<YesAmi> as super::MachineSetup>::Region, RegionLauncher>,
+    regions: HashMap<<Setup as super::MachineSetup>::Region, RegionLauncher>,
 }
 
 impl Default for Launcher {
@@ -266,7 +292,7 @@ where
     P: ProvideAwsCredentials + Send + Sync + 'static,
     <P as ProvideAwsCredentials>::Future: Send,
 {
-    type MachineDescriptor = Setup<YesAmi>;
+    type MachineDescriptor = Setup;
 
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
         let prov = self.get_credential_provider()?;
@@ -742,12 +768,12 @@ impl RegionLauncher {
             .par_iter()
             .try_for_each(|(_instance_id, (ipinfo, (name, m_setup)))| {
                 let (public_ip, _) = ipinfo.as_ref().unwrap();
-                if let Setup { setup: Some(f), .. } = m_setup {
+                if let Setup { username, setup: Some(f), .. } = m_setup {
                     super::setup_machine(
                         log,
                         &name,
                         &public_ip,
-                        "ubuntu",
+                        &username,
                         max_wait,
                         Some(private_key_path.path()),
                         f.as_ref(),
@@ -766,7 +792,7 @@ impl RegionLauncher {
         self.instances
             .values()
             .map(|info| match info {
-                (Some((public_ip, public_dns)), (name, Setup { .. })) => {
+                (Some((public_ip, public_dns)), (name, Setup { username, .. })) => {
                     let mut m = Machine {
                         public_ip: public_ip.clone(),
                         public_dns: public_dns.clone(),
@@ -775,7 +801,7 @@ impl RegionLauncher {
                         _tsunami: Default::default(),
                     };
 
-                    m.connect_ssh(log, "ubuntu", Some(private_key_path.path()))?;
+                    m.connect_ssh(log, &username, Some(private_key_path.path()))?;
                     Ok((name.clone(), m))
                 }
                 _ => bail!("Machines not initialized"),
