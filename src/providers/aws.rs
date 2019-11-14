@@ -407,6 +407,9 @@ impl RegionLauncher {
             .sync()
             .context("failed to fill in security group for new machines")?;
 
+        // The default VPC uses IPs in range 172.31.0.0/16:
+        // https://docs.aws.amazon.com/vpc/latest/userguide/default-vpc.html
+        // TODO(might-be-nice) Support configurable rules for other VPCs
         req.ip_protocol = Some("tcp".to_string());
         req.from_port = Some(0);
         req.to_port = Some(65535);
@@ -942,7 +945,7 @@ mod test {
         let region = "us-east-1";
         let provider = DefaultCredentialsProvider::new()?;
         let logger = test_logger();
-        let mut ec2 = RegionLauncher::new(region, provider, logger.clone())?;
+        let mut ec2 = RegionLauncher::new(region, provider, false, logger.clone())?;
 
         use super::Setup;
 
