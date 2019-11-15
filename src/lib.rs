@@ -9,14 +9,22 @@
 //! ```rust,no_run
 //! use tsunami::TsunamiBuilder;
 //! use tsunami::providers::{Launcher, aws};
-//! use rusoto_core::DefaultCredentialsProvider;
+//! use rusoto_core::{DefaultCredentialsProvider, Region};
 //! fn main() -> Result<(), failure::Error> {
 //!     // Initialize AWS
 //!     let mut aws = aws::Launcher::default();
 //!
-//!     // Create a machine descriptor and add it to the Tsunami
+//!     // Initialize a TsunamiBuilder
 //!     let mut tb = TsunamiBuilder::default();
-//!     let m = aws::Setup::default();
+//!     tb.use_term_logger();
+//!
+//!     // Create a machine descriptor and add it to the Tsunami
+//!     let m = aws::Setup::default()
+//!         .region_with_ubuntu_ami(Region::UsWest1) // default was UsEast1
+//!         .setup(|ssh| { // default is a no-op
+//!             ssh.run("sudo apt update")?;
+//!             ssh.run("curl https://sh.rustup.rs -sSf | sh -- -y")?;
+//!         });
 //!     tb.add("my_vm", m);
 //!
 //!     // Launch the VM
@@ -25,8 +33,10 @@
 //!     // SSH to the VM and run a command on it
 //!     let vms = aws.connect_all()?;
 //!     let my_vm = vms.get("my_vm").unwrap();
+//!     println!("public ip: {}", my_vm.public_ip);
 //!     let ssh = my_vm.ssh.as_ref().unwrap();
-//!     ssh.cmd("hostname").map(|(stdout, _)| println!("{}", stdout))?;
+//!     ssh.cmd("git clone https://github.com/jonhoo/tsunami")?;
+//!     ssh.cmd("cd tsunami && cargo build")?;
 //!     Ok(())
 //! }
 //! ```
@@ -78,7 +88,7 @@ pub struct Machine<'tsunami> {
     pub public_ip: String,
     /// The public DNS name of the machine.
     ///
-    /// If the instance doesn't have a DNS name, this fields will be 
+    /// If the instance doesn't have a DNS name, this field will be
     /// equivalent to `public_ip`.
     pub public_dns: String,
 
@@ -225,14 +235,12 @@ impl<M: MachineSetup + Clone> TsunamiBuilder<M> {
         nickname_prefix: &str,
         m: M,
     ) -> Result<&mut Self, Error> {
-        (0..n)
-            .map(|i| {
-                let d = m.clone();
-                let name = format!("{}-{}", nickname_prefix, i);
+        for (i, m) in std::iter::repeat(m).take(n).enumerate() {
+            let name = format!("{}-{}", nickname_prefix, i);
+            self.add(&name, m)?;
+        }
 
-                (name, d)
-            })
-            .fold(Ok(self), |r, (name, d)| r.and_then(|s| s.add(&name, d)))
+        Ok(self)
     }
 
     /// Start up all the hosts.
