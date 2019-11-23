@@ -84,7 +84,6 @@ extern crate failure;
 #[macro_use]
 extern crate slog;
 
-use educe::Educe;
 use failure::Error;
 use itertools::Itertools;
 use std::collections::HashMap;
@@ -99,8 +98,7 @@ use providers::{Launcher, MachineSetup};
 /// A handle to an instance currently running as part of a tsunami.
 ///
 /// Run commands on the machine using the [`ssh::Session`] via the `ssh` field.
-#[derive(Educe)]
-#[educe(Debug)]
+#[derive(Debug)]
 pub struct Machine<'tsunami> {
     /// The friendly name for this machine.
     ///
@@ -115,7 +113,6 @@ pub struct Machine<'tsunami> {
     pub public_dns: String,
 
     /// If `Some(_)`, an established SSH session to this host.
-    #[educe(Debug(ignore))]
     pub ssh: Option<ssh::Session>,
 
     // tie the lifetime of the machine to the Tsunami.
