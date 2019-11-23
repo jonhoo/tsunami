@@ -8,36 +8,57 @@
 //!
 //! ```rust,no_run
 //! use tsunami::TsunamiBuilder;
-//! use tsunami::providers::{Launcher, aws};
-//! use rusoto_core::{DefaultCredentialsProvider, Region};
+//! use tsunami::providers::{Launcher, aws, azure};
+//! use rusoto_core::{DefaultCredentialsProvider, Region as AWSRegion};
+//! use azure::Region as AzureRegion;
 //! fn main() -> Result<(), failure::Error> {
 //!     // Initialize AWS
 //!     let mut aws = aws::Launcher::default();
 //!
-//!     // Initialize a TsunamiBuilder
-//!     let mut tb = TsunamiBuilder::default();
-//!     tb.use_term_logger();
+//!     // Initialize a TsunamiBuilder for AWS
+//!     let mut tb_aws = TsunamiBuilder::default();
+//!     tb_aws.use_term_logger();
 //!
-//!     // Create a machine descriptor and add it to the Tsunami
+//!     // Create an AWS machine descriptor and add it to the AWS Tsunami
 //!     let m = aws::Setup::default()
-//!         .region_with_ubuntu_ami(Region::UsWest1) // default was UsEast1
+//!         .region_with_ubuntu_ami(AWSRegion::UsWest1) // default is UsEast1
 //!         .setup(|ssh, _| { // default is a no-op
 //!             ssh.cmd("sudo apt update")?;
 //!             ssh.cmd("curl https://sh.rustup.rs -sSf | sh -- -y")?;
 //!             Ok(())
 //!         });
-//!     tb.add("my_vm", m);
+//!     tb_aws.add("aws_vm", m);
 //!
-//!     // Launch the VM
-//!     tb.spawn(&mut aws)?;
+//!     // Initialize Azure
+//!     let mut azure = azure::Launcher::default();
+//!
+//!     // Initialize a TsunamiBuilder for Azure
+//!     let mut tb_azure = TsunamiBuilder::default();
+//!     tb_azure.use_term_logger();
+//!     
+//!     // Create an Azure machine descriptor and add it to the Azure Tsunami
+//!     let m = azure::Setup::default()
+//!         .region(AzureRegion::FranceCentral) // default is EastUs
+//!         .setup(|ssh, _| { // default is a no-op
+//!             ssh.cmd("sudo apt update")?;
+//!             ssh.cmd("curl https://sh.rustup.rs -sSf | sh -- -y")?;
+//!             Ok(())
+//!         });
+//!     tb_azure.add("azure_vm", m);
+//!
+//!     // Launch the VMs
+//!     tb_aws.spawn(&mut aws)?;
+//!     tb_azure.spawn(&mut azure)?;
 //!
 //!     // SSH to the VM and run a command on it
-//!     let vms = aws.connect_all()?;
-//!     let my_vm = vms.get("my_vm").unwrap();
-//!     println!("public ip: {}", my_vm.public_ip);
-//!     let ssh = my_vm.ssh.as_ref().unwrap();
-//!     ssh.cmd("git clone https://github.com/jonhoo/tsunami")?;
-//!     ssh.cmd("cd tsunami && cargo build")?;
+//!     let aws_vms = aws.connect_all()?;
+//!     let azure_vms = azure.connect_all()?;
+//!
+//!     let vms = aws_vms.into_iter().chain(azure_vms.into_iter());
+//!
+//!     // do things with my VMs!
+//!     // VMs dropped when aws and azure are dropped.
+//!
 //!     Ok(())
 //! }
 //! ```

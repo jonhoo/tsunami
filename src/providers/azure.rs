@@ -20,6 +20,7 @@
 //! # Example
 //! ```rust,no_run
 //! use tsunami::providers::{azure, Launcher};
+//! use azure::Region;
 //! use tsunami::TsunamiBuilder;
 //!
 //! let mut b = TsunamiBuilder::default();
@@ -30,6 +31,40 @@
 //! let my_machine = vms.get("my machine").unwrap();
 //! let (stdout, stderr) = my_machine.ssh.as_ref().unwrap().cmd("echo \"Hello, Azure\"").unwrap();
 //! println!("{}", stdout);
+//! ```
+//! ```rust,no_run
+//! use tsunami::TsunamiBuilder;
+//! use tsunami::providers::{Launcher, azure};
+//! fn main() -> Result<(), failure::Error> {
+//!     // Initialize Azure
+//!     let mut azure = azure::Launcher::default();
+//!
+//!     // Initialize a TsunamiBuilder
+//!     let mut tb = TsunamiBuilder::default();
+//!     tb.use_term_logger();
+//!
+//!     // Create a machine descriptor and add it to the Tsunami
+//!     let m = azure::Setup::default()
+//!         .region(azure::Region::FranceCentral) // default is EastUs
+//!         .setup(|ssh, _| { // default is a no-op
+//!             ssh.cmd("sudo apt update")?;
+//!             ssh.cmd("curl https://sh.rustup.rs -sSf | sh -- -y")?;
+//!             Ok(())
+//!         });
+//!     tb.add("my_vm", m);
+//!
+//!     // Launch the VM
+//!     tb.spawn(&mut azure)?;
+//!
+//!     // SSH to the VM and run a command on it
+//!     let vms = azure.connect_all()?;
+//!     let my_vm = vms.get("my_vm").unwrap();
+//!     println!("public ip: {}", my_vm.public_ip);
+//!     let ssh = my_vm.ssh.as_ref().unwrap();
+//!     ssh.cmd("git clone https://github.com/jonhoo/tsunami")?;
+//!     ssh.cmd("cd tsunami && cargo build")?;
+//!     Ok(())
+//! }
 //! ```
 
 use crate::ssh;
@@ -141,7 +176,7 @@ impl Setup {
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
 /// It also assumes you have previously run `az login` to authenticate.
 ///
-/// While the regions are initialized serially, the setup functions for each machine are executed 
+/// While the regions are initialized serially, the setup functions for each machine are executed
 /// in parallel (within each region).
 #[derive(Debug, Default)]
 pub struct Launcher {

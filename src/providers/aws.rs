@@ -23,6 +23,44 @@
 //! let (stdout, stderr) = my_machine.ssh.as_ref().unwrap().cmd("echo \"Hello, EC2\"").unwrap();
 //! println!("{}", stdout);
 //! ```
+//! ```rust,no_run
+//! use tsunami::TsunamiBuilder;
+//! use tsunami::providers::{Launcher, aws};
+//! use rusoto_core::{DefaultCredentialsProvider, Region};
+//! fn main() -> Result<(), failure::Error> {
+//!     // Initialize AWS
+//!     let mut aws = aws::Launcher::default();
+//!     // make the defined-duration instances expire after 1 hour
+//!     // default is the maximum (6 hours)
+//!     aws.set_max_instance_duration(1);
+//!
+//!     // Initialize a TsunamiBuilder
+//!     let mut tb = TsunamiBuilder::default();
+//!     tb.use_term_logger();
+//!
+//!     // Create a machine descriptor and add it to the Tsunami
+//!     let m = aws::Setup::default()
+//!         .region_with_ubuntu_ami(Region::UsWest1) // default is UsEast1
+//!         .setup(|ssh, _| { // default is a no-op
+//!             ssh.cmd("sudo apt update")?;
+//!             ssh.cmd("curl https://sh.rustup.rs -sSf | sh -- -y")?;
+//!             Ok(())
+//!         });
+//!     tb.add("my_vm", m);
+//!
+//!     // Launch the VM
+//!     tb.spawn(&mut aws)?;
+//!
+//!     // SSH to the VM and run a command on it
+//!     let vms = aws.connect_all()?;
+//!     let my_vm = vms.get("my_vm").unwrap();
+//!     println!("public ip: {}", my_vm.public_ip);
+//!     let ssh = my_vm.ssh.as_ref().unwrap();
+//!     ssh.cmd("git clone https://github.com/jonhoo/tsunami")?;
+//!     ssh.cmd("cd tsunami && cargo build")?;
+//!     Ok(())
+//! }
+//! ```
 
 use crate::ssh;
 use crate::Machine;
@@ -47,10 +85,10 @@ pub struct Yes;
 /// A descriptor for a particular machine setup in a tsunami.
 ///
 /// An AMI and username must be set (indicated by marker type [`Yes`]) for this to be useful.
-/// The default region and ami is Ubuntu 18.04 LTS in us-east-1. Users can call one of: 
+/// The default region and ami is Ubuntu 18.04 LTS in us-east-1. Users can call one of:
 /// - [`Setup::region_with_ubuntu_ami`]
 /// - [`Setup::ami`]
-/// - [`Setup::region`] followed by [`Setup::ami`] 
+/// - [`Setup::region`] followed by [`Setup::ami`]
 /// to change these defaults.
 #[derive(Clone, Educe)]
 #[educe(Debug)]
@@ -113,7 +151,7 @@ impl<A, B> Setup<A, B> {
         }
     }
 
-    /// The given AWS EC2 instance type will be used. 
+    /// The given AWS EC2 instance type will be used.
     ///
     /// Note that only [EC2 Defined Duration Spot
     /// Instance types](https://aws.amazon.com/ec2/spot/pricing/) are allowed.
@@ -178,7 +216,7 @@ impl<A> Setup<Yes, A> {
         Setup {
             region: self.region,
             instance_type: self.instance_type,
-            ami:self.ami,
+            ami: self.ami,
             username: username.to_string(),
             setup: self.setup,
             _phantom: std::marker::PhantomData,
@@ -192,7 +230,7 @@ impl<A> Setup<Yes, A> {
 ///
 /// Each individual region is handled by `RegionLauncher`.
 ///
-/// While the regions are initialized serially, the setup functions for each machine are executed 
+/// While the regions are initialized serially, the setup functions for each machine are executed
 /// in parallel (within each region).
 #[derive(Educe)]
 #[educe(Debug)]
@@ -230,7 +268,7 @@ impl<P> Launcher<P> {
         self
     }
 
-    /// The machines spawned on this launcher will have 
+    /// The machines spawned on this launcher will have
     /// ports open to the public Internet.
     pub fn open_ports(&mut self) -> &mut Self {
         self.use_open_ports = true;
@@ -271,7 +309,8 @@ where
 
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
         let prov = self.get_credential_provider()?;
-        let mut awsregion = RegionLauncher::new(&l.region.to_string(), prov, self.use_open_ports, l.log)?;
+        let mut awsregion =
+            RegionLauncher::new(&l.region.to_string(), prov, self.use_open_ports, l.log)?;
         awsregion.launch(self.max_instance_duration_hours, l.max_wait, l.machines)?;
         self.regions.insert(l.region, awsregion);
         Ok(())
@@ -315,7 +354,12 @@ impl RegionLauncher {
     /// This is a lower-level API, you may want [`Launcher`] instead.
     ///
     /// This will create a temporary security group and SSH key in the given AWS region.
-    pub fn new<P>(region: &str, provider: P, use_open_ports: bool, log: slog::Logger) -> Result<Self, Error>
+    pub fn new<P>(
+        region: &str,
+        provider: P,
+        use_open_ports: bool,
+        log: slog::Logger,
+    ) -> Result<Self, Error>
     where
         P: ProvideAwsCredentials + Send + Sync + 'static,
         <P as ProvideAwsCredentials>::Future: Send,
@@ -358,8 +402,13 @@ impl RegionLauncher {
     /// Region-specific instance setup.
     ///
     /// Make spot instance requests, wait for the instances, and then call the
-    /// instance setup functions. 
-    pub fn launch(&mut self, max_instance_duration_hours: usize, max_wait: Option<time::Duration>, machines: impl IntoIterator<Item = (String, Setup)>) -> Result<(), Error> {
+    /// instance setup functions.
+    pub fn launch(
+        &mut self,
+        max_instance_duration_hours: usize,
+        max_wait: Option<time::Duration>,
+        machines: impl IntoIterator<Item = (String, Setup)>,
+    ) -> Result<(), Error> {
         self.make_spot_instance_requests(
             max_instance_duration_hours * 60, // 60 mins/hr
             machines,
@@ -769,7 +818,12 @@ impl RegionLauncher {
             .par_iter()
             .try_for_each(|(_instance_id, (ipinfo, (name, m_setup)))| {
                 let (public_ip, _) = ipinfo.as_ref().unwrap();
-                if let Setup { username, setup: Some(f), .. } = m_setup {
+                if let Setup {
+                    username,
+                    setup: Some(f),
+                    ..
+                } = m_setup
+                {
                     super::setup_machine(
                         log,
                         &name,
