@@ -21,9 +21,10 @@
 //!     // Create a machine descriptor and add it to the Tsunami
 //!     let m = aws::Setup::default()
 //!         .region_with_ubuntu_ami(Region::UsWest1) // default was UsEast1
-//!         .setup(|ssh| { // default is a no-op
-//!             ssh.run("sudo apt update")?;
-//!             ssh.run("curl https://sh.rustup.rs -sSf | sh -- -y")?;
+//!         .setup(|ssh, _| { // default is a no-op
+//!             ssh.cmd("sudo apt update")?;
+//!             ssh.cmd("curl https://sh.rustup.rs -sSf | sh -- -y")?;
+//!             Ok(())
 //!         });
 //!     tb.add("my_vm", m);
 //!
