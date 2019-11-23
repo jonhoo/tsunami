@@ -290,16 +290,6 @@ impl<P> Launcher<P> {
     }
 }
 
-impl<P> Launcher<P>
-where
-    P: ProvideAwsCredentials + Send + Sync + 'static,
-    <P as ProvideAwsCredentials>::Future: Send,
-{
-    fn get_credential_provider(&self) -> Result<P, Error> {
-        (*self.credential_provider)()
-    }
-}
-
 impl<P> super::Launcher for Launcher<P>
 where
     P: ProvideAwsCredentials + Send + Sync + 'static,
@@ -308,7 +298,7 @@ where
     type MachineDescriptor = Setup;
 
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
-        let prov = self.get_credential_provider()?;
+        let prov = (*self.credential_provider)()?;
         let mut awsregion =
             RegionLauncher::new(&l.region.to_string(), prov, self.use_open_ports, l.log)?;
         awsregion.launch(self.max_instance_duration_hours, l.max_wait, l.machines)?;
