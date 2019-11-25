@@ -222,6 +222,7 @@ pub struct RegionLauncher {
     /// The region this [`RegionLauncher`] is connected to.
     pub region: Region,
     resource_group_name: String,
+    ssh_key_dir: Option<tempfile::TempDir>,
     machines: Vec<Descriptor>,
 }
 
@@ -236,6 +237,7 @@ impl RegionLauncher {
             log: Some(log),
             region,
             resource_group_name: rg_name,
+            ssh_key_dir: Some(tempfile::tempdir()?),
             machines: vec![],
         })
     }
@@ -260,6 +262,7 @@ impl super::Launcher for RegionLauncher {
                     &desc.instance_type,
                     &desc.image,
                     &desc.username,
+                    self.ssh_key_dir.as_ref().expect("ssh key dir initialized").path().to_str().expect("Tempfile path is valid unicode"),
                 )?;
 
                 azcmd::open_ports(&self.resource_group_name, &vm_name)?;
@@ -313,7 +316,10 @@ impl super::Launcher for RegionLauncher {
                     _tsunami: Default::default(),
                 };
 
-                m.connect_ssh(log, username, None)?;
+                let key_dir = self.ssh_key_dir.as_ref().expect("SSH key dir").path();
+                let key_path = key_dir.join("id_rsa.pub");
+
+                m.connect_ssh(log, username, Some(key_path.as_path()))?;
                 Ok((name.clone(), m))
             })
             .collect()
@@ -490,6 +496,7 @@ mod azcmd {
         size: &str,
         image: &str,
         username: &str,
+        key_dir: &str,
     ) -> Result<String, Error> {
         #[allow(non_snake_case)]
         #[derive(Debug, Deserialize, Serialize)]
@@ -513,8 +520,9 @@ mod azcmd {
                 size,
                 "--admin-username",
                 username,
-                "--ssh-key-value",
-                "@~/.ssh/id_rsa.pub",
+                "--generate-ssh-keys",
+                "--ssh-dest-key-path",
+                key_dir,
             ])
             .output()?;
 
