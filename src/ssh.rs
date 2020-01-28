@@ -1,5 +1,5 @@
+use failure::Error;
 use failure::ResultExt;
-use failure::{Context, Error};
 use slog;
 use ssh2;
 use std::net::{SocketAddr, TcpStream};
@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 /// [`Session#cmd`](struct.Session.html#method.cmd).
 pub struct Session {
     ssh: ssh2::Session,
-    _stream: TcpStream,
 }
 
 impl Session {
@@ -49,16 +48,14 @@ impl Session {
             }
         };
 
-        let mut sess = ssh2::Session::new().ok_or(Context::new("libssh2 not available"))?;
-        sess.handshake(&tcp)
+        let mut sess = ssh2::Session::new().context("libssh2 not available")?;
+        sess.set_tcp_stream(tcp);
+        sess.handshake()
             .context("failed to perform ssh handshake")?;
         sess.userauth_pubkey_file(username, None, key, None)
             .context("failed to authenticate ssh session")?;
 
-        Ok(Session {
-            ssh: sess,
-            _stream: tcp,
-        })
+        Ok(Session { ssh: sess })
     }
 
     /// Issue the given command and return the command's raw standard output.
