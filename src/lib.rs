@@ -44,21 +44,14 @@
 //! are already somewhat familiar with Rust, and who want to see something larger and more involved
 //! be built. You can find the recordings of past sessions [on
 //! YouTube](https://www.youtube.com/playlist?list=PLqbS7AVVErFgY2faCIYjJZv_RluGkTlKt).
-#![deny(missing_docs)]
+#![deny(missing_docs, rust_2018_idioms)]
 
 #[macro_use]
 extern crate failure;
-extern crate rand;
-extern crate rayon;
-extern crate rusoto_core;
-extern crate rusoto_ec2;
 #[macro_use]
 extern crate scopeguard;
 #[macro_use]
 extern crate slog;
-extern crate slog_term;
-extern crate ssh2;
-extern crate tempfile;
 
 use failure::{Error, ResultExt};
 use rayon::prelude::*;
@@ -70,7 +63,7 @@ use std::io::Write;
 use std::{thread, time};
 
 mod ssh;
-pub use ssh::Session;
+pub use crate::ssh::Session;
 
 /// A handle to an instance currently running as part of a tsunami.
 pub struct Machine {
@@ -97,7 +90,7 @@ pub struct MachineSetup {
     instance_type: String,
     ami: String,
     username: String,
-    setup: Box<Fn(&mut ssh::Session) -> Result<(), Error> + Sync>,
+    setup: Box<dyn Fn(&mut ssh::Session) -> Result<(), Error> + Sync>,
 }
 
 impl MachineSetup {
