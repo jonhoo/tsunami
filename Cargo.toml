@@ -1,6 +1,6 @@
 [package]
 name = "tsunami"
-version = "0.11.0-beta.1"
+version = "0.11.0-beta.2"
 edition = "2018"
 
 description = "Toolkit for running short-lived jobs on EC2 spot instances"
@@ -27,7 +27,7 @@ debug = ["slog/max_level_trace", "slog/release_max_level_debug"]
 [dependencies]
 rusoto_core = "=0.43.0-beta.1"
 rusoto_ec2 = "=0.43.0-beta.1"
-ssh2 = "0.7"
+ssh2 = "0.8"
 failure = "0.1.1"
 rand = "0.7"
 tempfile = "3.0.0"
