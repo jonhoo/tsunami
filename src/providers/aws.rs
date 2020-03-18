@@ -281,13 +281,33 @@ impl<P> Launcher<P> {
     /// The provided function is called once for each region, and is expected to produce a
     /// [`P: ProvideAwsCredentials`](https://docs.rs/rusoto_core/0.40.0/rusoto_core/trait.ProvideAwsCredentials.html)
     /// that gives access to the region in question.
-    pub fn with_credentials<P2>(self, f: impl Fn() -> Result<P2, Error> + 'static) -> Launcher<P2> {
+    pub fn with_credentials<P2>(
+        mut self,
+        f: impl Fn() -> Result<P2, Error> + 'static,
+    ) -> Launcher<P2> {
+        // Launcher impls Drop, so can't move out of it.
+        let regions = self.regions.drain().collect();
         Launcher {
             credential_provider: Box::new(f),
             max_instance_duration_hours: self.max_instance_duration_hours,
             use_open_ports: self.use_open_ports,
-            regions: self.regions,
+            regions,
         }
+    }
+}
+
+impl<P> Drop for Launcher<P> {
+    fn drop(&mut self) {
+        if self.regions.is_empty() {
+            return;
+        }
+
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(futures_util::future::join_all(
+            self.regions
+                .drain()
+                .map(|(_, mut rl)| async move { rl.shutdown().await }),
+        ));
     }
 }
 
@@ -328,7 +348,9 @@ where
 /// maximum). To change this, RegionLauncher respects the limit specified in
 /// [`Launcher::set_max_instance_duration`](Launcher::set_max_instance_duration).
 ///
-/// If this is dropped before the duration is over, the instances will be terminated.
+/// If this struct is dropped, the instances *will not* be terminated automatically, you must call
+/// [`RegionLauncher::shutdown`] to terminate the instances. If you prefer not to deal with this,
+/// use [`Launcher`] instead.
 #[derive(Educe, Default)]
 #[educe(Debug)]
 pub struct RegionLauncher {
@@ -860,12 +882,12 @@ impl RegionLauncher {
             })
             .collect()
     }
-}
 
-impl Drop for RegionLauncher {
-    fn drop(&mut self) {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
+    /// Terminate all running instances.
+    ///
+    /// Additionally deletes ephemeral keys and security groups. Note: it is a known issue that
+    /// security groups often will not be deleted, due to timing quirks in the AWS api.
+    pub async fn shutdown(&mut self) {
         let client = self.client.as_ref().unwrap();
         let log = self.log.as_ref().expect("RegionLauncher uninitialized");
         // terminate instances
@@ -914,7 +936,6 @@ impl Drop for RegionLauncher {
                 )
             }
         }
-        });
     }
 }
 
