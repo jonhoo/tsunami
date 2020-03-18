@@ -65,6 +65,7 @@ fn main() -> Result<(), failure::Error> {
 
             b.add("machine", m).unwrap();
             let mut l: tsunami::providers::aws::Launcher<_> = Default::default();
+            l.open_ports();
             launch_and_wait(b, &mut l)?;
         }
         Providers::Azure => {
