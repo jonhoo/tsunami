@@ -92,7 +92,7 @@ impl Default for Setup {
     fn default() -> Self {
         Setup {
             region: "eastus".parse().unwrap(),
-            instance_type: "Standard_DS1_v2".to_string(),
+            instance_type: "Standard_B1s".to_string(),
             image: "UbuntuLTS".to_string(),
             username: "ubuntu".to_string(),
             setup_fn: None,
@@ -187,6 +187,7 @@ impl super::Launcher for Launcher {
     type MachineDescriptor = Setup;
 
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
+        azcmd::check_az()?;
         let region = l.region;
         let mut az_region = RegionLauncher::new(l.region, l.log.clone())?;
         az_region.launch(l)?;
@@ -456,6 +457,14 @@ mod azcmd {
     use serde::{Deserialize, Serialize};
     use std::process::Command;
 
+    pub(crate) fn check_az() -> Result<(), Error> {
+        ensure!(
+            Command::new("az").arg("account").arg("show").output()?.status.success(), 
+            "Azure CLI not found. See https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest for installation, then run `az login`.",
+        );
+        Ok(())
+    }
+
     pub(crate) fn create_resource_group(r: Region, name: &str) -> Result<(), Error> {
         let out = Command::new("az")
             .args(&[
@@ -555,16 +564,31 @@ mod azcmd {
 
 #[cfg(test)]
 mod test {
-    use super::azcmd;
-    use super::Region;
+    use super::{azcmd, Region, Setup};
 
     #[test]
     #[ignore]
-    fn resource_group() {
+    fn azure_resource_group() {
         static TEST_RG_NAME: &str = "test";
         azcmd::create_resource_group(Region::EastUs, TEST_RG_NAME)
             .expect("create resource group test failed");
 
         azcmd::delete_resource_group(TEST_RG_NAME).expect("delete resource group failed");
+    }
+
+    #[test]
+    #[ignore]
+    fn azure_launch() {
+        use crate::providers::{LaunchDescriptor, Launcher};
+        let l = crate::test::test_logger();
+        let m = Setup::default();
+        let ld = LaunchDescriptor {
+            region: m.region,
+            log: l,
+            max_wait: None,
+            machines: vec![("foo".to_owned(), m)],
+        };
+        let mut azure = super::Launcher::default();
+        azure.launch(ld).unwrap();
     }
 }
