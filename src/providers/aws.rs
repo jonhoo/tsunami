@@ -507,7 +507,7 @@ impl RegionLauncher {
         private_key_path
             .write_all(private_key.as_bytes())
             .context("could not write private key to file")?;
-        trace!(log, "wrote keypair to file"; "filename" => private_key_path.path().display());
+        debug!(log, "wrote keypair to file"; "filename" => private_key_path.path().display());
 
         self.ssh_key_name = key_name;
         Ok(self)
@@ -781,7 +781,7 @@ impl RegionLauncher {
                             public_ip_address: Some(public_ip),
                             ..
                         } => {
-                            trace!(log, "instance ready";
+                            debug!(log, "instance ready";
                                 "instance_id" => instance_id.clone(),
                                 "ip" => &public_ip,
                             );
