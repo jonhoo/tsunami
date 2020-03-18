@@ -219,7 +219,6 @@ mod test {
     use failure::Error;
 
     #[test]
-    #[ignore]
     fn localhost() -> Result<(), Error> {
         let s = super::Setup::new("127.0.0.1:22", None)?;
         let mut m: super::Machine = Default::default();

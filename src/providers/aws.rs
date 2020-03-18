@@ -26,7 +26,7 @@
 //! ```rust,no_run
 //! use tsunami::TsunamiBuilder;
 //! use tsunami::providers::{Launcher, aws};
-//! use rusoto_core::{DefaultCredentialsProvider, Region};
+//! use rusoto_core::{credential::DefaultCredentialsProvider, Region};
 //! fn main() -> Result<(), failure::Error> {
 //!     // Initialize AWS
 //!     let mut aws = aws::Launcher::default();
@@ -67,8 +67,9 @@ use crate::Machine;
 use educe::Educe;
 use failure::{Error, ResultExt};
 use itertools::Itertools;
+use rusoto_core::credential::{DefaultCredentialsProvider, ProvideAwsCredentials};
 use rusoto_core::request::HttpClient;
-use rusoto_core::{DefaultCredentialsProvider, ProvideAwsCredentials, Region};
+use rusoto_core::Region;
 use rusoto_ec2::Ec2;
 use std::collections::HashMap;
 use std::io::Write;
@@ -293,17 +294,22 @@ impl<P> Launcher<P> {
 impl<P> super::Launcher for Launcher<P>
 where
     P: ProvideAwsCredentials + Send + Sync + 'static,
-    <P as ProvideAwsCredentials>::Future: Send,
 {
     type MachineDescriptor = Setup;
 
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
         let prov = (*self.credential_provider)()?;
-        let mut awsregion =
-            RegionLauncher::new(&l.region.to_string(), prov, self.use_open_ports, l.log)?;
-        awsregion.launch(self.max_instance_duration_hours, l.max_wait, l.machines)?;
-        self.regions.insert(l.region, awsregion);
-        Ok(())
+        rt.block_on(async {
+            let mut awsregion =
+                RegionLauncher::new(&l.region.to_string(), prov, self.use_open_ports, l.log)
+                    .await?;
+            awsregion
+                .launch(self.max_instance_duration_hours, l.max_wait, l.machines)
+                .await?;
+            self.regions.insert(l.region, awsregion);
+            Ok(())
+        })
     }
 
     fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
@@ -344,7 +350,7 @@ impl RegionLauncher {
     /// This is a lower-level API, you may want [`Launcher`] instead.
     ///
     /// This will create a temporary security group and SSH key in the given AWS region.
-    pub fn new<P>(
+    pub async fn new<P>(
         region: &str,
         provider: P,
         use_open_ports: bool,
@@ -352,12 +358,13 @@ impl RegionLauncher {
     ) -> Result<Self, Error>
     where
         P: ProvideAwsCredentials + Send + Sync + 'static,
-        <P as ProvideAwsCredentials>::Future: Send,
     {
         let region = region.parse()?;
         let ec2 = RegionLauncher::connect(region, provider, log)?
-            .make_security_group(use_open_ports)?
-            .make_ssh_key()?;
+            .make_security_group(use_open_ports)
+            .await?
+            .make_ssh_key()
+            .await?;
 
         Ok(ec2)
     }
@@ -369,7 +376,6 @@ impl RegionLauncher {
     ) -> Result<Self, Error>
     where
         P: ProvideAwsCredentials + Send + Sync + 'static,
-        <P as ProvideAwsCredentials>::Future: Send,
     {
         debug!(log, "connecting to ec2");
         let ec2 = rusoto_ec2::Ec2Client::new_with(HttpClient::new()?, provider, region.clone());
@@ -393,7 +399,7 @@ impl RegionLauncher {
     ///
     /// Make spot instance requests, wait for the instances, and then call the
     /// instance setup functions.
-    pub fn launch(
+    pub async fn launch(
         &mut self,
         max_instance_duration_hours: usize,
         max_wait: Option<time::Duration>,
@@ -402,19 +408,20 @@ impl RegionLauncher {
         self.make_spot_instance_requests(
             max_instance_duration_hours * 60, // 60 mins/hr
             machines,
-        )?;
+        )
+        .await?;
 
         let start = time::Instant::now();
-        self.wait_for_spot_instance_requests(max_wait)?;
+        self.wait_for_spot_instance_requests(max_wait).await?;
         if let Some(mut d) = max_wait {
             d -= time::Instant::now().duration_since(start);
         }
 
-        self.wait_for_instances(max_wait)?;
+        self.wait_for_instances(max_wait).await?;
         Ok(())
     }
 
-    fn make_security_group(mut self, use_open_ports: bool) -> Result<Self, Error> {
+    async fn make_security_group(mut self, use_open_ports: bool) -> Result<Self, Error> {
         let log = self.log.as_ref().expect("RegionLauncher uninitialized");
         let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
 
@@ -426,7 +433,7 @@ impl RegionLauncher {
         req.description = "temporary access group for tsunami VMs".to_string();
         let res = ec2
             .create_security_group(req)
-            .sync()
+            .await
             .context("failed to create security group for new machines")?;
         let group_id = res
             .group_id
@@ -443,7 +450,7 @@ impl RegionLauncher {
         req.cidr_ip = Some("0.0.0.0/0".to_string());
         trace!(log, "adding icmp access to security group");
         ec2.authorize_security_group_ingress(req.clone())
-            .sync()
+            .await
             .context("failed to fill in security group for new machines")?;
 
         // The default VPC uses IPs in range 172.31.0.0/16:
@@ -460,7 +467,7 @@ impl RegionLauncher {
 
         trace!(log, "adding internal VM access to security group");
         ec2.authorize_security_group_ingress(req.clone())
-            .sync()
+            .await
             .context("failed to fill in security group for new machines")?;
 
         req.ip_protocol = Some("udp".to_string());
@@ -474,14 +481,14 @@ impl RegionLauncher {
 
         trace!(log, "adding internal VM access to security group");
         ec2.authorize_security_group_ingress(req)
-            .sync()
+            .await
             .context("failed to fill in security group for new machines")?;
 
         self.security_group_id = group_id;
         Ok(self)
     }
 
-    fn make_ssh_key(mut self) -> Result<Self, Error> {
+    async fn make_ssh_key(mut self) -> Result<Self, Error> {
         let log = self.log.as_ref().expect("RegionLauncher uninitialized");
         let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
         let private_key_path = self
@@ -496,7 +503,7 @@ impl RegionLauncher {
         req.key_name = key_name.clone();
         let res = ec2
             .create_key_pair(req)
-            .sync()
+            .await
             .context("failed to generate new key pair")?;
         trace!(log, "created keypair"; "fingerprint" => res.key_fingerprint);
 
@@ -523,7 +530,7 @@ impl RegionLauncher {
     ///
     /// Will *not* wait for the spot instance requests to complete. To wait, call
     /// [`wait_for_spot_instance_requests`](RegionLauncher::wait_for_spot_instance_requests).
-    fn make_spot_instance_requests(
+    async fn make_spot_instance_requests(
         &mut self,
         max_duration: usize,
         machines: impl IntoIterator<Item = (String, Setup)>,
@@ -571,7 +578,7 @@ impl RegionLauncher {
                 .as_mut()
                 .unwrap()
                 .request_spot_instances(req)
-                .sync()
+                .await
                 .context("failed to request spot instance")?;
             let l = log.clone();
 
@@ -613,7 +620,7 @@ impl RegionLauncher {
     ///
     /// To wait for the instances to be ready, call
     /// [`wait_for_instances`](RegionLauncher::wait_for_instances).
-    fn wait_for_spot_instance_requests(
+    async fn wait_for_spot_instance_requests(
         &mut self,
         max_wait: Option<time::Duration>,
     ) -> Result<(), Error> {
@@ -633,7 +640,7 @@ impl RegionLauncher {
         loop {
             trace!(log, "checking spot request status");
 
-            let res = client.describe_spot_instance_requests(req.clone()).sync();
+            let res = client.describe_spot_instance_requests(req.clone()).await;
             if let Err(e) = res {
                 let msg = format!("{}", e);
                 if msg.contains("The spot instance request ID") && msg.contains("does not exist") {
@@ -707,7 +714,7 @@ impl RegionLauncher {
                     .expect("we set this to Some above");
                 client
                     .cancel_spot_instance_requests(cancel)
-                    .sync()
+                    .await
                     .context("failed to cancel spot instances")
                     .map_err(|e| {
                         warn!(log, "failed to cancel spot instance request: {:?}", e);
@@ -724,7 +731,7 @@ impl RegionLauncher {
 
                 let sirs = client
                     .describe_spot_instance_requests(req)
-                    .sync()?
+                    .await?
                     .spot_instance_requests
                     .unwrap_or_else(Vec::new);
                 for sir in sirs {
@@ -752,7 +759,7 @@ impl RegionLauncher {
     }
 
     /// Poll AWS until `max_wait` (if not `None`) or the instances are ready to SSH to.
-    fn wait_for_instances(&mut self, max_wait: Option<time::Duration>) -> Result<(), Error> {
+    async fn wait_for_instances(&mut self, max_wait: Option<time::Duration>) -> Result<(), Error> {
         let start = time::Instant::now();
         let mut desc_req = rusoto_ec2::DescribeInstancesRequest::default();
         let client = self.client.as_ref().unwrap();
@@ -765,7 +772,7 @@ impl RegionLauncher {
 
             for reservation in client
                 .describe_instances(desc_req.clone())
-                .sync()
+                .await
                 .context("failed to cancel spot instances")?
                 .reservations
                 .unwrap_or_else(Vec::new)
@@ -857,6 +864,8 @@ impl RegionLauncher {
 
 impl Drop for RegionLauncher {
     fn drop(&mut self) {
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
         let client = self.client.as_ref().unwrap();
         let log = self.log.as_ref().expect("RegionLauncher uninitialized");
         // terminate instances
@@ -866,7 +875,7 @@ impl Drop for RegionLauncher {
             self.instances.clear();
             let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
             termination_req.instance_ids = instances;
-            while let Err(e) = client.terminate_instances(termination_req.clone()).sync() {
+            while let Err(e) = client.terminate_instances(termination_req.clone()).await {
                 let msg = format!("{}", e);
                 if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
                     trace!(log, "retrying instance termination");
@@ -886,7 +895,7 @@ impl Drop for RegionLauncher {
             // because AWS takes some time to allow the security group to be deleted.
             let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
             req.group_id = Some(self.security_group_id.clone());
-            if let Err(e) = client.delete_security_group(req).sync() {
+            if let Err(e) = client.delete_security_group(req).await {
                 warn!(log, "failed to clean up temporary security group";
                     "group_id" => &self.security_group_id,
                     "error" => ?e,
@@ -898,13 +907,14 @@ impl Drop for RegionLauncher {
             trace!(log, "cleaning up temporary keypair"; "name" => self.ssh_key_name.clone());
             let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
             req.key_name = self.ssh_key_name.clone();
-            if let Err(e) = client.delete_key_pair(req).sync() {
+            if let Err(e) = client.delete_key_pair(req).await {
                 warn!(log, "failed to clean up temporary SSH key";
                     "key_name" => &self.ssh_key_name,
                     "error" => ?e,
                 )
             }
         }
+        });
     }
 }
 
@@ -951,36 +961,38 @@ mod test {
     use super::RegionLauncher;
     use crate::test::test_logger;
     use failure::{Error, ResultExt};
+    use rusoto_core::credential::DefaultCredentialsProvider;
     use rusoto_core::region::Region;
-    use rusoto_core::DefaultCredentialsProvider;
     use rusoto_ec2::Ec2;
 
     #[test]
     #[ignore]
     fn make_key() -> Result<(), Error> {
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
         let region = Region::UsEast1;
         let provider = DefaultCredentialsProvider::new()?;
         let ec2 = RegionLauncher::connect(region, provider, test_logger())?;
+        rt.block_on(async {
+            let mut ec2 = ec2.make_ssh_key().await?;
+            println!("==> key name: {}", ec2.ssh_key_name);
+            println!("==> key path: {:?}", ec2.private_key_path);
+            assert!(!ec2.ssh_key_name.is_empty());
+            assert!(ec2.private_key_path.as_ref().unwrap().path().exists());
 
-        let mut ec2 = ec2.make_ssh_key()?;
-        println!("==> key name: {}", ec2.ssh_key_name);
-        println!("==> key path: {:?}", ec2.private_key_path);
-        assert!(!ec2.ssh_key_name.is_empty());
-        assert!(ec2.private_key_path.as_ref().unwrap().path().exists());
+            let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
+            req.key_name = ec2.ssh_key_name.clone();
+            ec2.client
+                .as_mut()
+                .unwrap()
+                .delete_key_pair(req)
+                .await
+                .context(format!(
+                    "Could not delete ssh key pair {:?}",
+                    ec2.ssh_key_name
+                ))?;
 
-        let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
-        req.key_name = ec2.ssh_key_name.clone();
-        ec2.client
-            .as_mut()
-            .unwrap()
-            .delete_key_pair(req)
-            .sync()
-            .context(format!(
-                "Could not delete ssh key pair {:?}",
-                ec2.ssh_key_name
-            ))?;
-
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
@@ -989,19 +1001,23 @@ mod test {
         let region = "us-east-1";
         let provider = DefaultCredentialsProvider::new()?;
         let logger = test_logger();
-        let mut ec2 = RegionLauncher::new(region, provider, false, logger.clone())?;
 
-        use super::Setup;
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut ec2 = RegionLauncher::new(region, provider, false, logger.clone()).await?;
 
-        let names = (1..).map(|x| format!("{}", x));
-        let setup = Setup::default();
-        let ms: Vec<(String, Setup)> = names.zip(itertools::repeat_n(setup, 5)).collect();
+            use super::Setup;
 
-        debug!(&logger, "make spot instance requests"; "num" => ms.len());
-        ec2.make_spot_instance_requests(60, ms)?;
-        assert_eq!(ec2.outstanding_spot_request_ids.len(), 5);
-        debug!(&logger, "wait for spot instance requests");
-        ec2.wait_for_spot_instance_requests(None)?;
-        Ok(())
+            let names = (1..).map(|x| format!("{}", x));
+            let setup = Setup::default();
+            let ms: Vec<(String, Setup)> = names.zip(itertools::repeat_n(setup, 5)).collect();
+
+            debug!(&logger, "make spot instance requests"; "num" => ms.len());
+            ec2.make_spot_instance_requests(60, ms).await?;
+            assert_eq!(ec2.outstanding_spot_request_ids.len(), 5);
+            debug!(&logger, "wait for spot instance requests");
+            ec2.wait_for_spot_instance_requests(None).await?;
+            Ok(())
+        })
     }
 }

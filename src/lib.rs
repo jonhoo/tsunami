@@ -9,7 +9,7 @@
 //! ```rust,no_run
 //! use tsunami::TsunamiBuilder;
 //! use tsunami::providers::{Launcher, aws, azure};
-//! use rusoto_core::{DefaultCredentialsProvider, Region as AWSRegion};
+//! use rusoto_core::{credential::DefaultCredentialsProvider, Region as AWSRegion};
 //! use azure::Region as AzureRegion;
 //! fn main() -> Result<(), failure::Error> {
 //!     // Initialize AWS
@@ -84,7 +84,7 @@ extern crate failure;
 #[macro_use]
 extern crate slog;
 
-use failure::Error;
+use failure::{Error, ResultExt};
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::time;
@@ -126,7 +126,6 @@ impl<'t> Machine<'t> {
         username: &str,
         key_path: Option<&std::path::Path>,
     ) -> Result<(), Error> {
-        use failure::ResultExt;
         use std::net::{IpAddr, SocketAddr};
         let sess = ssh::Session::connect(
             log,
