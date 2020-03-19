@@ -326,7 +326,7 @@ where
             self.rt = Some(
                 tokio::runtime::Builder::new()
                     .basic_scheduler()
-                    .enable_io()
+                    .enable_all()
                     .build()
                     .expect("Make a tokio runtime"),
             );
