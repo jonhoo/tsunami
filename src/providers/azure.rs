@@ -175,6 +175,8 @@ impl Setup {
 /// This implementation relies on the [Azure
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
 /// It also assumes you have previously run `az login` to authenticate.
+/// The Azure CLI will generate `~/.ssh/id_rsa.pub` if it does not exist, and use it to
+/// authenticate to the machine. This file won't automatically be deleted if Azure created it.
 ///
 /// While the regions are initialized serially, the setup functions for each machine are executed
 /// in parallel (within each region).
@@ -210,11 +212,13 @@ struct Descriptor {
 /// Region-specific connection to Azure.
 ///
 /// Each instance of this type creates one Azure
-/// "resource group" and deletes the group on drop.
+/// "resource group" and deletes the group on drop. See also [`Launcher`].
 ///
 /// This implementation relies on the [Azure
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
 /// It also assumes you have previously run `az login` to authenticate with Microsoft.
+/// The Azure CLI will generate `~/.ssh/id_rsa.pub` if it does not exist, and use it to
+/// authenticate to the machine. This file won't automatically be deleted if Azure created it.
 #[derive(Debug, Default)]
 pub struct RegionLauncher {
     /// A logger.
