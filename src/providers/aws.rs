@@ -305,6 +305,14 @@ impl<P> Drop for Launcher<P> {
             return;
         }
 
+        // This is ok because there are three ways to get to this method.
+        // 1. launch() was called, and there are regions to shut down. In this case, launch() made
+        //    a new Runtime, which we can now use.
+        // 2. with_credentials() was called, and this is the old, discarded Self being dropped. In
+        //    that case, regions.drain() happened, the above regions.is_empty() check ensures we
+        //    never get to this point.
+        // 3. A no-op happened (launch() was not called at all). Again, regions.is_empty() will be
+        //    true since regions can only be populated in launch().
         let rt = self.rt.as_mut().expect("Launch tokio runtime");
         rt.block_on(futures_util::future::join_all(
             self.regions
