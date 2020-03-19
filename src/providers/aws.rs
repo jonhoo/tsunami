@@ -241,6 +241,7 @@ pub struct Launcher<P = DefaultCredentialsProvider> {
     max_instance_duration_hours: usize,
     use_open_ports: bool,
     regions: HashMap<<Setup as super::MachineSetup>::Region, RegionLauncher>,
+    rt: Option<tokio::runtime::Runtime>,
 }
 
 impl Default for Launcher {
@@ -250,6 +251,7 @@ impl Default for Launcher {
             max_instance_duration_hours: 6,
             use_open_ports: false,
             regions: Default::default(),
+            rt: Default::default(),
         }
     }
 }
@@ -292,6 +294,7 @@ impl<P> Launcher<P> {
             max_instance_duration_hours: self.max_instance_duration_hours,
             use_open_ports: self.use_open_ports,
             regions,
+            rt: self.rt.take(),
         }
     }
 }
@@ -302,7 +305,7 @@ impl<P> Drop for Launcher<P> {
             return;
         }
 
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = self.rt.as_mut().expect("Launch tokio runtime");
         rt.block_on(futures_util::future::join_all(
             self.regions
                 .drain()
@@ -318,18 +321,38 @@ where
     type MachineDescriptor = Setup;
 
     fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
         let prov = (*self.credential_provider)()?;
-        rt.block_on(async {
-            let mut awsregion =
-                RegionLauncher::new(&l.region.to_string(), prov, self.use_open_ports, l.log)
+        if let None = self.rt {
+            self.rt = Some(
+                tokio::runtime::Builder::new()
+                    .basic_scheduler()
+                    .enable_io()
+                    .build()
+                    .expect("Make a tokio runtime"),
+            );
+        }
+
+        if let Self {
+            rt: Some(ref mut rt),
+            use_open_ports,
+            max_instance_duration_hours,
+            ref mut regions,
+            ..
+        } = self
+        {
+            rt.block_on(async {
+                let mut awsregion =
+                    RegionLauncher::new(&l.region.to_string(), prov, *use_open_ports, l.log)
+                        .await?;
+                awsregion
+                    .launch(*max_instance_duration_hours, l.max_wait, l.machines)
                     .await?;
-            awsregion
-                .launch(self.max_instance_duration_hours, l.max_wait, l.machines)
-                .await?;
-            self.regions.insert(l.region, awsregion);
-            Ok(())
-        })
+                regions.insert(l.region, awsregion);
+                Ok(())
+            })
+        } else {
+            unreachable!();
+        }
     }
 
     fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
