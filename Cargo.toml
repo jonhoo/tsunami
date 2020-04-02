@@ -3,16 +3,16 @@ name = "tsunami"
 version = "0.11.0-beta.3"
 edition = "2018"
 
-description = "Toolkit for running short-lived jobs on EC2 spot instances"
+description = "Toolkit for running short-lived jobs on cloud VMs"
 readme = "README.md"
 
-authors = ["Jon Gjengset <jon@thesquareplanet.com>"]
+authors = ["Jon Gjengset <jon@thesquareplanet.com>", "Akshay Narayan <akshayn@mit.edu>"]
 
 documentation = "https://docs.rs/tsunami"
 homepage = "https://github.com/jonhoo/tsunami"
 repository = "https://github.com/jonhoo/tsunami.git"
 
-keywords = ["ec2", "aws", "spot-instances", "distributed", "benchmark"]
+keywords = ["ec2", "aws", "azure", "vm", "spot-instances", "distributed", "benchmark"]
 categories = []
 
 license = "MIT/Apache-2.0"
@@ -25,16 +25,23 @@ maintenance = { status = "passively-maintained" }
 debug = ["slog/max_level_trace", "slog/release_max_level_debug"]
 
 [dependencies]
+educe = "0.4"
+failure = "0.1.1"
+futures-util = "0.3.4"
+itertools = "0.8"
+rand = "0.7"
+rayon = "1.0.0"
 rusoto_core = "0.43.0"
 rusoto_ec2 = "0.43.0"
-ssh2 = "0.8"
-failure = "0.1.1"
-rand = "0.7"
-tempfile = "3.0.0"
-rayon = "1.0.0"
-slog-term = "2.4.0"
+serde_json = "1"
+serde = { version = "1", features = ["derive"]}
+sessh = "0.1.3"
 slog = "2.1.1"
 #slog = { version = "2.1.1", features = ["max_level_trace"] }
+slog-term = "2.4.0"
+ssh2 = "0.8"
+structopt = "0.2"
+tempfile = "3.0.0"
 tokio = { version = "0.2.0", features = ["rt-core"] }
 
 [dev-dependencies]
