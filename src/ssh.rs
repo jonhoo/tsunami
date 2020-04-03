@@ -11,9 +11,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Fail)]
-enum SshError {
-    #[fail(display = "error transferring file {}: {}", file, msg)]
-    FileTransferFailure { file: String, msg: String },
+#[fail(display = "error transferring file {}: {}", file, msg)]
+struct FileTransferFailure {
+    file: String,
+    msg: String,
 }
 
 /// An established SSH session.
@@ -174,7 +175,7 @@ impl Session {
 
         let expected = src_file.metadata()?.len();
         if copied < expected {
-            Err(SshError::FileTransferFailure {
+            Err(FileTransferFailure {
                 file: local_src.display().to_string(),
                 msg: format!("only copied {}/{} bytes", copied, expected),
             })?
@@ -233,7 +234,7 @@ impl Session {
         // everything else seemed to succeed.
         if let Some(expected) = src_file.stat()?.size {
             if copied < expected {
-                Err(SshError::FileTransferFailure {
+                Err(FileTransferFailure {
                     file: remote_src.display().to_string(),
                     msg: format!("only copied {}/{} bytes", copied, expected),
                 })?
