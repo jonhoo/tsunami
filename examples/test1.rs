@@ -1,6 +1,7 @@
 extern crate tsunami;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::time;
 use tsunami::{Machine, MachineSetup, TsunamiBuilder};
 
@@ -11,9 +12,12 @@ fn main() {
         "server",
         1,
         MachineSetup::new("c5.xlarge", "ami-e18aa89b", |ssh| {
-            ssh.cmd("cat /etc/hostname").map(|out| {
+            ssh.upload(Path::new("/etc/hostname"), Path::new("local-hostname"))?;
+            ssh.cmd("cat local-hostname").map(|out| {
                 println!("{}", out);
-            })
+            })?;
+
+            ssh.download(Path::new("/etc/hostname"), Path::new("server-hostname"))
         }),
     );
     b.add_set(

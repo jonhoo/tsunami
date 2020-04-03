@@ -1,11 +1,21 @@
 use failure::Error;
+use failure::Fail;
 use failure::ResultExt;
 use slog;
 use ssh2;
+use std::fs::File;
+use std::io;
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[derive(Debug, Fail)]
+#[fail(display = "error transferring file {}: {}", file, msg)]
+struct FileTransferFailure {
+    file: String,
+    msg: String,
+}
 
 /// An established SSH session.
 ///
@@ -115,6 +125,123 @@ impl Session {
     /// Issue the given command and return the command's standard output.
     pub fn cmd(&self, cmd: &str) -> Result<String, Error> {
         Ok(String::from_utf8(self.cmd_raw(cmd)?)?)
+    }
+
+    /// Copy a file from the local machine to the remote host.
+    ///
+    /// Both remote and local paths can be absolute or relative.
+    ///
+    /// ```rust,no_run
+    /// # use tsunami::Session;
+    /// # use failure::Error;
+    /// # fn upload_artifact(ssh: Session) -> Result<(), Error> {
+    ///     use std::path::Path;
+    ///     ssh.upload(
+    ///         Path::new("build/output.tar.gz"), // on the local machine
+    ///         Path::new("/srv/output.tar.gz"), // on the remote machine
+    ///     )?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn upload(&self, local_src: &Path, remote_dst: &Path) -> Result<(), Error> {
+        let sftp = self.ssh.sftp().map_err(Error::from).map_err(|e| {
+            e.context(format!(
+                "failed to create ssh channel while uploading file '{}'",
+                local_src.display()
+            ))
+        })?;
+        let mut dst_file = sftp.create(&remote_dst).map_err(Error::from).map_err(|e| {
+            e.context(format!(
+                "failed to create file '{}' on remote host",
+                remote_dst.display()
+            ))
+        })?;
+
+        let mut src_file = File::open(&local_src).map_err(Error::from).map_err(|e| {
+            e.context(format!(
+                "failed to open file '{}' on local machine",
+                local_src.display()
+            ))
+        })?;
+
+        let copied = io::copy(&mut src_file, &mut dst_file)
+            .map_err(Error::from)
+            .map_err(|e| {
+                e.context(format!(
+                    "failed to upload file '{}' to remote host",
+                    local_src.display()
+                ))
+            })?;
+
+        let expected = src_file.metadata()?.len();
+        if copied < expected {
+            Err(FileTransferFailure {
+                file: local_src.display().to_string(),
+                msg: format!("only copied {}/{} bytes", copied, expected),
+            })?
+        }
+
+        Ok(())
+    }
+
+    /// Copy a file from the remote host to the local machine.
+    ///
+    /// Both remote and local paths can be absolute or relative.
+    ///
+    /// ```rust,no_run
+    /// # use tsunami::Session;
+    /// # use failure::Error;
+    /// # fn download_hostname(ssh: Session) -> Result<(), Error> {
+    ///     use std::path::Path;
+    ///     ssh.download(
+    ///         Path::new("/etc/hostname"), // on the remote machine
+    ///         Path::new("remote-hostname"), // on the local machine
+    ///     )?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn download(&self, remote_src: &Path, local_dst: &Path) -> Result<(), Error> {
+        let sftp = self.ssh.sftp().map_err(Error::from).map_err(|e| {
+            e.context(format!(
+                "failed to create ssh channel while downloading file '{}'",
+                remote_src.display()
+            ))
+        })?;
+        let mut src_file = sftp.open(&remote_src).map_err(Error::from).map_err(|e| {
+            e.context(format!(
+                "failed to open file '{}' on remote host",
+                remote_src.display()
+            ))
+        })?;
+
+        let mut dst_file = File::create(&local_dst).map_err(Error::from).map_err(|e| {
+            e.context(format!(
+                "failed to create file '{}' on local machine",
+                local_dst.display()
+            ))
+        })?;
+
+        let copied = io::copy(&mut src_file, &mut dst_file)
+            .map_err(Error::from)
+            .map_err(|e| {
+                e.context(format!(
+                    "failed to download file '{}' from remote host",
+                    remote_src.display()
+                ))
+            })?;
+
+        // `stat().size` can be None. A little odd but not worth failing if
+        // everything else seemed to succeed.
+        if let Some(expected) = src_file.stat()?.size {
+            if copied < expected {
+                Err(FileTransferFailure {
+                    file: remote_src.display().to_string(),
+                    msg: format!("only copied {}/{} bytes", copied, expected),
+                })?
+            }
+        }
+
+        Ok(())
     }
 }
 
