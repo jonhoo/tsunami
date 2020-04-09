@@ -16,7 +16,7 @@
 //! b.add("my machine", aws::Setup::default()).unwrap();
 //! let mut l = aws::Launcher::default();
 //! // make the defined-duration instances expire after 1 hour
-//! l.set_max_instance_duration(1).open_ports();
+//! l.set_max_instance_duration(1);
 //! b.spawn(&mut l).unwrap();
 //! let vms = l.connect_all().unwrap();
 //! let my_machine = vms.get("my machine").unwrap();
@@ -502,6 +502,16 @@ impl RegionLauncher {
         req.to_port = Some(-1);
         req.cidr_ip = Some("0.0.0.0/0".to_string());
         trace!(log, "adding icmp access to security group");
+        ec2.authorize_security_group_ingress(req.clone())
+            .await
+            .context("failed to fill in security group for new machines")?;
+
+        // allow SSH from anywhere
+        req.ip_protocol = Some("tcp".to_string());
+        req.from_port = Some(22);
+        req.to_port = Some(22);
+        req.cidr_ip = Some("0.0.0.0/0".to_string());
+        trace!(log, "adding ssh access to security group");
         ec2.authorize_security_group_ingress(req.clone())
             .await
             .context("failed to fill in security group for new machines")?;
@@ -1027,7 +1037,7 @@ mod test {
         b.add("my machine", aws::Setup::default()).unwrap();
         let mut l = aws::Launcher::default();
         // make the defined-duration instances expire after 1 hour
-        l.set_max_instance_duration(1).open_ports();
+        l.set_max_instance_duration(1);
         b.spawn(&mut l).unwrap();
         let vms = l.connect_all().unwrap();
         let my_machine = vms.get("my machine").unwrap();

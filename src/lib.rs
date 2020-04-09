@@ -14,7 +14,6 @@
 //! fn main() -> Result<(), failure::Error> {
 //!     // Initialize AWS
 //!     let mut aws = aws::Launcher::default();
-//!     aws.open_ports(); // allow ssh
 //!
 //!     // Initialize a TsunamiBuilder for AWS
 //!     let mut tb_aws = TsunamiBuilder::default();
