@@ -16,7 +16,7 @@
 //! b.add("my machine", aws::Setup::default()).unwrap();
 //! let mut l = aws::Launcher::default();
 //! // make the defined-duration instances expire after 1 hour
-//! l.set_max_instance_duration(1);
+//! l.set_max_instance_duration(1).open_ports();
 //! b.spawn(&mut l).unwrap();
 //! let vms = l.connect_all().unwrap();
 //! let my_machine = vms.get("my machine").unwrap();
@@ -32,7 +32,7 @@
 //!     let mut aws = aws::Launcher::default();
 //!     // make the defined-duration instances expire after 1 hour
 //!     // default is the maximum (6 hours)
-//!     aws.set_max_instance_duration(1);
+//!     aws.set_max_instance_duration(1).open_ports();
 //!
 //!     // Initialize a TsunamiBuilder
 //!     let mut tb = TsunamiBuilder::default();
@@ -1016,6 +1016,30 @@ mod test {
     use rusoto_core::credential::DefaultCredentialsProvider;
     use rusoto_core::region::Region;
     use rusoto_ec2::Ec2;
+
+    #[test]
+    #[ignore]
+    fn make_machine_and_ssh() {
+        use crate::providers::{aws, Launcher};
+        use crate::TsunamiBuilder;
+
+        let mut b = TsunamiBuilder::default();
+        b.add("my machine", aws::Setup::default()).unwrap();
+        let mut l = aws::Launcher::default();
+        // make the defined-duration instances expire after 1 hour
+        l.set_max_instance_duration(1).open_ports();
+        b.spawn(&mut l).unwrap();
+        let vms = l.connect_all().unwrap();
+        let my_machine = vms.get("my machine").unwrap();
+        let (stdout, stderr) = my_machine
+            .ssh
+            .as_ref()
+            .unwrap()
+            .cmd("echo \"Hello, EC2\"")
+            .unwrap();
+        println!("{}", stdout);
+        println!("{}", stderr);
+    }
 
     #[test]
     #[ignore]
