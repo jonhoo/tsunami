@@ -826,7 +826,7 @@ impl RegionLauncher {
             for reservation in client
                 .describe_instances(desc_req.clone())
                 .await
-                .context("failed to cancel spot instances")?
+                .context("Could not query AWS for instance state")?
                 .reservations
                 .unwrap_or_else(Vec::new)
             {
