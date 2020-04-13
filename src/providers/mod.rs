@@ -91,8 +91,11 @@ fn rand_name_sep(prefix: &str, sep: impl Into<Sep>) -> String {
     name
 }
 
+#[cfg(feature = "aws")]
 pub mod aws;
+#[cfg(feature = "azure")]
 pub mod azure;
+#[cfg(feature = "baremetal")]
 pub mod baremetal;
 
 fn setup_machine(
