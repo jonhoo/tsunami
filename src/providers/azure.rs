@@ -317,7 +317,7 @@ impl super::Launcher for RegionLauncher {
                     _tsunami: Default::default(),
                 };
 
-                m.connect_ssh(log, username, None)?;
+                m.connect_ssh(log, username, None, None)?;
                 Ok((name.clone(), m))
             })
             .collect()

@@ -916,7 +916,7 @@ impl RegionLauncher {
                         _tsunami: Default::default(),
                     };
 
-                    m.connect_ssh(log, &username, Some(private_key_path.path()))?;
+                    m.connect_ssh(log, &username, Some(private_key_path.path()), None)?;
                     Ok((name.clone(), m))
                 }
                 _ => bail!("Machines not initialized"),

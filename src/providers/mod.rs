@@ -107,27 +107,18 @@ fn setup_machine(
     private_key: Option<&std::path::Path>,
     f: &dyn Fn(&mut crate::ssh::Session, &slog::Logger) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    use crate::ssh;
     use failure::ResultExt;
-    use std::net::{IpAddr, SocketAddr};
 
-    let mut sess = ssh::Session::connect(
-        log,
-        username,
-        SocketAddr::new(
-            pub_ip
-                .parse::<IpAddr>()
-                .context("machine ip is not an ip address")?,
-            22,
-        ),
-        private_key,
-        max_wait,
-    )
-    .context(format!("failed to ssh to machine {}", nickname))
-    .map_err(|e| {
-        error!(log, "failed to ssh to {}", pub_ip);
-        e
-    })?;
+    let mut m = crate::Machine {
+        nickname: Default::default(),
+        public_dns: pub_ip.to_string(),
+        public_ip: pub_ip.to_string(),
+        ssh: None,
+        _tsunami: Default::default(),
+    };
+
+    m.connect_ssh(log, username, private_key, max_wait)?;
+    let mut sess = m.ssh.unwrap();
 
     debug!(log, "setting up instance"; "ip" => &pub_ip);
     f(&mut sess, log)

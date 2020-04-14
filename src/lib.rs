@@ -89,7 +89,13 @@ use itertools::Itertools;
 use std::collections::HashMap;
 use std::time;
 
+#[cfg(feature = "use-openssh")]
+pub use openssh as ssh;
+#[cfg(feature = "use-libssh")]
 pub use sessh as ssh;
+#[cfg(feature = "use-openssh")]
+pub use ssh::Session;
+#[cfg(feature = "use-libssh")]
 pub use ssh::Session;
 
 pub mod providers;
@@ -120,11 +126,46 @@ pub struct Machine<'tsunami> {
 }
 
 impl<'t> Machine<'t> {
+    #[cfg(feature = "use-openssh")]
     fn connect_ssh(
         &mut self,
         log: &slog::Logger,
         username: &str,
         key_path: Option<&std::path::Path>,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<(), Error> {
+        use failure::ResultExt;
+        let mut sess = ssh::SessionBuilder::default();
+
+        sess.user(username.to_string()).port(22);
+
+        if let Some(k) = key_path {
+            sess.keyfile(k);
+        }
+
+        if let Some(t) = timeout {
+            sess.connect_timeout(t);
+        }
+
+        let sess = sess
+            .connect(&self.public_ip)
+            .context(format!("failed to ssh to machine {}", self.public_dns))
+            .map_err(|e| {
+                error!(log, "failed to ssh to {}", self.public_ip);
+                e
+            })?;
+
+        self.ssh = Some(sess);
+        Ok(())
+    }
+
+    #[cfg(feature = "use-libssh")]
+    fn connect_ssh(
+        &mut self,
+        log: &slog::Logger,
+        username: &str,
+        key_path: Option<&std::path::Path>,
+        timeout: Option<std::time::Duration>,
     ) -> Result<(), Error> {
         use failure::ResultExt;
         use std::net::{IpAddr, SocketAddr};
@@ -138,7 +179,7 @@ impl<'t> Machine<'t> {
                 22,
             ),
             key_path,
-            None,
+            timeout,
         )
         .context(format!("failed to ssh to machine {}", self.public_dns))
         .map_err(|e| {
