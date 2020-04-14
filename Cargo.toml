@@ -27,7 +27,7 @@ debug = ["slog/max_level_trace", "slog/release_max_level_debug"]
 [dependencies]
 rusoto_core = "0.43.0"
 rusoto_ec2 = "0.43.0"
-ssh2 = "0.8"
+openssh = "0.4"
 failure = "0.1.1"
 rand = "0.7"
 tempfile = "3.0.0"

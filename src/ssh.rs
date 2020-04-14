@@ -1,11 +1,8 @@
 use failure::Error;
 use failure::Fail;
-use failure::ResultExt;
-use slog;
-use ssh2;
 use std::fs::File;
 use std::io;
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,7 +23,7 @@ struct FileTransferFailure {
 /// To execute a command and get its `STDOUT` output, use
 /// [`Session#cmd`](struct.Session.html#method.cmd).
 pub struct Session {
-    ssh: ssh2::Session,
+    ssh: openssh::Session,
 }
 
 impl Session {
@@ -39,8 +36,14 @@ impl Session {
     ) -> Result<Self, Error> {
         // TODO: instead of max time, keep trying as long as instance is still active
         let start = Instant::now();
-        let tcp = loop {
-            match TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
+        let mut sb = openssh::SessionBuilder::default();
+        sb.connect_timeout(Duration::from_secs(3));
+        sb.keyfile(key);
+        sb.user(username.to_string());
+        sb.port(addr.port());
+        let addr = format!("{}", addr.ip());
+        let sess = loop {
+            match sb.connect(&addr) {
                 Ok(s) => break s,
                 Err(e) => {
                     if let Some(to) = timeout {
@@ -58,72 +61,27 @@ impl Session {
             }
         };
 
-        let mut sess = ssh2::Session::new().context("libssh2 not available")?;
-        sess.set_tcp_stream(tcp);
-        sess.handshake()
-            .context("failed to perform ssh handshake")?;
-        sess.userauth_pubkey_file(username, None, key, None)
-            .context("failed to authenticate ssh session")?;
-
         Ok(Session { ssh: sess })
     }
 
     /// Issue the given command and return the command's raw standard output.
-    pub fn cmd_raw(&self, cmd: &str) -> Result<Vec<u8>, Error> {
-        use std::io::Read;
-
-        let mut channel = self
+    pub fn cmd_raw(&self, cmd: &[&str]) -> Result<Vec<u8>, Error> {
+        let channel = self
             .ssh
-            .channel_session()
+            .command(cmd[0])
+            .args(&cmd[1..])
+            .output()
             .map_err(Error::from)
-            .map_err(|e| {
-                e.context(format!(
-                    "failed to create ssh channel for command '{}'",
-                    cmd
-                ))
-            })?;
-
-        channel
-            .exec(cmd)
-            .map_err(Error::from)
-            .map_err(|e| e.context(format!("failed to execute command '{}'", cmd)))?;
-
-        channel
-            .send_eof()
-            .map_err(Error::from)
-            .map_err(|e| e.context(format!("failed to finish command '{}'", cmd)))?;
-
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        // NOTE: the loop is needed because libssh2 can return reads of size 0 without EOF
-        // https://www.libssh2.org/libssh2_channel_read_ex.html
-        // NOTE: we must read from *both* stdout and stderr. EOF is only sent when they're both
-        // drained.
-        while !channel.eof() {
-            channel
-                .read_to_end(&mut stdout)
-                .map_err(Error::from)
-                .map_err(|e| e.context(format!("failed to read stdout of command '{}'", cmd)))?;
-            channel
-                .stderr()
-                .read_to_end(&mut stderr)
-                .map_err(Error::from)
-                .map_err(|e| e.context(format!("failed to read stderr of command '{}'", cmd)))?;
-        }
-
-        channel
-            .wait_close()
-            .map_err(Error::from)
-            .map_err(|e| e.context(format!("command '{}' never completed", cmd)))?;
+            .map_err(|e| e.context(format!("failed to execute command '{}'", cmd[0])))?;
 
         // TODO: check channel.exit_status()
         // TODO: return stderr as well?
-        drop(stderr);
-        Ok(stdout)
+        drop(channel.stderr);
+        Ok(channel.stdout)
     }
 
     /// Issue the given command and return the command's standard output.
-    pub fn cmd(&self, cmd: &str) -> Result<String, Error> {
+    pub fn cmd(&self, cmd: &[&str]) -> Result<String, Error> {
         Ok(String::from_utf8(self.cmd_raw(cmd)?)?)
     }
 
@@ -144,18 +102,17 @@ impl Session {
     /// # }
     /// ```
     pub fn upload(&self, local_src: &Path, remote_dst: &Path) -> Result<(), Error> {
-        let sftp = self.ssh.sftp().map_err(Error::from).map_err(|e| {
-            e.context(format!(
-                "failed to create ssh channel while uploading file '{}'",
-                local_src.display()
-            ))
-        })?;
-        let mut dst_file = sftp.create(&remote_dst).map_err(Error::from).map_err(|e| {
-            e.context(format!(
-                "failed to create file '{}' on remote host",
-                remote_dst.display()
-            ))
-        })?;
+        let mut sftp = self.ssh.sftp();
+
+        let mut dst_file = sftp
+            .write_to(&remote_dst)
+            .map_err(Error::from)
+            .map_err(|e| {
+                e.context(format!(
+                    "failed to create file '{}' on remote host",
+                    remote_dst.display()
+                ))
+            })?;
 
         let mut src_file = File::open(&local_src).map_err(Error::from).map_err(|e| {
             e.context(format!(
@@ -172,6 +129,13 @@ impl Session {
                     local_src.display()
                 ))
             })?;
+
+        dst_file.close().map_err(Error::from).map_err(|e| {
+            e.context(format!(
+                "failed to upload file '{}' to remote host",
+                local_src.display()
+            ))
+        })?;
 
         let expected = src_file.metadata()?.len();
         if copied < expected {
@@ -201,18 +165,17 @@ impl Session {
     /// # }
     /// ```
     pub fn download(&self, remote_src: &Path, local_dst: &Path) -> Result<(), Error> {
-        let sftp = self.ssh.sftp().map_err(Error::from).map_err(|e| {
-            e.context(format!(
-                "failed to create ssh channel while downloading file '{}'",
-                remote_src.display()
-            ))
-        })?;
-        let mut src_file = sftp.open(&remote_src).map_err(Error::from).map_err(|e| {
-            e.context(format!(
-                "failed to open file '{}' on remote host",
-                remote_src.display()
-            ))
-        })?;
+        let mut sftp = self.ssh.sftp();
+
+        let mut src_file = sftp
+            .read_from(&remote_src)
+            .map_err(Error::from)
+            .map_err(|e| {
+                e.context(format!(
+                    "failed to open file '{}' on remote host",
+                    remote_src.display()
+                ))
+            })?;
 
         let mut dst_file = File::create(&local_dst).map_err(Error::from).map_err(|e| {
             e.context(format!(
@@ -230,9 +193,23 @@ impl Session {
                 ))
             })?;
 
-        // `stat().size` can be None. A little odd but not worth failing if
-        // everything else seemed to succeed.
-        if let Some(expected) = src_file.stat()?.size {
+        src_file.close().map_err(Error::from).map_err(|e| {
+            e.context(format!(
+                "failed to download file '{}' from remote host",
+                remote_src.display()
+            ))
+        })?;
+
+        // This can fail, which is a little odd, but not worth
+        // failing over if everything else seemed to succeed.
+        if let Ok(expected) = self
+            .ssh
+            .command("stat")
+            .arg("--printf=%s")
+            .output()
+            .map_err(|_| ())
+            .and_then(|r| String::from_utf8_lossy(&r.stdout).parse().map_err(|_| ()))
+        {
             if copied < expected {
                 Err(FileTransferFailure {
                     file: remote_src.display().to_string(),
@@ -247,7 +224,7 @@ impl Session {
 
 use std::ops::{Deref, DerefMut};
 impl Deref for Session {
-    type Target = ssh2::Session;
+    type Target = openssh::Session;
     fn deref(&self) -> &Self::Target {
         &self.ssh
     }
