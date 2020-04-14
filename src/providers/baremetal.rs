@@ -89,10 +89,17 @@ fn try_addrs(
     use failure::ResultExt;
     let mut err = Err(format_err!("SSH failed")).context(String::from("No valid addresses found"));
     while let Some(addr) = s.addr.pop() {
-        match ssh::Session::connect(
+        let mut m = crate::Machine {
+            nickname: Default::default(),
+            public_dns: addr.to_string(),
+            public_ip: addr.to_string(),
+            ssh: None,
+            _tsunami: Default::default(),
+        };
+
+        match m.connect_ssh(
             log,
             &s.username,
-            addr,
             s.key_path.as_ref().map(|p| p.as_path()),
             max_wait,
         ) {
@@ -151,10 +158,17 @@ impl super::Launcher for Machine {
             ..
         } = setup
         {
-            let mut sess = ssh::Session::connect(
+            let mut m = crate::Machine {
+                nickname: Default::default(),
+                public_dns: addr.to_string(),
+                public_ip: addr.to_string(),
+                ssh: None,
+                _tsunami: Default::default(),
+            };
+
+            m.connect_ssh(
                 log,
                 &username,
-                addr,
                 key_path.as_ref().map(|p| p.as_path()),
                 l.max_wait,
             )
@@ -162,6 +176,8 @@ impl super::Launcher for Machine {
                 error!(log, "failed to ssh to {}", &addr);
                 e.context(format!("failed to ssh to machine {}", addr))
             })?;
+
+            let mut sess = m.ssh.unwrap();
 
             f(&mut sess, log).map_err(|e| {
                 error!(
@@ -198,6 +214,7 @@ impl super::Launcher for Machine {
             log,
             &self.username,
             self.key_path.as_ref().map(|p| p.as_path()),
+            None,
         )?;
 
         let mut hmap: HashMap<String, crate::Machine<'l>> = Default::default();
@@ -232,13 +249,16 @@ mod test {
         };
         m.launch(desc)?;
         let ms = m.connect_all()?;
-        ms.get("self")
+        assert!(ms
+            .get("self")
             .unwrap()
             .ssh
             .as_ref()
             .unwrap()
-            .cmd("ls")
-            .unwrap();
+            .command("ls")
+            .status()
+            .unwrap()
+            .success());
         Ok(())
     }
 }

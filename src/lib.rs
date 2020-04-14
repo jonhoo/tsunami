@@ -23,8 +23,9 @@
 //!     let m = aws::Setup::default()
 //!         .region_with_ubuntu_ami(AWSRegion::UsWest1) // default is UsEast1
 //!         .setup(|ssh, _| { // default is a no-op
-//!             ssh.cmd("sudo apt update")?;
-//!             ssh.cmd("curl https://sh.rustup.rs -sSf | sh -- -y")?;
+//!             ssh.command("sudo").arg("apt").arg("update").status()?;
+//!             ssh.command("bash").arg("-c")
+//!                 .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status()?;
 //!             Ok(())
 //!         });
 //!     tb_aws.add("aws_vm", m);
@@ -40,8 +41,9 @@
 //!     let m = azure::Setup::default()
 //!         .region(AzureRegion::FranceCentral) // default is EastUs
 //!         .setup(|ssh, _| { // default is a no-op
-//!             ssh.cmd("sudo apt update")?;
-//!             ssh.cmd("curl https://sh.rustup.rs -sSf | sh -- -y")?;
+//!             ssh.command("sudo").arg("apt").arg("update").status()?;
+//!             ssh.command("bash").arg("-c")
+//!                 .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status()?;
 //!             Ok(())
 //!         });
 //!     tb_azure.add("azure_vm", m);
@@ -89,7 +91,7 @@ use itertools::Itertools;
 use std::collections::HashMap;
 use std::time;
 
-pub use sessh as ssh;
+pub use openssh as ssh;
 pub use ssh::Session;
 
 pub mod providers;
@@ -125,26 +127,28 @@ impl<'t> Machine<'t> {
         log: &slog::Logger,
         username: &str,
         key_path: Option<&std::path::Path>,
+        timeout: Option<std::time::Duration>,
     ) -> Result<(), Error> {
         use failure::ResultExt;
-        use std::net::{IpAddr, SocketAddr};
-        let sess = ssh::Session::connect(
-            log,
-            username,
-            SocketAddr::new(
-                self.public_ip
-                    .parse::<IpAddr>()
-                    .context("machine ip is not an ip address")?,
-                22,
-            ),
-            key_path,
-            None,
-        )
-        .context(format!("failed to ssh to machine {}", self.public_dns))
-        .map_err(|e| {
-            error!(log, "failed to ssh to {}", self.public_ip);
-            e
-        })?;
+        let mut sess = ssh::SessionBuilder::default();
+
+        sess.user(username.to_string()).port(22);
+
+        if let Some(k) = key_path {
+            sess.keyfile(k);
+        }
+
+        if let Some(t) = timeout {
+            sess.connect_timeout(t);
+        }
+
+        let sess = sess
+            .connect(&self.public_ip)
+            .context(format!("failed to ssh to machine {}", self.public_dns))
+            .map_err(|e| {
+                error!(log, "failed to ssh to {}", self.public_ip);
+                e
+            })?;
 
         self.ssh = Some(sess);
         Ok(())

@@ -29,7 +29,15 @@
 //! b.spawn(&mut l).unwrap();
 //! let vms = l.connect_all().unwrap();
 //! let my_machine = vms.get("my machine").unwrap();
-//! let (stdout, stderr) = my_machine.ssh.as_ref().unwrap().cmd("echo \"Hello, Azure\"").unwrap();
+//! let out = my_machine
+//!     .ssh
+//!     .as_ref()
+//!     .unwrap()
+//!     .command("echo")
+//!     .arg("\"Hello, Azure\"")
+//!     .output()
+//!     .unwrap();
+//! let stdout = std::string::String::from_utf8(out.stdout).unwrap();
 //! println!("{}", stdout);
 //! ```
 //! ```rust,no_run
@@ -47,8 +55,9 @@
 //!     let m = azure::Setup::default()
 //!         .region(azure::Region::FranceCentral) // default is EastUs
 //!         .setup(|ssh, _| { // default is a no-op
-//!             ssh.cmd("sudo apt update")?;
-//!             ssh.cmd("curl https://sh.rustup.rs -sSf | sh -- -y")?;
+//!             ssh.command("sudo").arg("apt").arg("update").status()?;
+//!             ssh.command("bash").arg("-c")
+//!                 .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status()?;
 //!             Ok(())
 //!         });
 //!     tb.add("my_vm", m);
@@ -61,8 +70,8 @@
 //!     let my_vm = vms.get("my_vm").unwrap();
 //!     println!("public ip: {}", my_vm.public_ip);
 //!     let ssh = my_vm.ssh.as_ref().unwrap();
-//!     ssh.cmd("git clone https://github.com/jonhoo/tsunami")?;
-//!     ssh.cmd("cd tsunami && cargo build")?;
+//!     ssh.command("git").arg("clone").arg("https://github.com/jonhoo/tsunami").status()?;
+//!     ssh.command("bash").arg("-c").arg("\"cd tsunami && cargo build\"").status()?;
 //!     Ok(())
 //! }
 //! ```
@@ -155,7 +164,7 @@ impl Setup {
     /// let m = Setup::default()
     ///     .setup(|ssh, log| {
     ///         slog::info!(log, "running setup!");
-    ///         ssh.cmd("sudo apt update")?;
+    ///         ssh.command("sudo").arg("apt").arg("update").status()?;
     ///         Ok(())
     ///     });
     /// ```
@@ -317,7 +326,7 @@ impl super::Launcher for RegionLauncher {
                     _tsunami: Default::default(),
                 };
 
-                m.connect_ssh(log, username, None)?;
+                m.connect_ssh(log, username, None, None)?;
                 Ok((name.clone(), m))
             })
             .collect()
