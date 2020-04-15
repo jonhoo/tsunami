@@ -220,6 +220,14 @@ impl Session {
 
         Ok(())
     }
+
+    /// Close the underlying ssh connection.
+    ///
+    /// This method also returns any lingering errors that may have occurred, such as the reason
+    /// why the master connection may have been terminated.
+    pub fn close(self) -> Result<(), Error> {
+        Ok(self.ssh.close()?)
+    }
 }
 
 use std::ops::{Deref, DerefMut};
