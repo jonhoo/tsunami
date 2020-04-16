@@ -83,6 +83,26 @@ pub struct No;
 #[derive(Clone, Copy, Debug)]
 pub struct Yes;
 
+/// Available configurations of availability zone specifiers.
+///
+/// See [the aws docs](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#using-regions-availability-zones-launching) for more information.
+#[derive(Debug, Clone)]
+pub enum AvailabilityZoneSpec {
+    /// `Any` (the default) will place the instance anywhere there is capacity.
+    Any,
+    /// `Cluster` will place all the instances with the given id together, without specifying
+    /// where.
+    Cluster(usize),
+    /// `Specify` will place all the instances in the named availability zone.
+    Specify(String),
+}
+
+impl Default for AvailabilityZoneSpec {
+    fn default() -> Self {
+        Self::Any
+    }
+}
+
 /// A descriptor for a particular machine setup in a tsunami.
 ///
 /// An AMI and username must be set (indicated by marker type [`Yes`]) for this to be useful.
@@ -95,6 +115,7 @@ pub struct Yes;
 #[educe(Debug)]
 pub struct Setup<HasAmi = Yes, HasUsername = Yes> {
     region: Region,
+    availability_zone: AvailabilityZoneSpec,
     instance_type: String,
     ami: Option<String>,
     username: String,
@@ -107,7 +128,11 @@ impl super::MachineSetup for Setup<Yes, Yes> {
     type Region = String;
 
     fn region(&self) -> Self::Region {
-        self.region.name().to_string()
+        match self.availability_zone {
+            AvailabilityZoneSpec::Specify(ref id) => format!("{}-{}", self.region.name(), id),
+            AvailabilityZoneSpec::Cluster(id) => format!("{}-{}", self.region.name(), id),
+            AvailabilityZoneSpec::Any => self.region.name().to_string(),
+        }
     }
 }
 
@@ -115,6 +140,7 @@ impl Default for Setup<Yes, Yes> {
     fn default() -> Self {
         Setup {
             region: Region::UsEast1,
+            availability_zone: AvailabilityZoneSpec::Any,
             instance_type: "t3.small".into(),
             ami: Some(UbuntuAmi::from(Region::UsEast1).into()),
             username: "ubuntu".into(),
@@ -144,6 +170,7 @@ impl<A, B> Setup<A, B> {
     pub fn ami(self, ami: impl ToString) -> Setup<Yes, No> {
         Setup {
             region: self.region,
+            availability_zone: self.availability_zone,
             instance_type: self.instance_type,
             ami: Some(ami.to_string()),
             username: "".to_string(),
@@ -199,11 +226,23 @@ impl<A, B> Setup<A, B> {
     pub fn region(self, region: Region) -> Setup<No, No> {
         Setup {
             region,
+            availability_zone: self.availability_zone,
             instance_type: self.instance_type,
             ami: None,
             username: "".into(),
             setup: self.setup,
             _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Set up the machine in a specific EC2 availability zone.
+    ///
+    /// The default availability zone is unspecified - EC2 will launch the machine wherever there
+    /// is capacity.
+    pub fn availability_zone(self, az: AvailabilityZoneSpec) -> Self {
+        Self {
+            availability_zone: az,
+            ..self
         }
     }
 }
@@ -216,6 +255,7 @@ impl<A> Setup<Yes, A> {
     pub fn username(self, username: impl ToString) -> Setup<Yes, Yes> {
         Setup {
             region: self.region,
+            availability_zone: self.availability_zone,
             instance_type: self.instance_type,
             ami: self.ami,
             username: username.to_string(),
@@ -349,9 +389,16 @@ where
         } = self
         {
             rt.block_on(async {
-                let mut awsregion =
-                    RegionLauncher::new(&l.region.to_string(), prov, *use_open_ports, l.log)
-                        .await?;
+                let mut awsregion = RegionLauncher::new(
+                    &l.region.to_string(),
+                    // availability_zone spec is guaranteed to be the same because it's included in
+                    // the region specifier.
+                    l.machines[0].1.availability_zone.clone(),
+                    prov,
+                    *use_open_ports,
+                    l.log,
+                )
+                .await?;
                 awsregion
                     .launch(*max_instance_duration_hours, l.max_wait, l.machines)
                     .await?;
@@ -387,6 +434,7 @@ where
 pub struct RegionLauncher {
     /// The region this RegionLauncher is connected to.
     pub region: rusoto_core::region::Region,
+    availability_zone: AvailabilityZoneSpec,
     security_group_id: String,
     ssh_key_name: String,
     private_key_path: Option<tempfile::NamedTempFile>,
@@ -405,6 +453,7 @@ impl RegionLauncher {
     /// This will create a temporary security group and SSH key in the given AWS region.
     pub async fn new<P>(
         region: &str,
+        availability_zone: AvailabilityZoneSpec,
         provider: P,
         use_open_ports: bool,
         log: slog::Logger,
@@ -413,7 +462,7 @@ impl RegionLauncher {
         P: ProvideAwsCredentials + Send + Sync + 'static,
     {
         let region = region.parse()?;
-        let ec2 = RegionLauncher::connect(region, provider, log)?
+        let ec2 = RegionLauncher::connect(region, availability_zone, provider, log)?
             .make_security_group(use_open_ports)
             .await?
             .make_ssh_key()
@@ -424,6 +473,7 @@ impl RegionLauncher {
 
     fn connect<P>(
         region: rusoto_core::region::Region,
+        availability_zone: AvailabilityZoneSpec,
         provider: P,
         log: slog::Logger,
     ) -> Result<Self, Error>
@@ -435,6 +485,7 @@ impl RegionLauncher {
 
         Ok(Self {
             region,
+            availability_zone,
             security_group_id: Default::default(),
             ssh_key_name: Default::default(),
             private_key_path: Some(
@@ -618,7 +669,35 @@ impl RegionLauncher {
             let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
             launch.image_id = Some(reqs[0].1.ami.as_ref().unwrap().clone());
             launch.instance_type = Some(reqs[0].1.instance_type.clone());
-            launch.placement = None;
+            launch.placement = {
+                if let AvailabilityZoneSpec::Any = self.availability_zone {
+                    None
+                } else {
+                    let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
+                    trace!(log, "creating placement group");
+                    let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
+                    let placement_name = super::rand_name("placement");
+                    req.group_name = Some(placement_name.clone());
+                    req.strategy = Some(String::from("cluster"));
+                    ec2.create_placement_group(req)
+                        .await
+                        .context("failed to create new placement group")?;
+                    trace!(log, "created placement group");
+                    let mut placement = rusoto_ec2::SpotPlacement::default();
+                    placement.group_name = Some(placement_name);
+                    match self.availability_zone {
+                        AvailabilityZoneSpec::Cluster(_) => {
+                            placement.availability_zone = None;
+                        }
+                        AvailabilityZoneSpec::Specify(ref av) => {
+                            placement.availability_zone = Some(av.clone());
+                        }
+                        _ => unreachable!(),
+                    }
+
+                    Some(placement)
+                }
+            };
 
             launch.security_group_ids = Some(vec![self.security_group_id.clone()]);
             launch.key_name = Some(self.ssh_key_name.clone());
