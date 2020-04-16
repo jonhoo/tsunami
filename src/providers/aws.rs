@@ -389,6 +389,20 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
+struct IpInfo {
+    dns: String,
+    pub_ip: String,
+    priv_ip: String,
+}
+
+#[derive(Debug, Clone)]
+struct TaggedSetup {
+    name: String,
+    setup: Setup,
+    ipinfo: Option<IpInfo>,
+}
+
 /// Region specific. Launch AWS EC2 spot instances.
 ///
 /// This implementation uses [rusoto](https://crates.io/crates/rusoto_core) to connect to AWS.
@@ -414,8 +428,8 @@ pub struct RegionLauncher {
     private_key_path: Option<tempfile::NamedTempFile>,
     #[educe(Debug(ignore))]
     client: Option<rusoto_ec2::Ec2Client>,
-    outstanding_spot_request_ids: HashMap<String, (String, Setup)>,
-    instances: HashMap<String, (Option<(String, String)>, (String, Setup))>,
+    outstanding_spot_request_ids: HashMap<String, TaggedSetup>,
+    instances: HashMap<String, TaggedSetup>,
     log: Option<slog::Logger>,
 }
 
@@ -718,7 +732,14 @@ impl RegionLauncher {
             }
 
             for (sir, req) in spot_instance_requests.into_iter().zip_eq(reqs.into_iter()) {
-                self.outstanding_spot_request_ids.insert(sir, req);
+                self.outstanding_spot_request_ids.insert(
+                    sir,
+                    TaggedSetup {
+                        name: req.0,
+                        setup: req.1,
+                        ipinfo: None,
+                    },
+                );
             }
         }
 
@@ -802,7 +823,12 @@ impl RegionLauncher {
                             let instance_id = sir.instance_id.unwrap();
                             trace!(log, "spot request satisfied"; "iid" => &instance_id);
 
-                            Some((instance_id, (None, self.outstanding_spot_request_ids.remove(&sir.spot_instance_request_id.unwrap()).unwrap())))
+                            Some((
+                                instance_id, 
+                                self.outstanding_spot_request_ids
+                                    .remove(&sir.spot_instance_request_id.unwrap())
+                                    .unwrap()
+                            ))
                         } else {
                             error!(log, "spot request failed: {:?}", &sir.status; "state" => &sir.state.unwrap());
                             None
@@ -899,6 +925,7 @@ impl RegionLauncher {
                             instance_id: Some(instance_id),
                             public_dns_name: Some(public_dns),
                             public_ip_address: Some(public_ip),
+                            private_ip_address: Some(private_ip),
                             ..
                         } => {
                             debug!(log, "instance ready";
@@ -906,8 +933,12 @@ impl RegionLauncher {
                                 "ip" => &public_ip,
                             );
 
-                            let (ipinfo, _) = self.instances.get_mut(&instance_id).unwrap();
-                            *ipinfo = Some((public_ip.clone(), public_dns.clone()));
+                            let tag_setup = self.instances.get_mut(&instance_id).unwrap();
+                            tag_setup.ipinfo = Some(IpInfo {
+                                pub_ip: public_ip.clone(),
+                                dns: public_dns.clone(),
+                                priv_ip: private_ip.clone(),
+                            });
                         }
                         _ => {
                             all_ready = false;
@@ -926,18 +957,18 @@ impl RegionLauncher {
         use rayon::prelude::*;
         self.instances
             .par_iter()
-            .try_for_each(|(_instance_id, (ipinfo, (name, m_setup)))| {
-                let (public_ip, _) = ipinfo.as_ref().unwrap();
+            .try_for_each(|(_instance_id, TaggedSetup { ipinfo, name, setup })| {
+                let IpInfo { pub_ip, .. } = ipinfo.as_ref().unwrap();
                 if let Setup {
                     username,
                     setup: Some(f),
                     ..
-                } = m_setup
+                } = setup
                 {
                     super::setup_machine(
                         log,
                         &name,
-                        &public_ip,
+                        &pub_ip,
                         &username,
                         max_wait,
                         Some(private_key_path.path()),
@@ -957,10 +988,19 @@ impl RegionLauncher {
         self.instances
             .values()
             .map(|info| match info {
-                (Some((public_ip, public_dns)), (name, Setup { username, .. })) => {
+                TaggedSetup { 
+                    name,
+                    setup: Setup { username, .. },
+                    ipinfo: Some(IpInfo {
+                        dns: public_dns,
+                        pub_ip: public_ip,
+                        priv_ip: private_ip,
+                    }),
+                } => {
                     let mut m = Machine {
                         public_ip: public_ip.clone(),
                         public_dns: public_dns.clone(),
+                        private_ip: Some(private_ip.clone()),
                         nickname: name.clone(),
                         ssh: None,
                         _tsunami: Default::default(),

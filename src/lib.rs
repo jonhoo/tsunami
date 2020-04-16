@@ -109,6 +109,8 @@ pub struct Machine<'tsunami> {
     pub nickname: String,
     /// The public IP address of the machine.
     pub public_ip: String,
+    /// The private IP address of the machine, if available.
+    pub private_ip: Option<String>,
     /// The public DNS name of the machine.
     ///
     /// If the instance doesn't have a DNS name, this field will be

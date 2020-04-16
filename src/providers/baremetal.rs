@@ -190,6 +190,7 @@ impl super::Launcher for Machine {
             nickname: self.name.clone(),
             public_dns: addr.to_string(),
             public_ip: addr.ip().to_string(),
+            private_ip: None,
             ssh: None,
             _tsunami: Default::default(),
         };

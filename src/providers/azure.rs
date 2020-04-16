@@ -313,6 +313,7 @@ impl super::Launcher for RegionLauncher {
                     nickname: name.clone(),
                     public_dns: ip.clone(),
                     public_ip: ip.clone(),
+                    private_ip: None,
                     ssh: None,
                     _tsunami: Default::default(),
                 };
