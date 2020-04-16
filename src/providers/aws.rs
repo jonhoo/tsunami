@@ -391,9 +391,9 @@ where
 
 #[derive(Debug, Clone)]
 struct IpInfo {
-    dns: String,
-    pub_ip: String,
-    priv_ip: String,
+    public_dns: String,
+    public_ip: String,
+    private_ip: String,
 }
 
 #[derive(Debug, Clone)]
@@ -935,9 +935,9 @@ impl RegionLauncher {
 
                             let tag_setup = self.instances.get_mut(&instance_id).unwrap();
                             tag_setup.ipinfo = Some(IpInfo {
-                                pub_ip: public_ip.clone(),
-                                dns: public_dns.clone(),
-                                priv_ip: private_ip.clone(),
+                                public_ip: public_ip.clone(),
+                                public_dns: public_dns.clone(),
+                                private_ip: private_ip.clone(),
                             });
                         }
                         _ => {
@@ -958,7 +958,7 @@ impl RegionLauncher {
         self.instances
             .par_iter()
             .try_for_each(|(_instance_id, TaggedSetup { ipinfo, name, setup })| {
-                let IpInfo { pub_ip, .. } = ipinfo.as_ref().unwrap();
+                let IpInfo { public_ip, .. } = ipinfo.as_ref().unwrap();
                 if let Setup {
                     username,
                     setup: Some(f),
@@ -968,7 +968,7 @@ impl RegionLauncher {
                     super::setup_machine(
                         log,
                         &name,
-                        &pub_ip,
+                        &public_ip,
                         &username,
                         max_wait,
                         Some(private_key_path.path()),
@@ -992,9 +992,9 @@ impl RegionLauncher {
                     name,
                     setup: Setup { username, .. },
                     ipinfo: Some(IpInfo {
-                        dns: public_dns,
-                        pub_ip: public_ip,
-                        priv_ip: private_ip,
+                        public_dns,
+                        public_ip,
+                        private_ip,
                     }),
                 } => {
                     let mut m = Machine {
