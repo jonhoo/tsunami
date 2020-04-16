@@ -1,14 +1,17 @@
 //! `tsunami` provides an interface for running short-lived jobs and experiments on cloud
 //! instances.
 //!
-//! Most interaction with this library happens through
-//! [`TsunamiBuilder`](struct.TsunamiBuilder.html) and [`Tsunami`](struct.Tsunami.html).
+//! Most interaction with this library happens through [`TsunamiBuilder`](struct.TsunamiBuilder.html).
+//! The high-level flow is to create a provider-specific `Launcher`, then use `TsunamiBuilder` to
+//! spawn machines into it. The machines can then be accessed via `Launcher::connect_all`.
 //!
 //! # Example
 //!
 //! ```rust,no_run
 //! use tsunami::TsunamiBuilder;
-//! use tsunami::providers::{Launcher, aws, azure};
+//! use tsunami::providers::{aws, azure};
+//! // Note that this is necessary to get ssh access to the machines, via `connect_all()`
+//! use tsunami::providers::{Launcher};
 //! use rusoto_core::{credential::DefaultCredentialsProvider, Region as AWSRegion};
 //! use azure::Region as AzureRegion;
 //! fn main() -> Result<(), failure::Error> {
