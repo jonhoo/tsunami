@@ -76,13 +76,6 @@ use std::io::Write;
 use std::sync::Arc;
 use std::{thread, time};
 
-/// Marker type for [`Setup`] indicating that it does not have the given field.
-#[derive(Clone, Copy, Debug)]
-pub struct No;
-/// Marker type for [`Setup`] indicating that it has the given field.
-#[derive(Clone, Copy, Debug)]
-pub struct Yes;
-
 /// Available configurations of availability zone specifiers.
 ///
 /// See [the aws docs](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#using-regions-availability-zones-launching) for more information.
@@ -113,18 +106,17 @@ impl Default for AvailabilityZoneSpec {
 /// to change these defaults.
 #[derive(Clone, Educe)]
 #[educe(Debug)]
-pub struct Setup<HasAmi = Yes, HasUsername = Yes> {
+pub struct Setup {
     region: Region,
     availability_zone: AvailabilityZoneSpec,
     instance_type: String,
-    ami: Option<String>,
+    ami: String,
     username: String,
     #[educe(Debug(ignore))]
     setup: Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
-    _phantom: std::marker::PhantomData<(HasAmi, HasUsername)>,
 }
 
-impl super::MachineSetup for Setup<Yes, Yes> {
+impl super::MachineSetup for Setup {
     type Region = String;
 
     fn region(&self) -> Self::Region {
@@ -136,21 +128,20 @@ impl super::MachineSetup for Setup<Yes, Yes> {
     }
 }
 
-impl Default for Setup<Yes, Yes> {
+impl Default for Setup {
     fn default() -> Self {
         Setup {
             region: Region::UsEast1,
             availability_zone: AvailabilityZoneSpec::Any,
             instance_type: "t3.small".into(),
-            ami: Some(UbuntuAmi::from(Region::UsEast1).into()),
+            ami: UbuntuAmi::from(Region::UsEast1).into(),
             username: "ubuntu".into(),
             setup: None,
-            _phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl<A, B> Setup<A, B> {
+impl Setup {
     /// Set up the machine in a specific EC2
     /// [`Region`](http://rusoto.github.io/rusoto/rusoto_core/region/enum.Region.html).
     ///
@@ -159,23 +150,30 @@ impl<A, B> Setup<A, B> {
     ///
     /// AMIs are region-specific. This will overwrite the ami field to
     /// the Ubuntu 18.04 LTS AMI in the selected region.
-    pub fn region_with_ubuntu_ami(mut self, region: Region) -> Setup<Yes, Yes> {
+    pub fn region_with_ubuntu_ami(mut self, region: Region) -> Self {
         self.region = region.clone();
         let ami: String = UbuntuAmi::from(region).into();
-        self.ami(ami).username("ubuntu")
+        self.ami(ami, "ubuntu")
+    }
+
+    /// Set the username used to ssh into the machine.
+    ///
+    /// If the user sets a custom AMI, they must call this method to
+    /// set a username.
+    pub fn username(self, username: impl ToString) -> Self {
+        Self {
+            username: username.to_string(),
+            ..self
+        }
     }
 
     /// The new instance will start out in the state dictated by the Amazon Machine Image specified
     /// in `ami`. Default is Ubuntu 18.04 LTS.
-    pub fn ami(self, ami: impl ToString) -> Setup<Yes, No> {
-        Setup {
-            region: self.region,
-            availability_zone: self.availability_zone,
-            instance_type: self.instance_type,
-            ami: Some(ami.to_string()),
-            username: "".to_string(),
-            setup: self.setup,
-            _phantom: std::marker::PhantomData,
+    pub fn ami(self, ami: impl ToString, username: impl ToString) -> Self {
+        Self {
+            ami: ami.to_string(),
+            username: username.to_string(),
+            ..self
         }
     }
 
@@ -221,18 +219,12 @@ impl<A, B> Setup<A, B> {
     /// The default region is us-east-1. [Available regions are listed
     /// here](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#concepts-available-regions)
     ///
-    /// AMIs are region-specific.
-    /// This will clear the AMI field, which must be set for this struct to be useful.
-    pub fn region(self, region: Region) -> Setup<No, No> {
-        Setup {
-            region,
-            availability_zone: self.availability_zone,
-            instance_type: self.instance_type,
-            ami: None,
-            username: "".into(),
-            setup: self.setup,
-            _phantom: std::marker::PhantomData,
-        }
+    /// AMIs are region-specific. Therefore, when changing the region a new ami must be given, with
+    /// a corresponding username. For a shortcut helper function that provides an Ubunti ami, see
+    /// `region_with_ubuntu_ami`.
+    pub fn region(mut self, region: Region, ami: impl ToString, username: impl ToString) -> Self {
+        self.region = region;
+        self.ami(ami, username)
     }
 
     /// Set up the machine in a specific EC2 availability zone.
@@ -243,24 +235,6 @@ impl<A, B> Setup<A, B> {
         Self {
             availability_zone: az,
             ..self
-        }
-    }
-}
-
-impl<A> Setup<Yes, A> {
-    /// Set the username used to ssh into the machine.
-    ///
-    /// If the user sets a custom AMI, they must call this method to
-    /// set a username.
-    pub fn username(self, username: impl ToString) -> Setup<Yes, Yes> {
-        Setup {
-            region: self.region,
-            availability_zone: self.availability_zone,
-            instance_type: self.instance_type,
-            ami: self.ami,
-            username: username.to_string(),
-            setup: self.setup,
-            _phantom: std::marker::PhantomData,
         }
     }
 }
@@ -657,17 +631,14 @@ impl RegionLauncher {
             .map(|(name, m)| {
                 // attach labels (ami name, instance type):
                 // the only fields that vary between tsunami spot instance requests
-                (
-                    (m.ami.as_ref().unwrap().clone(), m.instance_type.clone()),
-                    (name, m),
-                )
+                ((m.ami.clone(), m.instance_type.clone()), (name, m))
             })
             .into_group_map()
         // group by the labels
         {
             // and issue one spot request per group
             let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
-            launch.image_id = Some(reqs[0].1.ami.as_ref().unwrap().clone());
+            launch.image_id = Some(reqs[0].1.ami.clone());
             launch.instance_type = Some(reqs[0].1.instance_type.clone());
             launch.placement = {
                 if let AvailabilityZoneSpec::Any = self.availability_zone {
@@ -1136,7 +1107,12 @@ mod test {
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         let region = Region::UsEast1;
         let provider = DefaultCredentialsProvider::new()?;
-        let ec2 = RegionLauncher::connect(region, provider, test_logger())?;
+        let ec2 = RegionLauncher::connect(
+            region,
+            super::AvailabilityZoneSpec::Any,
+            provider,
+            test_logger(),
+        )?;
         rt.block_on(async {
             let mut ec2 = ec2.make_ssh_key().await?;
             println!("==> key name: {}", ec2.ssh_key_name);
@@ -1169,7 +1145,14 @@ mod test {
 
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let mut ec2 = RegionLauncher::new(region, provider, false, logger.clone()).await?;
+            let mut ec2 = RegionLauncher::new(
+                region,
+                super::AvailabilityZoneSpec::Any,
+                provider,
+                false,
+                logger.clone(),
+            )
+            .await?;
 
             use super::Setup;
 
