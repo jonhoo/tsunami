@@ -113,6 +113,7 @@ fn setup_machine(
         nickname: Default::default(),
         public_dns: pub_ip.to_string(),
         public_ip: pub_ip.to_string(),
+        private_ip: None,
         ssh: None,
         _tsunami: Default::default(),
     };

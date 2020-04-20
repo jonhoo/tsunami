@@ -93,6 +93,7 @@ fn try_addrs(
             nickname: Default::default(),
             public_dns: addr.to_string(),
             public_ip: addr.to_string(),
+            private_ip: None,
             ssh: None,
             _tsunami: Default::default(),
         };
@@ -162,6 +163,7 @@ impl super::Launcher for Machine {
                 nickname: Default::default(),
                 public_dns: addr.to_string(),
                 public_ip: addr.to_string(),
+                private_ip: None,
                 ssh: None,
                 _tsunami: Default::default(),
             };
