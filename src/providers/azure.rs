@@ -211,11 +211,17 @@ impl super::Launcher for Launcher {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+struct IpInfo {
+    public_ip: String,
+    private_ip: String,
+}
+
+#[derive(Debug, Clone)]
 struct Descriptor {
     name: String,
     username: String,
-    ip: String,
+    ip: IpInfo,
 }
 
 /// Region-specific connection to Azure.
@@ -261,13 +267,13 @@ impl super::Launcher for RegionLauncher {
         self.log = Some(l.log);
         let log = self.log.as_ref().unwrap();
         let max_wait = l.max_wait;
-        let vms: Result<Vec<(String, String, _)>, Error> = l.machines
+        let vms: Result<Vec<(String, IpInfo, _)>, Error> = l.machines
             .into_iter()
             .map(|(nickname, desc)| {
                 let vm_name = super::rand_name_sep("vm", "-");
                 debug!(log, "setting up azure instance"; "nickname" => &nickname, "vm_name" => &vm_name);
 
-                let pub_ip = azcmd::create_vm(
+                let ipinfo = azcmd::create_vm(
                     &self.resource_group_name,
                     &vm_name,
                     &desc.instance_type,
@@ -277,13 +283,13 @@ impl super::Launcher for RegionLauncher {
 
                 azcmd::open_ports(&self.resource_group_name, &vm_name)?;
 
-                Ok((nickname, pub_ip, desc))
+                Ok((nickname, ipinfo, desc))
             }).collect();
 
         use rayon::prelude::*;
         self.machines = vms?
             .into_par_iter()
-            .map(|(nickname, pub_ip, desc)| {
+            .map(|(nickname, ip @ IpInfo { .. }, desc)| {
                 if let Setup {
                     ref username,
                     setup_fn: Some(ref f),
@@ -293,7 +299,7 @@ impl super::Launcher for RegionLauncher {
                     super::setup_machine(
                         log,
                         &nickname,
-                        &pub_ip,
+                        &ip.public_ip,
                         &username,
                         max_wait,
                         None,
@@ -304,7 +310,7 @@ impl super::Launcher for RegionLauncher {
                 Ok(Descriptor {
                     name: nickname,
                     username: desc.username,
-                    ip: pub_ip,
+                    ip,
                 })
             })
             .collect::<Result<Vec<Descriptor>, Error>>()?;
@@ -317,12 +323,20 @@ impl super::Launcher for RegionLauncher {
         self.machines
             .iter()
             .map(|desc| {
-                let Descriptor { name, username, ip } = desc;
+                let Descriptor {
+                    name,
+                    username,
+                    ip:
+                        IpInfo {
+                            public_ip,
+                            private_ip,
+                        },
+                } = desc;
                 let mut m = crate::Machine {
                     nickname: name.clone(),
-                    public_dns: ip.clone(),
-                    public_ip: ip.clone(),
-                    private_ip: None,
+                    public_dns: public_ip.clone(),
+                    public_ip: public_ip.clone(),
+                    private_ip: Some(private_ip.clone()),
                     ssh: None,
                     _tsunami: Default::default(),
                 };
@@ -504,12 +518,13 @@ mod azcmd {
         size: &str,
         image: &str,
         username: &str,
-    ) -> Result<String, Error> {
+    ) -> Result<IpInfo, Error> {
         #[allow(non_snake_case)]
         #[derive(Debug, Deserialize, Serialize)]
         struct VmCreateOut {
             powerState: String,
             publicIpAddress: String,
+            privateIpAddress: String,
             resourceGroup: String,
         }
 
@@ -539,7 +554,10 @@ mod azcmd {
         let vm: VmCreateOut = serde_json::from_slice(&out.stdout)?;
         ensure!(vm.powerState == "VM running", "VM power state incorrect");
         ensure!(vm.resourceGroup == rg, "VM resource group incorrect");
-        Ok(vm.publicIpAddress)
+        Ok(IpInfo {
+            public_ip: vm.publicIpAddress,
+            private_ip: vm.privateIpAddress,
+        })
     }
 
     pub(crate) fn open_ports(rg: &str, vm_name: &str) -> Result<(), Error> {
