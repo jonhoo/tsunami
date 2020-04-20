@@ -459,7 +459,7 @@ impl std::str::FromStr for Region {
             "southafricanorth" => Region::SouthAfricaNorth,
             "uaenorth" => Region::UaeNorth,
             "germanywestcentral" => Region::GermanyWestCentral,
-            u => bail!("Unknown azure region {}", u),
+            u => bail!("Unknown azure region {}. Valid regions: eastus, eastus2, westus, centralus, northcentralus, southcentralus, northeurope, westeurope, eastasia, southeastasia, japaneast, japanwest, australiaeast, australiasoutheast, australiacentral, brazilsouth, southindia, centralindia, westindia, canadacentral, canadaeast, westus2, westcentralus, uksouth, ukwest, koreacentral, koreasouth, francecentral, southafricanorth, uaenorth, germanywestcentral", u),
         })
     }
 }
