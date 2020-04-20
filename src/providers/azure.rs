@@ -212,7 +212,7 @@ impl super::Launcher for Launcher {
 }
 
 #[derive(Debug, Clone)]
-struct IpInfo {
+pub(crate) struct IpInfo {
     public_ip: String,
     private_ip: String,
 }
@@ -480,6 +480,7 @@ impl std::str::FromStr for Region {
 
 mod azcmd {
     use super::Error;
+    use super::IpInfo;
     use super::Region;
     use failure::ResultExt;
     use serde::{Deserialize, Serialize};
