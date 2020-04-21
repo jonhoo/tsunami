@@ -21,12 +21,9 @@
 //! ```rust,no_run
 //! use tsunami::providers::{azure, Launcher};
 //! use azure::Region;
-//! use tsunami::TsunamiBuilder;
 //!
-//! let mut b = TsunamiBuilder::default();
-//! b.add("my machine", azure::Setup::default()).unwrap();
 //! let mut l = azure::Launcher::default();
-//! b.spawn(&mut l).unwrap();
+//! l.spawn(vec![(String::from("my machine"), azure::Setup::default())], None, None).unwrap();
 //! let vms = l.connect_all().unwrap();
 //! let my_machine = vms.get("my machine").unwrap();
 //! let out = my_machine
@@ -41,15 +38,10 @@
 //! println!("{}", stdout);
 //! ```
 //! ```rust,no_run
-//! use tsunami::TsunamiBuilder;
 //! use tsunami::providers::{Launcher, azure};
 //! fn main() -> Result<(), failure::Error> {
 //!     // Initialize Azure
 //!     let mut azure = azure::Launcher::default();
-//!
-//!     // Initialize a TsunamiBuilder
-//!     let mut tb = TsunamiBuilder::default();
-//!     tb.use_term_logger();
 //!
 //!     // Create a machine descriptor and add it to the Tsunami
 //!     let m = azure::Setup::default()
@@ -60,10 +52,9 @@
 //!                 .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status()?;
 //!             Ok(())
 //!         });
-//!     tb.add("my_vm", m);
 //!
 //!     // Launch the VM
-//!     tb.spawn(&mut azure)?;
+//!     azure.spawn(vec![(String::from("my_vm"), m)], None, None)?;
 //!
 //!     // SSH to the VM and run a command on it
 //!     let vms = azure.connect_all()?;

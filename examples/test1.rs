@@ -3,7 +3,7 @@ extern crate tsunami;
 use rusoto_core::Region;
 use slog::{info, warn};
 use tsunami::providers::{aws, Launcher};
-use tsunami::{Machine, TsunamiBuilder};
+use tsunami::Machine;
 
 fn ping(from: &Machine, to: &Machine, log: &slog::Logger) -> Result<(), failure::Error> {
     let to_ip = &to.public_ip;
@@ -21,37 +21,42 @@ fn ping(from: &Machine, to: &Machine, log: &slog::Logger) -> Result<(), failure:
 }
 
 fn main() -> Result<(), failure::Error> {
-    let mut b = TsunamiBuilder::default();
-    b.use_term_logger()
-        .timeout(std::time::Duration::from_secs(30));
+    let ms = vec![
+        (
+            String::from("east"),
+            aws::Setup::default()
+                .region_with_ubuntu_ami(Region::UsEast1)
+                .setup(|ssh, log| {
+                    if let Err(e) = ssh.command("sudo").arg("apt").arg("update").status() {
+                        warn!(&log, "apt update failed"; "err" => ?e);
+                    };
 
-    let m = aws::Setup::default()
-        .region_with_ubuntu_ami(Region::UsEast1)
-        .setup(|ssh, log| {
-            if let Err(e) = ssh.command("sudo").arg("apt").arg("update").status() {
-                warn!(&log, "apt update failed"; "err" => ?e);
-            };
+                    Ok(())
+                }),
+        ),
+        (
+            String::from("india"),
+            aws::Setup::default()
+                .region_with_ubuntu_ami(Region::ApSouth1)
+                .instance_type("t3.small")
+                .setup(|ssh, log| {
+                    if let Err(e) = ssh.command("sudo").arg("apt").arg("update").status() {
+                        warn!(&log, "apt update failed"; "err" => ?e);
+                    };
 
-            Ok(())
-        });
-    b.add("east", m).unwrap();
+                    Ok(())
+                }),
+        ),
+    ];
 
-    let m = aws::Setup::default()
-        .region_with_ubuntu_ami(Region::ApSouth1)
-        .instance_type("t3.small")
-        .setup(|ssh, log| {
-            if let Err(e) = ssh.command("sudo").arg("apt").arg("update").status() {
-                warn!(&log, "apt update failed"; "err" => ?e);
-            };
-
-            Ok(())
-        });
-    b.add("india", m).unwrap();
-
+    let log = tsunami::get_term_logger();
     let mut l: tsunami::providers::aws::Launcher<_> = Default::default();
+    l.spawn(
+        ms,
+        Some(std::time::Duration::from_secs(30)),
+        Some(log.clone()),
+    )?;
 
-    let log = b.logger();
-    b.spawn(&mut l)?;
     let vms = l.connect_all()?;
 
     let east = vms.get("east").unwrap();

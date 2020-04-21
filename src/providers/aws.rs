@@ -7,17 +7,14 @@
 //! This implementation uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
 //! instances.
 //!
-//! # Example
+//! # Examples
 //! ```rust,no_run
 //! use tsunami::providers::{aws, Launcher};
-//! use tsunami::TsunamiBuilder;
 //!
-//! let mut b = TsunamiBuilder::default();
-//! b.add("my machine", aws::Setup::default()).unwrap();
 //! let mut l = aws::Launcher::default();
 //! // make the defined-duration instances expire after 1 hour
 //! l.set_max_instance_duration(1);
-//! b.spawn(&mut l).unwrap();
+//! l.spawn(vec![(String::from("my machine"), aws::Setup::default())], None, None).unwrap();
 //! let vms = l.connect_all().unwrap();
 //! let my_machine = vms.get("my machine").unwrap();
 //! let out = my_machine
@@ -32,7 +29,6 @@
 //! println!("{}", stdout);
 //! ```
 //! ```rust,no_run
-//! use tsunami::TsunamiBuilder;
 //! use tsunami::providers::{Launcher, aws};
 //! use rusoto_core::{credential::DefaultCredentialsProvider, Region};
 //! fn main() -> Result<(), failure::Error> {
@@ -41,10 +37,6 @@
 //!     // make the defined-duration instances expire after 1 hour
 //!     // default is the maximum (6 hours)
 //!     aws.set_max_instance_duration(1).open_ports();
-//!
-//!     // Initialize a TsunamiBuilder
-//!     let mut tb = TsunamiBuilder::default();
-//!     tb.use_term_logger();
 //!
 //!     // Create a machine descriptor and add it to the Tsunami
 //!     let m = aws::Setup::default()
@@ -55,10 +47,9 @@
 //!                 .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status()?;
 //!             Ok(())
 //!         });
-//!     tb.add("my_vm", m);
 //!
 //!     // Launch the VM
-//!     tb.spawn(&mut aws)?;
+//!     aws.spawn(vec![(String::from("my_vm"), m)], None, None)?;
 //!
 //!     // SSH to the VM and run a command on it
 //!     let vms = aws.connect_all()?;
@@ -1130,14 +1121,10 @@ mod test {
     #[ignore]
     fn make_machine_and_ssh() {
         use crate::providers::{aws, Launcher};
-        use crate::TsunamiBuilder;
-
-        let mut b = TsunamiBuilder::default();
-        b.add("my machine", aws::Setup::default()).unwrap();
         let mut l = aws::Launcher::default();
         // make the defined-duration instances expire after 1 hour
         l.set_max_instance_duration(1);
-        b.spawn(&mut l).unwrap();
+        l.spawn(vec![(String::from("my machine"), aws::Setup::default())], None, None).unwrap();
         let vms = l.connect_all().unwrap();
         let my_machine = vms.get("my machine").unwrap();
         let out = my_machine
