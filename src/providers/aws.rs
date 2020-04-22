@@ -9,29 +9,35 @@
 //!
 //! # Examples
 //! ```rust,no_run
-//! use tsunami::providers::{aws, Launcher};
+//! #[tokio::main]
+//! async fn main() {
+//!     use tsunami::providers::{aws, Launcher};
 //!
-//! let mut l = aws::Launcher::default();
-//! // make the defined-duration instances expire after 1 hour
-//! l.set_max_instance_duration(1);
-//! l.spawn(vec![(String::from("my machine"), aws::Setup::default())], None, None).unwrap();
-//! let vms = l.connect_all().unwrap();
-//! let my_machine = vms.get("my machine").unwrap();
-//! let out = my_machine
-//!     .ssh
-//!     .as_ref()
-//!     .unwrap()
-//!     .command("echo")
-//!     .arg("\"Hello, EC2\"")
-//!     .output()
-//!     .unwrap();
-//! let stdout = std::string::String::from_utf8(out.stdout).unwrap();
-//! println!("{}", stdout);
+//!     let mut l = aws::Launcher::default();
+//!     // make the defined-duration instances expire after 1 hour
+//!     l.set_max_instance_duration(1);
+//!     l.spawn(vec![(String::from("my machine"), aws::Setup::default())], None, None)
+//!         .await.unwrap();
+//!     let vms = l.connect_all().await.unwrap();
+//!     let my_machine = vms.get("my machine").unwrap();
+//!     let out = my_machine
+//!         .ssh
+//!         .as_ref()
+//!         .unwrap()
+//!         .command("echo")
+//!         .arg("\"Hello, EC2\"")
+//!         .output()
+//!         .await
+//!         .unwrap();
+//!     let stdout = std::string::String::from_utf8(out.stdout).unwrap();
+//!     println!("{}", stdout);
+//! }
 //! ```
 //! ```rust,no_run
 //! use tsunami::providers::{Launcher, aws};
 //! use rusoto_core::{credential::DefaultCredentialsProvider, Region};
-//! fn main() -> Result<(), failure::Error> {
+//! #[tokio::main]
+//! async fn main() -> Result<(), failure::Error> {
 //!     // Initialize AWS
 //!     let mut aws = aws::Launcher::default();
 //!     // make the defined-duration instances expire after 1 hour
@@ -42,22 +48,24 @@
 //!     let m = aws::Setup::default()
 //!         .region_with_ubuntu_ami(Region::UsWest1) // default is UsEast1
 //!         .setup(|ssh, _| { // default is a no-op
-//!             ssh.command("sudo").arg("apt").arg("update").status()?;
-//!             ssh.command("bash").arg("-c")
-//!                 .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status()?;
-//!             Ok(())
+//!             Box::pin(async move {
+//!                 ssh.command("sudo").arg("apt").arg("update").status().await?;
+//!                 ssh.command("bash").arg("-c")
+//!                     .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status().await?;
+//!                 Ok(())
+//!             })
 //!         });
 //!
 //!     // Launch the VM
-//!     aws.spawn(vec![(String::from("my_vm"), m)], None, None)?;
+//!     aws.spawn(vec![(String::from("my_vm"), m)], None, None).await?;
 //!
 //!     // SSH to the VM and run a command on it
-//!     let vms = aws.connect_all()?;
+//!     let vms = aws.connect_all().await?;
 //!     let my_vm = vms.get("my_vm").unwrap();
 //!     println!("public ip: {}", my_vm.public_ip);
 //!     let ssh = my_vm.ssh.as_ref().unwrap();
-//!     ssh.command("git").arg("clone").arg("https://github.com/jonhoo/tsunami").status()?;
-//!     ssh.command("bash").arg("-c").arg("\"cd tsunami && cargo build\"").status()?;
+//!     ssh.command("git").arg("clone").arg("https://github.com/jonhoo/tsunami").status().await?;
+//!     ssh.command("bash").arg("-c").arg("\"cd tsunami && cargo build\"").status().await?;
 //!     Ok(())
 //! }
 //! ```
@@ -115,7 +123,7 @@ pub struct Setup {
     ami: String,
     username: String,
     #[educe(Debug(ignore))]
-    setup: Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
+    setup_fn: Option<Arc<dyn for<'r> Fn(&'r mut ssh::Session, &'r slog::Logger) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>> + Send + Sync + 'static>>,
 }
 
 impl super::MachineSetup for Setup {
@@ -138,7 +146,7 @@ impl Default for Setup {
             instance_type: "t3.small".into(),
             ami: UbuntuAmi::from(Region::UsEast1).into(),
             username: "ubuntu".into(),
-            setup: None,
+            setup_fn: None,
         }
     }
 }
@@ -201,17 +209,24 @@ impl Setup {
     /// use tsunami::providers::aws::Setup;
     ///
     /// let m = Setup::default()
-    ///     .setup(|ssh, log| {
+    ///     .setup(|ssh, log| { Box::pin(async move {
     ///         slog::info!(log, "running setup!");
-    ///         ssh.command("sudo").arg("apt").arg("update").status()?;
+    ///         ssh.command("sudo").arg("apt").arg("update").status().await?;
     ///         Ok(())
-    ///     });
+    ///     })});
     /// ```
     pub fn setup(
         mut self,
-        setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
+        setup: impl for<'r> Fn(
+                &'r mut ssh::Session,
+                &'r slog::Logger,
+            )
+                -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+            + Send 
+            + Sync
+            + 'static,
     ) -> Self {
-        self.setup = Some(Arc::new(setup));
+        self.setup_fn = Some(Arc::new(setup));
         self
     }
 
@@ -314,41 +329,27 @@ impl<P> Launcher<P> {
 
 impl<P> Drop for Launcher<P> {
     fn drop(&mut self) {
-        unimplemented!()
-
-        /*
         if self.regions.is_empty() {
             return;
         }
 
-        // This is ok because there are three ways to get to this method.
-        // 1. launch() was called, and there are regions to shut down. In this case, launch() made
-        //    a new Runtime, which we can now use.
-        // 2. with_credentials() was called, and this is the old, discarded Self being dropped. In
-        //    that case, regions.drain() happened, the above regions.is_empty() check ensures we
-        //    never get to this point.
-        // 3. A no-op happened (launch() was not called at all). Again, regions.is_empty() will be
-        //    true since regions can only be populated in launch().
-        let rt = self.rt.as_mut().expect("Launch tokio runtime");
-        rt.block_on(futures_util::future::join_all(
-            self.regions
-                .drain()
-                .map(|(_, mut rl)| async move { rl.shutdown().await }),
-        ));
-        */
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(futures_util::future::join_all(
+                self.regions
+                    .drain()
+                    .map(|(_, mut rl)| async move { rl.shutdown().await }),
+            ));
+        }
     }
 }
 
-impl<'l, P> super::Launcher<'l> for Launcher<P>
+impl<P> super::Launcher for Launcher<P>
 where
     P: ProvideAwsCredentials + Send + Sync + 'static,
 {
     type MachineDescriptor = Setup;
-    type LaunchFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>>;
-    type ConnectFuture =
-        Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
 
-    fn launch(&'l mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Self::LaunchFuture {
+    fn launch<'l>(&'l mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
         Box::pin(async move {
             let prov = (*self.credential_provider)()?;
             let Self {
@@ -379,9 +380,9 @@ where
         })
     }
 
-    fn connect_all(
+    fn connect_all<'l>(
         &'l self,
-    ) -> Self::ConnectFuture {
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>> {
         Box::pin(async move {
             collect!(self.regions)
         })
@@ -959,7 +960,7 @@ impl RegionLauncher {
                 let IpInfo { public_ip, .. } = ipinfo.as_ref().unwrap();
                 if let Setup {
                     username,
-                    setup: Some(f),
+                    setup_fn: Some(f),
                     ..
                 } = setup
                 {
@@ -1121,11 +1122,13 @@ mod test {
     #[ignore]
     fn make_machine_and_ssh() {
         use crate::providers::{aws, Launcher};
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
         let mut l = aws::Launcher::default();
         // make the defined-duration instances expire after 1 hour
         l.set_max_instance_duration(1);
-        l.spawn(vec![(String::from("my machine"), aws::Setup::default())], None, None).unwrap();
-        let vms = l.connect_all().unwrap();
+        rt.block_on(async move {
+        l.spawn(vec![(String::from("my machine"), aws::Setup::default())], None, None).await.unwrap();
+        let vms = l.connect_all().await.unwrap();
         let my_machine = vms.get("my machine").unwrap();
         let out = my_machine
             .ssh
@@ -1133,12 +1136,13 @@ mod test {
             .unwrap()
             .command("echo")
             .arg("\"Hello, EC2\"")
-            .output()
+            .output().await
             .unwrap();
         let stdout = std::string::String::from_utf8(out.stdout).unwrap();
         let stderr = std::string::String::from_utf8(out.stderr).unwrap();
         println!("{}", stdout);
         println!("{}", stderr);
+        })
     }
 
     #[test]

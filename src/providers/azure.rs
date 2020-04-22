@@ -22,24 +22,29 @@
 //! use tsunami::providers::{azure, Launcher};
 //! use azure::Region;
 //!
-//! let mut l = azure::Launcher::default();
-//! l.spawn(vec![(String::from("my machine"), azure::Setup::default())], None, None).unwrap();
-//! let vms = l.connect_all().unwrap();
-//! let my_machine = vms.get("my machine").unwrap();
-//! let out = my_machine
-//!     .ssh
-//!     .as_ref()
-//!     .unwrap()
-//!     .command("echo")
-//!     .arg("\"Hello, Azure\"")
-//!     .output()
-//!     .unwrap();
-//! let stdout = std::string::String::from_utf8(out.stdout).unwrap();
-//! println!("{}", stdout);
+//! #[tokio::main]
+//! async fn main() {
+//!     let mut l = azure::Launcher::default();
+//!     l.spawn(vec![(String::from("my machine"), azure::Setup::default())], None, None).await.unwrap();
+//!     let vms = l.connect_all().await.unwrap();
+//!     let my_machine = vms.get("my machine").unwrap();
+//!     let out = my_machine
+//!         .ssh
+//!         .as_ref()
+//!         .unwrap()
+//!         .command("echo")
+//!         .arg("\"Hello, Azure\"")
+//!         .output()
+//!         .await
+//!         .unwrap();
+//!     let stdout = std::string::String::from_utf8(out.stdout).unwrap();
+//!     println!("{}", stdout);
+//! }
 //! ```
 //! ```rust,no_run
 //! use tsunami::providers::{Launcher, azure};
-//! fn main() -> Result<(), failure::Error> {
+//! #[tokio::main]
+//! async fn main() -> Result<(), failure::Error> {
 //!     // Initialize Azure
 //!     let mut azure = azure::Launcher::default();
 //!
@@ -47,22 +52,24 @@
 //!     let m = azure::Setup::default()
 //!         .region(azure::Region::FranceCentral) // default is EastUs
 //!         .setup(|ssh, _| { // default is a no-op
-//!             ssh.command("sudo").arg("apt").arg("update").status()?;
-//!             ssh.command("bash").arg("-c")
-//!                 .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status()?;
-//!             Ok(())
+//!             Box::pin(async move {
+//!                 ssh.command("sudo").arg("apt").arg("update").status().await?;
+//!                 ssh.command("bash").arg("-c")
+//!                     .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status().await?;
+//!                 Ok(())
+//!             })
 //!         });
 //!
 //!     // Launch the VM
-//!     azure.spawn(vec![(String::from("my_vm"), m)], None, None)?;
+//!     azure.spawn(vec![(String::from("my_vm"), m)], None, None).await?;
 //!
 //!     // SSH to the VM and run a command on it
-//!     let vms = azure.connect_all()?;
+//!     let vms = azure.connect_all().await?;
 //!     let my_vm = vms.get("my_vm").unwrap();
 //!     println!("public ip: {}", my_vm.public_ip);
 //!     let ssh = my_vm.ssh.as_ref().unwrap();
-//!     ssh.command("git").arg("clone").arg("https://github.com/jonhoo/tsunami").status()?;
-//!     ssh.command("bash").arg("-c").arg("\"cd tsunami && cargo build\"").status()?;
+//!     ssh.command("git").arg("clone").arg("https://github.com/jonhoo/tsunami").status().await?;
+//!     ssh.command("bash").arg("-c").arg("\"cd tsunami && cargo build\"").status().await?;
 //!     Ok(())
 //! }
 //! ```
@@ -86,8 +93,15 @@ pub struct Setup {
     image: String,
     username: String,
     #[educe(Debug(ignore))]
-    setup_fn:
-        Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
+    setup_fn: Option<
+        Arc<
+            dyn for<'r> Fn(
+                &'r mut ssh::Session,
+                &'r slog::Logger,
+            )
+                -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>,
+        >,
+    >,
 }
 
 impl Default for Setup {
@@ -155,15 +169,20 @@ impl Setup {
     /// use tsunami::providers::azure::Setup;
     ///
     /// let m = Setup::default()
-    ///     .setup(|ssh, log| {
+    ///     .setup(|ssh, log| { Box::pin(async move {
     ///         slog::info!(log, "running setup!");
-    ///         ssh.command("sudo").arg("apt").arg("update").status()?;
+    ///         ssh.command("sudo").arg("apt").arg("update").status().await?;
     ///         Ok(())
-    ///     });
+    ///     })});
     /// ```
     pub fn setup(
         mut self,
-        setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
+        setup: impl for<'r> Fn(
+                &'r mut ssh::Session,
+                &'r slog::Logger,
+            ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+            + Send
+            + 'static,
     ) -> Self {
         self.setup_fn = Some(Arc::new(setup));
         self
@@ -187,16 +206,13 @@ pub struct Launcher {
     regions: HashMap<Region, RegionLauncher>,
 }
 
-impl<'l> super::Launcher<'l> for Launcher {
+impl super::Launcher for Launcher {
     type MachineDescriptor = Setup;
-    type LaunchFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>>;
-    type ConnectFuture =
-        Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
 
-    fn launch(
+    fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Self::LaunchFuture {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
         Box::pin(async move {
             azcmd::check_az().await?;
             if !self.regions.contains_key(&l.region) {
@@ -209,7 +225,10 @@ impl<'l> super::Launcher<'l> for Launcher {
         })
     }
 
-    fn connect_all(&'l self) -> Self::ConnectFuture {
+    fn connect_all<'l>(
+        &'l self,
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>
+    {
         Box::pin(async move { collect!(self.regions) })
     }
 }
@@ -263,16 +282,13 @@ impl RegionLauncher {
     }
 }
 
-impl<'l> super::Launcher<'l> for RegionLauncher {
+impl super::Launcher for RegionLauncher {
     type MachineDescriptor = Setup;
-    type LaunchFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>>;
-    type ConnectFuture =
-        Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
 
-    fn launch(
+    fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Self::LaunchFuture {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
         Box::pin(async move {
             self.log = Some(l.log);
             let log = self.log.as_ref().unwrap();
@@ -327,7 +343,10 @@ impl<'l> super::Launcher<'l> for RegionLauncher {
         })
     }
 
-    fn connect_all(&'l self) -> Self::ConnectFuture {
+    fn connect_all<'l>(
+        &'l self,
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>
+    {
         Box::pin(async move {
             let log = self.log.as_ref().expect("RegionLauncher uninitialized");
             futures_util::future::join_all(self.machines.iter().map(|desc| {
@@ -621,17 +640,24 @@ mod test {
     #[test]
     #[ignore]
     fn azure_resource_group() {
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
         static TEST_RG_NAME: &str = "test";
-        azcmd::create_resource_group(Region::EastUs, TEST_RG_NAME)
-            .expect("create resource group test failed");
+        rt.block_on(async move {
+            azcmd::create_resource_group(Region::EastUs, TEST_RG_NAME)
+                .await
+                .expect("create resource group test failed");
 
-        azcmd::delete_resource_group(TEST_RG_NAME).expect("delete resource group failed");
+            azcmd::delete_resource_group(TEST_RG_NAME)
+                .await
+                .expect("delete resource group failed");
+        })
     }
 
     #[test]
     #[ignore]
     fn azure_launch() {
         use crate::providers::{LaunchDescriptor, Launcher};
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
         let l = crate::test::test_logger();
         let m = Setup::default();
         let ld = LaunchDescriptor {
@@ -641,6 +667,8 @@ mod test {
             machines: vec![("foo".to_owned(), m)],
         };
         let mut azure = super::Launcher::default();
-        azure.launch(ld).unwrap();
+        rt.block_on(async move {
+            azure.launch(ld).await.unwrap();
+        })
     }
 }

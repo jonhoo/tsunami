@@ -7,7 +7,8 @@
 //! use tsunami::providers::{aws, azure, Launcher};
 //! use rusoto_core::{credential::DefaultCredentialsProvider, Region as AWSRegion};
 //! use azure::Region as AzureRegion;
-//! fn main() -> Result<(), failure::Error> {
+//! #[tokio::main]
+//! async fn main() -> Result<(), failure::Error> {
 //!     // Initialize AWS
 //!     let mut aws = aws::Launcher::default();
 //!     // Create an AWS machine descriptor and add it to the AWS Tsunami
@@ -16,12 +17,14 @@
 //!         aws::Setup::default()
 //!             .region_with_ubuntu_ami(AWSRegion::UsWest1) // default is UsEast1
 //!             .setup(|ssh, _| { // default is a no-op
-//!                 ssh.command("sudo").arg("apt").arg("update").status()?;
-//!                 ssh.command("bash").arg("-c")
-//!                     .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status()?;
-//!                 Ok(())
+//!                 Box::pin(async move {
+//!                     ssh.command("sudo").arg("apt").arg("update").status().await?;
+//!                     ssh.command("bash").arg("-c")
+//!                         .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status().await?;
+//!                     Ok(())
+//!                 })
 //!             })
-//!     )], None, None)?;
+//!     )], None, None).await?;
 //!
 //!     // Initialize Azure
 //!     let mut azure = azure::Launcher::default();
@@ -31,16 +34,18 @@
 //!         azure::Setup::default()
 //!             .region(AzureRegion::FranceCentral) // default is EastUs
 //!             .setup(|ssh, _| { // default is a no-op
-//!                 ssh.command("sudo").arg("apt").arg("update").status()?;
-//!                 ssh.command("bash").arg("-c")
-//!                     .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status()?;
-//!                 Ok(())
+//!                 Box::pin(async move {
+//!                     ssh.command("sudo").arg("apt").arg("update").status().await?;
+//!                     ssh.command("bash").arg("-c")
+//!                         .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status().await?;
+//!                     Ok(())
+//!                 })
 //!             })
-//!     )], None, None)?;
+//!     )], None, None).await?;
 //!
 //!     // SSH to the VM and run a command on it
-//!     let aws_vms = aws.connect_all()?;
-//!     let azure_vms = azure.connect_all()?;
+//!     let aws_vms = aws.connect_all().await?;
+//!     let azure_vms = azure.connect_all().await?;
 //!
 //!     let vms = aws_vms.into_iter().chain(azure_vms.into_iter());
 //!
@@ -104,6 +109,7 @@ pub struct Machine<'tsunami> {
 }
 
 impl<'t> Machine<'t> {
+    #[cfg(any(feature = "aws", feature = "azure", feature = "baremetal"))]
     async fn connect_ssh(
         &mut self,
         log: &slog::Logger,
@@ -152,16 +158,17 @@ pub fn get_term_logger() -> slog::Logger {
 ///
 /// The `nickname_prefix` is used to name the machines, indexed from 0 to `n`:
 /// ```rust,no_run
-/// fn main() -> Result<(), failure::Error> {
+/// #[tokio::main]
+/// async fn main() -> Result<(), failure::Error> {
 ///     use tsunami::{make_multiple, get_term_logger, providers::{Launcher, aws::{self, Setup}}};
 ///     let mut aws: aws::Launcher<_> = Default::default();
 ///     aws.spawn(
 ///         make_multiple(3, "my_tsunami", Setup::default()),
 ///         None,
 ///         Some(get_term_logger()),
-///     )?;
+///     ).await?;
 ///
-///     let vms = aws.connect_all()?;
+///     let vms = aws.connect_all().await?;
 ///     let my_first_vm = vms.get("my_tsunami-0").unwrap();
 ///     let my_last_vm = vms.get("my_tsunami-2").unwrap();
 ///     Ok(())

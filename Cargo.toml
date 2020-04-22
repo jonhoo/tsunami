@@ -24,8 +24,8 @@ maintenance = { status = "passively-maintained" }
 [features]
 default = ["aws", "azure", "baremetal"]
 debug = ["slog/max_level_trace", "slog/release_max_level_debug"]
-aws = ["rusoto_core", "rusoto_ec2", "futures-util", "rayon", "tempfile", "tokio"]
-azure = ["serde", "serde_json", "rayon"]
+aws = ["rusoto_core", "rusoto_ec2", "futures-util", "tempfile"]
+azure = ["serde", "serde_json", "futures-util", "tokio", "tokio/process"]
 baremetal = []
 args = ["structopt"]
 
@@ -37,18 +37,18 @@ rand = "0.7"
 slog = "2.1.1"
 slog-term = "2.4.0"
 openssh = "0.5"
-rayon = { version = "1.0.0", optional = true }
 rusoto_core = { version = "0.43.0", optional = true }
 rusoto_ec2 = {version = "0.43.0", optional = true }
 futures-util = { version = "0.3.4", optional = true }
 tempfile = { version = "3.0.0", optional = true }
-tokio = { version = "0.2.0", features = ["rt-core"], optional = true }
+tokio = { version = "0.2.0", optional = true }
 serde_json = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true}
 structopt = { version = "0.2", optional = true }
 
 [dev-dependencies]
 rusoto_sts = "0.43.0"
+tokio = { version = "0.2.0", features = ["rt-core", "macros"] }
 
 [profile.release]
 debug = true
@@ -56,6 +56,3 @@ debug = true
 [[example]]
 name = "launch"
 required-features = ["args"]
-
-[patch.crates-io]
-openssh = { git = "https://github.com/jonhoo/openssh-rs", branch = "async" }

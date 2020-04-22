@@ -36,11 +36,9 @@ pub trait MachineSetup {
 
 /// Implement this trait to implement a new cloud provider for Tsunami.
 /// Tsunami will call `launch` once per unique region, as defined by `MachineSetup`.
-pub trait Launcher<'l> {
+pub trait Launcher {
     /// A type describing a single instance to launch.
     type MachineDescriptor: MachineSetup;
-    type LaunchFuture: Future<Output = Result<(), Error>> + 'l;
-    type ConnectFuture: Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l;
 
     /// Spawn the instances.
     ///
@@ -50,10 +48,15 @@ pub trait Launcher<'l> {
     /// This method can be called multiple times. Subsequent calls to
     /// `connect_all` should return the new machines as well as any previously
     /// spawned machines.
-    fn launch(&'l mut self, desc: LaunchDescriptor<Self::MachineDescriptor>) -> Self::LaunchFuture;
+    fn launch<'l>(
+        &'l mut self,
+        desc: LaunchDescriptor<Self::MachineDescriptor>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>>;
 
     /// Return connections to the [`Machine`s](crate::Machine) that `launch` spawned.
-    fn connect_all(&'l self) -> Self::ConnectFuture;
+    fn connect_all<'l>(
+        &'l self,
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
 
     /// Start up all the hosts.
     ///
@@ -70,23 +73,24 @@ pub trait Launcher<'l> {
     ///
     /// # Example
     /// ```rust,no_run
-    /// fn main() -> Result<(), failure::Error> {
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), failure::Error> {
     ///     use tsunami::providers::Launcher;
     ///     // make a launcher
     ///     let mut aws: tsunami::providers::aws::Launcher<_> = Default::default();
     ///     // spawn hosts into the launcher
-    ///     aws.spawn(vec![(String::from("my_tsunami"), Default::default())], None, None)?;
+    ///     aws.spawn(vec![(String::from("my_tsunami"), Default::default())], None, None).await?;
     ///     // access hosts via the launcher
-    ///     let vms = aws.connect_all()?;
+    ///     let vms = aws.connect_all().await?;
     ///     Ok(())
     /// }
     /// ```
-    fn spawn<'s: 'l>(
-        &'s mut self,
+    fn spawn<'l>(
+        &'l mut self,
         descriptors: impl IntoIterator<Item = (String, Self::MachineDescriptor)> + 'static,
         max_wait: Option<std::time::Duration>,
         log: Option<slog::Logger>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 's>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
         Box::pin(async move {
             let max_wait = max_wait;
             let log = log.unwrap_or_else(|| slog::Logger::root(slog::Discard, o!()));
@@ -114,6 +118,7 @@ pub trait Launcher<'l> {
     }
 }
 
+#[cfg(any(feature = "aws", feature = "azure"))]
 macro_rules! collect {
     ($x: expr) => {{
         Ok({
@@ -127,24 +132,29 @@ macro_rules! collect {
     }};
 }
 
+#[cfg(any(feature = "aws", feature = "azure"))]
 struct Sep(&'static str);
 
+#[cfg(any(feature = "aws", feature = "azure"))]
 impl Default for Sep {
     fn default() -> Self {
         Sep("_")
     }
 }
 
+#[cfg(any(feature = "aws", feature = "azure"))]
 impl From<&'static str> for Sep {
     fn from(s: &'static str) -> Self {
         Sep(s)
     }
 }
 
+#[cfg(any(feature = "aws", feature = "azure"))]
 fn rand_name(prefix: &str) -> String {
     rand_name_sep(prefix, "_")
 }
 
+#[cfg(any(feature = "aws", feature = "azure"))]
 fn rand_name_sep(prefix: &str, sep: impl Into<Sep>) -> String {
     use rand::Rng;
     let rng = rand::thread_rng();
@@ -163,6 +173,7 @@ pub mod azure;
 #[cfg(feature = "baremetal")]
 pub mod baremetal;
 
+#[cfg(any(feature = "aws", feature = "azure"))]
 async fn setup_machine(
     log: &slog::Logger,
     nickname: &str,
@@ -170,7 +181,10 @@ async fn setup_machine(
     username: &str,
     max_wait: Option<std::time::Duration>,
     private_key: Option<&std::path::Path>,
-    f: &dyn Fn(&mut crate::ssh::Session, &slog::Logger) -> Result<(), Error>,
+    f: &dyn for<'r> Fn(
+        &'r mut crate::ssh::Session,
+        &'r slog::Logger,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>,
 ) -> Result<(), Error> {
     use failure::ResultExt;
 
@@ -188,6 +202,7 @@ async fn setup_machine(
 
     debug!(log, "setting up instance"; "ip" => &pub_ip);
     f(&mut sess, log)
+        .await
         .context(format!("setup procedure for {} machine failed", &nickname))
         .map_err(|e| {
             error!(

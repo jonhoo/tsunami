@@ -137,16 +137,13 @@ pub struct Machine {
     key_path: Option<std::path::PathBuf>,
 }
 
-impl<'l> super::Launcher<'l> for Machine {
+impl super::Launcher for Machine {
     type MachineDescriptor = Setup;
-    type LaunchFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>>;
-    type ConnectFuture =
-        Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
 
-    fn launch(
+    fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Self::LaunchFuture {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
         Box::pin(async move {
             self.log = Some(l.log);
             let log = self.log.as_ref().expect("Baremetal machine uninitialized");
@@ -213,7 +210,10 @@ impl<'l> super::Launcher<'l> for Machine {
         })
     }
 
-    fn connect_all(&'l self) -> Self::ConnectFuture {
+    fn connect_all<'l>(
+        &'l self,
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>
+    {
         Box::pin(async move {
             let log = self.log.as_ref().expect("Baremetal machine uninitialized");
             let addr = self
@@ -258,6 +258,7 @@ mod test {
     #[test]
     #[ignore]
     fn localhost() -> Result<(), Error> {
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
         let s = super::Setup::new("127.0.0.1:22", None)?;
         let mut m: super::Machine = Default::default();
         m.log = Some(crate::test::test_logger());
@@ -267,18 +268,21 @@ mod test {
             max_wait: None,
             machines: vec![(String::from("self"), s)],
         };
-        m.launch(desc)?;
-        let ms = m.connect_all()?;
-        assert!(ms
-            .get("self")
-            .unwrap()
-            .ssh
-            .as_ref()
-            .unwrap()
-            .command("ls")
-            .status()
-            .unwrap()
-            .success());
-        Ok(())
+        rt.block_on(async move {
+            m.launch(desc).await?;
+            let ms = m.connect_all().await?;
+            assert!(ms
+                .get("self")
+                .unwrap()
+                .ssh
+                .as_ref()
+                .unwrap()
+                .command("ls")
+                .status()
+                .await
+                .unwrap()
+                .success());
+            Ok(())
+        })
     }
 }
