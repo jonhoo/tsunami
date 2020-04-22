@@ -3,6 +3,8 @@
 use failure::Error;
 use itertools::Itertools;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
 /// A description of a set of machines to launch.
 ///
@@ -34,9 +36,11 @@ pub trait MachineSetup {
 
 /// Implement this trait to implement a new cloud provider for Tsunami.
 /// Tsunami will call `launch` once per unique region, as defined by `MachineSetup`.
-pub trait Launcher {
+pub trait Launcher<'l> {
     /// A type describing a single instance to launch.
     type MachineDescriptor: MachineSetup;
+    type LaunchFuture: Future<Output = Result<(), Error>> + 'l;
+    type ConnectFuture: Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l;
 
     /// Spawn the instances.
     ///
@@ -46,10 +50,10 @@ pub trait Launcher {
     /// This method can be called multiple times. Subsequent calls to
     /// `connect_all` should return the new machines as well as any previously
     /// spawned machines.
-    fn launch(&mut self, desc: LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error>;
+    fn launch(&'l mut self, desc: LaunchDescriptor<Self::MachineDescriptor>) -> Self::LaunchFuture;
 
     /// Return connections to the [`Machine`s](crate::Machine) that `launch` spawned.
-    fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error>;
+    fn connect_all(&'l self) -> Self::ConnectFuture;
 
     /// Start up all the hosts.
     ///
@@ -77,47 +81,49 @@ pub trait Launcher {
     ///     Ok(())
     /// }
     /// ```
-    fn spawn(
-        &mut self,
-        descriptors: impl IntoIterator<Item = (String, Self::MachineDescriptor)>,
+    fn spawn<'s: 'l>(
+        &'s mut self,
+        descriptors: impl IntoIterator<Item = (String, Self::MachineDescriptor)> + 'static,
         max_wait: Option<std::time::Duration>,
         log: Option<slog::Logger>,
-    ) -> Result<(), Error> {
-        let max_wait = max_wait;
-        let log = log.unwrap_or_else(|| slog::Logger::root(slog::Discard, o!()));
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 's>> {
+        Box::pin(async move {
+            let max_wait = max_wait;
+            let log = log.unwrap_or_else(|| slog::Logger::root(slog::Discard, o!()));
 
-        info!(log, "spinning up tsunami");
+            info!(log, "spinning up tsunami");
 
-        for (region_name, setups) in descriptors
-            .into_iter()
-            .map(|(name, setup)| (setup.region(), (name, setup)))
-            .into_group_map()
-        {
-            let region_log = log.new(slog::o!("region" => region_name.clone().to_string()));
-            let dsc = LaunchDescriptor {
-                region: region_name.clone(),
-                log: region_log,
-                max_wait,
-                machines: setups,
-            };
+            for (region_name, setups) in descriptors
+                .into_iter()
+                .map(|(name, setup)| (setup.region(), (name, setup)))
+                .into_group_map()
+            {
+                let region_log = log.new(slog::o!("region" => region_name.clone().to_string()));
+                let dsc = LaunchDescriptor {
+                    region: region_name.clone(),
+                    log: region_log,
+                    max_wait,
+                    machines: setups,
+                };
 
-            self.launch(dsc)?;
-        }
+                self.launch(dsc).await?;
+            }
 
-        Ok(())
+            Ok(())
+        })
     }
 }
 
 macro_rules! collect {
     ($x: expr) => {{
-        $x.values()
-            .map(|r| r.connect_all())
-            .fold(Ok(HashMap::default()), |acc, el| {
-                acc.and_then(|mut a| {
-                    a.extend(el?.into_iter());
-                    Ok(a)
-                })
-            })
+        Ok({
+            let mps = futures_util::future::join_all($x.values().map(|r| r.connect_all()))
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, Error>>()?;
+
+            mps.into_iter().flat_map(|x| x.into_iter()).collect()
+        })
     }};
 }
 
@@ -157,7 +163,7 @@ pub mod azure;
 #[cfg(feature = "baremetal")]
 pub mod baremetal;
 
-fn setup_machine(
+async fn setup_machine(
     log: &slog::Logger,
     nickname: &str,
     pub_ip: &str,
@@ -177,7 +183,7 @@ fn setup_machine(
         _tsunami: Default::default(),
     };
 
-    m.connect_ssh(log, username, private_key, max_wait)?;
+    m.connect_ssh(log, username, private_key, max_wait).await?;
     let mut sess = m.ssh.unwrap();
 
     debug!(log, "setting up instance"; "ip" => &pub_ip);

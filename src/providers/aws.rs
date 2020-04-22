@@ -75,6 +75,8 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
 use std::{thread, time};
+use std::future::Future;
+use std::pin::Pin;
 
 /// Available configurations of availability zone specifiers.
 ///
@@ -255,7 +257,6 @@ pub struct Launcher<P = DefaultCredentialsProvider> {
     max_instance_duration_hours: usize,
     use_open_ports: bool,
     regions: HashMap<<Setup as super::MachineSetup>::Region, RegionLauncher>,
-    rt: Option<tokio::runtime::Runtime>,
 }
 
 impl Default for Launcher {
@@ -265,7 +266,6 @@ impl Default for Launcher {
             max_instance_duration_hours: 6,
             use_open_ports: false,
             regions: Default::default(),
-            rt: Default::default(),
         }
     }
 }
@@ -308,13 +308,15 @@ impl<P> Launcher<P> {
             max_instance_duration_hours: self.max_instance_duration_hours,
             use_open_ports: self.use_open_ports,
             regions,
-            rt: self.rt.take(),
         }
     }
 }
 
 impl<P> Drop for Launcher<P> {
     fn drop(&mut self) {
+        unimplemented!()
+
+        /*
         if self.regions.is_empty() {
             return;
         }
@@ -333,59 +335,56 @@ impl<P> Drop for Launcher<P> {
                 .drain()
                 .map(|(_, mut rl)| async move { rl.shutdown().await }),
         ));
+        */
     }
 }
 
-impl<P> super::Launcher for Launcher<P>
+impl<'l, P> super::Launcher<'l> for Launcher<P>
 where
     P: ProvideAwsCredentials + Send + Sync + 'static,
 {
     type MachineDescriptor = Setup;
+    type LaunchFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>>;
+    type ConnectFuture =
+        Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
 
-    fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
-        let prov = (*self.credential_provider)()?;
-        if let None = self.rt {
-            self.rt = Some(
-                tokio::runtime::Builder::new()
-                    .basic_scheduler()
-                    .enable_all()
-                    .build()
-                    .expect("Make a tokio runtime"),
-            );
-        }
+    fn launch(&'l mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Self::LaunchFuture {
+        Box::pin(async move {
+            let prov = (*self.credential_provider)()?;
+            let Self {
+                use_open_ports,
+                max_instance_duration_hours,
+                ref mut regions,
+                ..
+            } = self;
 
-        if let Self {
-            rt: Some(ref mut rt),
-            use_open_ports,
-            max_instance_duration_hours,
-            ref mut regions,
-            ..
-        } = self
-        {
-            rt.block_on(async {
-                let mut awsregion = RegionLauncher::new(
-                    &l.region.to_string(),
-                    // availability_zone spec is guaranteed to be the same because it's included in
-                    // the region specifier.
-                    l.machines[0].1.availability_zone.clone(),
-                    prov,
-                    *use_open_ports,
-                    l.log,
-                )
-                .await?;
-                awsregion
+                if !regions.contains_key(&l.region) {
+                    let awsregion = RegionLauncher::new(
+                        &l.region.to_string(),
+                        // availability_zone spec is guaranteed to be the same because it's included in
+                        // the region specifier.
+                        l.machines[0].1.availability_zone.clone(),
+                        prov,
+                        *use_open_ports,
+                        l.log,
+                    )
+                    .await?;
+                    regions.insert(l.region.clone(), awsregion);
+                }
+
+                regions.get_mut(&l.region).unwrap()
                     .launch(*max_instance_duration_hours, l.max_wait, l.machines)
                     .await?;
-                regions.insert(l.region, awsregion);
                 Ok(())
-            })
-        } else {
-            unreachable!();
-        }
+        })
     }
 
-    fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
-        collect!(self.regions)
+    fn connect_all(
+        &'l self,
+    ) -> Self::ConnectFuture {
+        Box::pin(async move {
+            collect!(self.regions)
+        })
     }
 }
 
@@ -954,10 +953,9 @@ impl RegionLauncher {
             }
         }
 
-        use rayon::prelude::*;
-        self.instances
-            .par_iter()
-            .try_for_each(|(_instance_id, TaggedSetup { ipinfo, name, setup })| {
+        futures_util::future::join_all(
+        self.instances.iter()
+            .map(|(_instance_id, TaggedSetup { ipinfo, name, setup })| { async move {
                 let IpInfo { public_ip, .. } = ipinfo.as_ref().unwrap();
                 if let Setup {
                     username,
@@ -973,21 +971,22 @@ impl RegionLauncher {
                         max_wait,
                         Some(private_key_path.path()),
                         f.as_ref(),
-                    )?;
+                    ).await?;
                 }
 
                 Ok(())
-            })
+            }})
+        ).await.into_iter().collect()
     }
 
     /// Establish SSH connections to the machines. The `Ok` value is a `HashMap` associating the
     /// friendly name for each `Setup` with the corresponding SSH connection.
-    pub fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
+    pub async fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
         let log = self.log.as_ref().unwrap();
         let private_key_path = self.private_key_path.as_ref().unwrap();
-        self.instances
+        futures_util::future::join_all(self.instances
             .values()
-            .map(|info| match info {
+            .map(|info| async move {match info {
                 TaggedSetup { 
                     name,
                     setup: Setup { username, .. },
@@ -1006,11 +1005,12 @@ impl RegionLauncher {
                         _tsunami: Default::default(),
                     };
 
-                    m.connect_ssh(log, &username, Some(private_key_path.path()), None)?;
+                    m.connect_ssh(log, &username, Some(private_key_path.path()), None).await?;
                     Ok((name.clone(), m))
                 }
                 _ => bail!("Machines not initialized"),
-            })
+            }})).await
+            .into_iter()
             .collect()
     }
 

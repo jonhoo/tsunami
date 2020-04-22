@@ -71,6 +71,8 @@ use crate::ssh;
 use educe::Educe;
 use failure::{bail, Error};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 /// A descriptor for a single Azure VM type.
@@ -185,20 +187,30 @@ pub struct Launcher {
     regions: HashMap<Region, RegionLauncher>,
 }
 
-impl super::Launcher for Launcher {
+impl<'l> super::Launcher<'l> for Launcher {
     type MachineDescriptor = Setup;
+    type LaunchFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>>;
+    type ConnectFuture =
+        Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
 
-    fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
-        azcmd::check_az()?;
-        let region = l.region;
-        let mut az_region = RegionLauncher::new(l.region, l.log.clone())?;
-        az_region.launch(l)?;
-        self.regions.insert(region, az_region);
-        Ok(())
+    fn launch(
+        &'l mut self,
+        l: super::LaunchDescriptor<Self::MachineDescriptor>,
+    ) -> Self::LaunchFuture {
+        Box::pin(async move {
+            azcmd::check_az().await?;
+            if !self.regions.contains_key(&l.region) {
+                let az_region = RegionLauncher::new(l.region, l.log.clone()).await?;
+                self.regions.insert(l.region, az_region);
+            }
+
+            self.regions.get_mut(&l.region).unwrap().launch(l).await?;
+            Ok(())
+        })
     }
 
-    fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
-        collect!(self.regions)
+    fn connect_all(&'l self) -> Self::ConnectFuture {
+        Box::pin(async move { collect!(self.regions) })
     }
 }
 
@@ -237,10 +249,10 @@ pub struct RegionLauncher {
 
 impl RegionLauncher {
     /// Create a new instance of RegionLauncher.
-    pub fn new(region: Region, log: slog::Logger) -> Result<Self, Error> {
+    pub async fn new(region: Region, log: slog::Logger) -> Result<Self, Error> {
         let rg_name = super::rand_name("resourcegroup");
 
-        azcmd::create_resource_group(region, &rg_name)?;
+        azcmd::create_resource_group(region, &rg_name).await?;
 
         Ok(Self {
             log: Some(log),
@@ -251,69 +263,74 @@ impl RegionLauncher {
     }
 }
 
-impl super::Launcher for RegionLauncher {
+impl<'l> super::Launcher<'l> for RegionLauncher {
     type MachineDescriptor = Setup;
+    type LaunchFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>>;
+    type ConnectFuture =
+        Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
 
-    fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
-        self.log = Some(l.log);
-        let log = self.log.as_ref().unwrap();
-        let max_wait = l.max_wait;
-        let vms: Result<Vec<(String, IpInfo, _)>, Error> = l.machines
+    fn launch(
+        &'l mut self,
+        l: super::LaunchDescriptor<Self::MachineDescriptor>,
+    ) -> Self::LaunchFuture {
+        Box::pin(async move {
+            self.log = Some(l.log);
+            let log = self.log.as_ref().unwrap();
+            let max_wait = l.max_wait;
+            self.machines = futures_util::future::join_all(l.machines.into_iter().map(
+                |(nickname, desc)| async {
+                    let vm_name = super::rand_name_sep("vm", "-");
+                    debug!(log, "setting up azure instance";
+                        "nickname" => &nickname,
+                        "vm_name" => &vm_name,
+                    );
+                    let ipinfo = azcmd::create_vm(
+                        &self.resource_group_name,
+                        &vm_name,
+                        &desc.instance_type,
+                        &desc.image,
+                        &desc.username,
+                    )
+                    .await?;
+                    azcmd::open_ports(&self.resource_group_name, &vm_name).await?;
+
+                    if let Setup {
+                        ref username,
+                        setup_fn: Some(ref f),
+                        ..
+                    } = desc
+                    {
+                        super::setup_machine(
+                            log,
+                            &nickname,
+                            &ipinfo.public_ip,
+                            &username,
+                            max_wait,
+                            None,
+                            f.as_ref(),
+                        )
+                        .await?;
+                    }
+
+                    Ok::<_, Error>(Descriptor {
+                        name: nickname,
+                        username: desc.username,
+                        ip: ipinfo,
+                    })
+                },
+            ))
+            .await
             .into_iter()
-            .map(|(nickname, desc)| {
-                let vm_name = super::rand_name_sep("vm", "-");
-                debug!(log, "setting up azure instance"; "nickname" => &nickname, "vm_name" => &vm_name);
+            .collect::<Result<Vec<_>, Error>>()?;
 
-                let ipinfo = azcmd::create_vm(
-                    &self.resource_group_name,
-                    &vm_name,
-                    &desc.instance_type,
-                    &desc.image,
-                    &desc.username,
-                )?;
-
-                azcmd::open_ports(&self.resource_group_name, &vm_name)?;
-
-                Ok((nickname, ipinfo, desc))
-            }).collect();
-
-        use rayon::prelude::*;
-        self.machines = vms?
-            .into_par_iter()
-            .map(|(nickname, ip @ IpInfo { .. }, desc)| {
-                if let Setup {
-                    ref username,
-                    setup_fn: Some(ref f),
-                    ..
-                } = desc
-                {
-                    super::setup_machine(
-                        log,
-                        &nickname,
-                        &ip.public_ip,
-                        &username,
-                        max_wait,
-                        None,
-                        f.as_ref(),
-                    )?;
-                }
-
-                Ok(Descriptor {
-                    name: nickname,
-                    username: desc.username,
-                    ip,
-                })
-            })
-            .collect::<Result<Vec<Descriptor>, Error>>()?;
-
-        Ok(())
+            Ok(())
+        })
     }
 
-    fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
-        let log = self.log.as_ref().expect("RegionLauncher uninitialized");
-        self.machines
-            .iter()
-            .map(|desc| {
+    fn connect_all(&'l self) -> Self::ConnectFuture {
+        Box::pin(async move {
+            let log = self.log.as_ref().expect("RegionLauncher uninitialized");
+            futures_util::future::join_all(self.machines.iter().map(|desc| {
                 let Descriptor {
                     name,
                     username,
@@ -332,17 +349,25 @@ impl super::Launcher for RegionLauncher {
                     _tsunami: Default::default(),
                 };
 
-                m.connect_ssh(log, username, None, None)?;
-                Ok((name.clone(), m))
-            })
-            .collect()
+                async move {
+                    m.connect_ssh(log, username, None, None).await?;
+                    Ok::<_, Error>((name.clone(), m))
+                }
+            }))
+            .await
+            .into_iter()
+            .collect::<Result<HashMap<_, _>, Error>>()
+        })
     }
 }
 
 impl Drop for RegionLauncher {
     fn drop(&mut self) {
         debug!(self.log.as_ref().unwrap(), "Cleaning up resource group");
-        azcmd::delete_resource_group(&self.resource_group_name).unwrap();
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let name = self.resource_group_name.clone();
+            rt.spawn(async move { azcmd::delete_resource_group(&name).await.unwrap() });
+        }
     }
 }
 
@@ -475,17 +500,17 @@ mod azcmd {
     use super::Region;
     use failure::ResultExt;
     use serde::{Deserialize, Serialize};
-    use std::process::Command;
+    use tokio::process::Command;
 
-    pub(crate) fn check_az() -> Result<(), Error> {
+    pub(crate) async fn check_az() -> Result<(), Error> {
         ensure!(
-            Command::new("az").arg("account").arg("show").output()?.status.success(), 
+            Command::new("az").arg("account").arg("show").status().await?.success(), 
             "Azure CLI not found. See https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest for installation, then run `az login`.",
         );
         Ok(())
     }
 
-    pub(crate) fn create_resource_group(r: Region, name: &str) -> Result<(), Error> {
+    pub(crate) async fn create_resource_group(r: Region, name: &str) -> Result<(), Error> {
         let out = Command::new("az")
             .args(&[
                 "group",
@@ -495,16 +520,17 @@ mod azcmd {
                 "--location",
                 &r.to_string(),
             ])
-            .output()?;
+            .status()
+            .await?;
 
-        if !out.status.success() {
+        if !out.success() {
             bail!("Failed to create resource group {} in region {:?}", name, r)
         }
 
         Ok(())
     }
 
-    pub(crate) fn create_vm(
+    pub(crate) async fn create_vm(
         rg: &str,
         name: &str,
         size: &str,
@@ -536,7 +562,8 @@ mod azcmd {
                 username,
                 "--generate-ssh-keys",
             ])
-            .output()?;
+            .output()
+            .await?;
 
         if !out.status.success() {
             return Err(format_err!("Failed to create vm {}", name))
@@ -552,7 +579,7 @@ mod azcmd {
         })
     }
 
-    pub(crate) fn open_ports(rg: &str, vm_name: &str) -> Result<(), Error> {
+    pub(crate) async fn open_ports(rg: &str, vm_name: &str) -> Result<(), Error> {
         let out = Command::new("az")
             .args(&[
                 "vm",
@@ -564,7 +591,8 @@ mod azcmd {
                 "--name",
                 vm_name,
             ])
-            .output()?;
+            .output()
+            .await?;
         if !out.status.success() {
             return Err(format_err!("Failed to open ports for {}", vm_name))
                 .context(String::from_utf8(out.stderr).unwrap())?;
@@ -573,11 +601,12 @@ mod azcmd {
         Ok(())
     }
 
-    pub(crate) fn delete_resource_group(rg: &str) -> Result<(), Error> {
+    pub(crate) async fn delete_resource_group(rg: &str) -> Result<(), Error> {
         let out = Command::new("az")
             .args(&["group", "delete", "--name", rg, "--yes"])
-            .output()?;
-        if !out.status.success() {
+            .status()
+            .await?;
+        if !out.success() {
             bail!("Failed to delete resource group {}", rg)
         }
 

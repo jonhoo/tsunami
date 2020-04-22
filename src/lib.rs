@@ -104,7 +104,7 @@ pub struct Machine<'tsunami> {
 }
 
 impl<'t> Machine<'t> {
-    fn connect_ssh(
+    async fn connect_ssh(
         &mut self,
         log: &slog::Logger,
         username: &str,
@@ -126,6 +126,7 @@ impl<'t> Machine<'t> {
 
         let sess = sess
             .connect(&self.public_ip)
+            .await
             .context(format!("failed to ssh to machine {}", self.public_dns))
             .map_err(|e| {
                 slog::error!(log, "failed to ssh to {}", self.public_ip);

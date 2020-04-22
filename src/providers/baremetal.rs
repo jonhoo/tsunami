@@ -7,6 +7,8 @@ use crate::ssh;
 use educe::Educe;
 use failure::Error;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 /// Descriptor for a single, existing machine to connect to.
@@ -81,7 +83,7 @@ impl Setup {
     }
 }
 
-fn try_addrs(
+async fn try_addrs(
     s: &mut Setup,
     log: &slog::Logger,
     max_wait: Option<std::time::Duration>,
@@ -98,12 +100,15 @@ fn try_addrs(
             _tsunami: Default::default(),
         };
 
-        match m.connect_ssh(
-            log,
-            &s.username,
-            s.key_path.as_ref().map(|p| p.as_path()),
-            max_wait,
-        ) {
+        match m
+            .connect_ssh(
+                log,
+                &s.username,
+                s.key_path.as_ref().map(|p| p.as_path()),
+                max_wait,
+            )
+            .await
+        {
             Err(e) => {
                 trace!(log, "failed to ssh to addr {}", &addr; "err" => ?e);
                 err = err.context(format!("failed to ssh to address {}", addr))
@@ -132,37 +137,92 @@ pub struct Machine {
     key_path: Option<std::path::PathBuf>,
 }
 
-impl super::Launcher for Machine {
+impl<'l> super::Launcher<'l> for Machine {
     type MachineDescriptor = Setup;
+    type LaunchFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>>;
+    type ConnectFuture =
+        Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
 
-    fn launch(&mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Result<(), Error> {
-        self.log = Some(l.log);
-        let log = self.log.as_ref().expect("Baremetal machine uninitialized");
+    fn launch(
+        &'l mut self,
+        l: super::LaunchDescriptor<Self::MachineDescriptor>,
+    ) -> Self::LaunchFuture {
+        Box::pin(async move {
+            self.log = Some(l.log);
+            let log = self.log.as_ref().expect("Baremetal machine uninitialized");
 
-        let mut dscs = l.machines.into_iter();
-        let (name, mut setup) = dscs
-            .next()
-            .ok_or_else(|| format_err!("Cannot initialize zero machines"))?;
-        for (discarded_name, discarded_setup) in dscs {
-            warn!(log, "Discarding duplicate connections to same machine";
-                "name" => &discarded_name,
-                "addr" => &discarded_setup.addr[0],
-            );
-        }
+            let mut dscs = l.machines.into_iter();
+            let (name, mut setup) = dscs
+                .next()
+                .ok_or_else(|| format_err!("Cannot initialize zero machines"))?;
+            for (discarded_name, discarded_setup) in dscs {
+                warn!(log, "Discarding duplicate connections to same machine";
+                    "name" => &discarded_name,
+                    "addr" => &discarded_setup.addr[0],
+                );
+            }
 
-        let addr = try_addrs(&mut setup, &log, l.max_wait)?;
+            let addr = try_addrs(&mut setup, &log, l.max_wait).await?;
 
-        if let Setup {
-            ref username,
-            ref key_path,
-            setup_fn: Some(ref f),
-            ..
-        } = setup
-        {
+            if let Setup {
+                ref username,
+                ref key_path,
+                setup_fn: Some(ref f),
+                ..
+            } = setup
+            {
+                let mut m = crate::Machine {
+                    nickname: Default::default(),
+                    public_dns: addr.to_string(),
+                    public_ip: addr.to_string(),
+                    private_ip: None,
+                    ssh: None,
+                    _tsunami: Default::default(),
+                };
+
+                m.connect_ssh(
+                    log,
+                    &username,
+                    key_path.as_ref().map(|p| p.as_path()),
+                    l.max_wait,
+                )
+                .await
+                .map_err(|e| {
+                    error!(log, "failed to ssh to {}", &addr);
+                    e.context(format!("failed to ssh to machine {}", addr))
+                })?;
+
+                let mut sess = m.ssh.unwrap();
+
+                f(&mut sess, log).map_err(|e| {
+                    error!(
+                        log,
+                        "machine setup failed";
+                        "name" => name.clone(),
+                    );
+                    e.context(format!("setup procedure for {} machine failed", name))
+                })?;
+            }
+
+            info!(log, "finished setting up instance"; "name" => &name, "ip" => &addr);
+            self.name = name;
+            self.addr = Some(addr);
+            self.username = setup.username;
+            self.key_path = setup.key_path;
+            Ok(())
+        })
+    }
+
+    fn connect_all(&'l self) -> Self::ConnectFuture {
+        Box::pin(async move {
+            let log = self.log.as_ref().expect("Baremetal machine uninitialized");
+            let addr = self
+                .addr
+                .ok_or_else(|| format_err!("Address uninitialized"))?;
             let mut m = crate::Machine {
-                nickname: Default::default(),
+                nickname: self.name.clone(),
                 public_dns: addr.to_string(),
-                public_ip: addr.to_string(),
+                public_ip: addr.ip().to_string(),
                 private_ip: None,
                 ssh: None,
                 _tsunami: Default::default(),
@@ -170,59 +230,16 @@ impl super::Launcher for Machine {
 
             m.connect_ssh(
                 log,
-                &username,
-                key_path.as_ref().map(|p| p.as_path()),
-                l.max_wait,
+                &self.username,
+                self.key_path.as_ref().map(|p| p.as_path()),
+                None,
             )
-            .map_err(|e| {
-                error!(log, "failed to ssh to {}", &addr);
-                e.context(format!("failed to ssh to machine {}", addr))
-            })?;
+            .await?;
 
-            let mut sess = m.ssh.unwrap();
-
-            f(&mut sess, log).map_err(|e| {
-                error!(
-                    log,
-                    "machine setup failed";
-                    "name" => name.clone(),
-                );
-                e.context(format!("setup procedure for {} machine failed", name))
-            })?;
-        }
-
-        info!(log, "finished setting up instance"; "name" => &name, "ip" => &addr);
-        self.name = name;
-        self.addr = Some(addr);
-        self.username = setup.username;
-        self.key_path = setup.key_path;
-        Ok(())
-    }
-
-    fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
-        let log = self.log.as_ref().expect("Baremetal machine uninitialized");
-        let addr = self
-            .addr
-            .ok_or_else(|| format_err!("Address uninitialized"))?;
-        let mut m = crate::Machine {
-            nickname: self.name.clone(),
-            public_dns: addr.to_string(),
-            public_ip: addr.ip().to_string(),
-            private_ip: None,
-            ssh: None,
-            _tsunami: Default::default(),
-        };
-
-        m.connect_ssh(
-            log,
-            &self.username,
-            self.key_path.as_ref().map(|p| p.as_path()),
-            None,
-        )?;
-
-        let mut hmap: HashMap<String, crate::Machine<'l>> = Default::default();
-        hmap.insert(self.name.clone(), m);
-        Ok(hmap)
+            let mut hmap: HashMap<String, crate::Machine<'l>> = Default::default();
+            hmap.insert(self.name.clone(), m);
+            Ok(hmap)
+        })
     }
 }
 
