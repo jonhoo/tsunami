@@ -81,10 +81,12 @@ pub trait Launcher {
     ///     use tsunami::providers::Launcher;
     ///     // make a launcher
     ///     let mut aws: tsunami::providers::aws::Launcher<_> = Default::default();
-    ///     // spawn hosts into the launcher
+    ///     // spawn a host into the launcher
     ///     aws.spawn(vec![(String::from("my_tsunami"), Default::default())], None, None).await?;
-    ///     // access hosts via the launcher
+    ///     // access the host via the launcher
     ///     let vms = aws.connect_all().await?;
+    ///     // we're done! terminate the instance.
+    ///     aws.cleanup().await?;
     ///     Ok(())
     /// }
     /// ```

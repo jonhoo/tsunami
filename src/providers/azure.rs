@@ -5,8 +5,7 @@
 //! Both these types use [`azure::Setup`] as their descriptor type.
 //!
 //! Azure does not support Spot or Defined Duration instances.
-//! As a result, if your tsunami crashes (i.e., exits without calling `drop()` on [`Launcher`], you must manually terminate your instances
-//! to avoid extra costs.
+//! As a result, *if your tsunami crashes or you forget to call `cleanup()`, you must manually terminate your instances to avoid extra costs*.
 //! The easiest way to do this is to delete resource groups beginning with `tsunami_`:
 //! `az group delete --name <name> --yes`.
 //! You can find such resource groups using:
@@ -261,7 +260,7 @@ struct Descriptor {
 /// Region-specific connection to Azure.
 ///
 /// Each instance of this type creates one Azure
-/// "resource group" and deletes the group on drop. See also [`Launcher`].
+/// "resource group" and deletes the group on `cleanup()`. See also [`Launcher`].
 ///
 /// This implementation relies on the [Azure
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).

@@ -51,6 +51,7 @@
 //!
 //!     // do things with my VMs!
 //!
+//!     // call cleanup() to terminate the instances.
 //!     aws.cleanup().await?;
 //!     azure.cleanup().await?;
 //!     Ok(())
