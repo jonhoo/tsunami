@@ -396,11 +396,14 @@ struct IpInfo {
     private_ip: String,
 }
 
+// Internal representation of an instance.
+//
+// Tagged with its nickname, and ip_info gets populated once it is available.
 #[derive(Debug, Clone)]
 struct TaggedSetup {
     name: String,
     setup: Setup,
-    ipinfo: Option<IpInfo>,
+    ip_info: Option<IpInfo>,
 }
 
 /// Region specific. Launch AWS EC2 spot instances.
@@ -737,7 +740,7 @@ impl RegionLauncher {
                     TaggedSetup {
                         name: req.0,
                         setup: req.1,
-                        ipinfo: None,
+                        ip_info: None,
                     },
                 );
             }
@@ -934,7 +937,7 @@ impl RegionLauncher {
                             );
 
                             let tag_setup = self.instances.get_mut(&instance_id).unwrap();
-                            tag_setup.ipinfo = Some(IpInfo {
+                            tag_setup.ip_info = Some(IpInfo {
                                 public_ip: public_ip.clone(),
                                 public_dns: public_dns.clone(),
                                 private_ip: private_ip.clone(),
@@ -957,8 +960,8 @@ impl RegionLauncher {
         use rayon::prelude::*;
         self.instances
             .par_iter()
-            .try_for_each(|(_instance_id, TaggedSetup { ipinfo, name, setup })| {
-                let IpInfo { public_ip, .. } = ipinfo.as_ref().unwrap();
+            .try_for_each(|(_instance_id, TaggedSetup { ip_info, name, setup })| {
+                let IpInfo { public_ip, .. } = ip_info.as_ref().unwrap();
                 if let Setup {
                     username,
                     setup: Some(f),
@@ -991,7 +994,7 @@ impl RegionLauncher {
                 TaggedSetup { 
                     name,
                     setup: Setup { username, .. },
-                    ipinfo: Some(IpInfo {
+                    ip_info: Some(IpInfo {
                         public_dns,
                         public_ip,
                         private_ip,
