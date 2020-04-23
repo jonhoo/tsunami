@@ -39,6 +39,7 @@
 //!         .unwrap();
 //!     let stdout = std::string::String::from_utf8(out.stdout).unwrap();
 //!     println!("{}", stdout);
+//!     l.cleanup().await.unwrap();
 //! }
 //! ```
 //! ```rust,no_run
@@ -70,6 +71,7 @@
 //!     let ssh = my_vm.ssh.as_ref().unwrap();
 //!     ssh.command("git").arg("clone").arg("https://github.com/jonhoo/tsunami").status().await?;
 //!     ssh.command("bash").arg("-c").arg("\"cd tsunami && cargo build\"").status().await?;
+//!     azure.cleanup().await?;
 //!     Ok(())
 //! }
 //! ```
@@ -231,6 +233,16 @@ impl super::Launcher for Launcher {
     {
         Box::pin(async move { collect!(self.regions) })
     }
+
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
+        Box::pin(async move {
+            for (_, r) in self.regions {
+                r.cleanup().await?;
+            }
+
+            Ok(())
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -378,15 +390,14 @@ impl super::Launcher for RegionLauncher {
             .collect::<Result<HashMap<_, _>, Error>>()
         })
     }
-}
 
-impl Drop for RegionLauncher {
-    fn drop(&mut self) {
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
         debug!(self.log.as_ref().unwrap(), "Cleaning up resource group");
-        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            let name = self.resource_group_name.clone();
-            rt.spawn(async move { azcmd::delete_resource_group(&name).await.unwrap() });
-        }
+        let name = self.resource_group_name.clone();
+        Box::pin(async move {
+            azcmd::delete_resource_group(&name).await?;
+            Ok(())
+        })
     }
 }
 

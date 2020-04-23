@@ -50,8 +50,9 @@
 //!     let vms = aws_vms.into_iter().chain(azure_vms.into_iter());
 //!
 //!     // do things with my VMs!
-//!     // VMs dropped when aws and azure are dropped.
 //!
+//!     aws.cleanup().await?;
+//!     azure.cleanup().await?;
 //!     Ok(())
 //! }
 //! ```

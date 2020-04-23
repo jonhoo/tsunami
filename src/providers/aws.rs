@@ -31,6 +31,7 @@
 //!         .unwrap();
 //!     let stdout = std::string::String::from_utf8(out.stdout).unwrap();
 //!     println!("{}", stdout);
+//!     l.cleanup().await.unwrap();
 //! }
 //! ```
 //! ```rust,no_run
@@ -66,6 +67,7 @@
 //!     let ssh = my_vm.ssh.as_ref().unwrap();
 //!     ssh.command("git").arg("clone").arg("https://github.com/jonhoo/tsunami").status().await?;
 //!     ssh.command("bash").arg("-c").arg("\"cd tsunami && cargo build\"").status().await?;
+//!     aws.cleanup().await?;
 //!     Ok(())
 //! }
 //! ```
@@ -328,22 +330,6 @@ impl<P> Launcher<P> {
     }
 }
 
-impl<P> Drop for Launcher<P> {
-    fn drop(&mut self) {
-        if self.regions.is_empty() {
-            return;
-        }
-
-        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            rt.spawn(futures_util::future::join_all(
-                self.regions
-                    .drain()
-                    .map(|(_, mut rl)| async move { rl.shutdown().await }),
-            ));
-        }
-    }
-}
-
 impl<P> super::Launcher for Launcher<P>
 where
     P: ProvideAwsCredentials + Send + Sync + 'static,
@@ -388,6 +374,21 @@ where
             collect!(self.regions)
         })
     }
+
+    fn cleanup(mut self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
+        Box::pin(async move {
+            if self.regions.is_empty() {
+                return Ok(());
+            }
+
+            futures_util::future::join_all(
+                self.regions
+                    .drain()
+                    .map(|(_, mut rl)| async move { rl.shutdown().await }),
+            ).await;
+            Ok(())
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -418,9 +419,7 @@ struct TaggedSetup {
 /// maximum). To change this, RegionLauncher respects the limit specified in
 /// [`Launcher::set_max_instance_duration`](Launcher::set_max_instance_duration).
 ///
-/// If this struct is dropped, the instances *will not* be terminated automatically, you must call
-/// [`RegionLauncher::shutdown`] to terminate the instances. If you prefer not to deal with this,
-/// use [`Launcher`] instead.
+/// You must call [`RegionLauncher::shutdown`] to terminate the instances. 
 #[derive(Educe, Default)]
 #[educe(Debug)]
 pub struct RegionLauncher {

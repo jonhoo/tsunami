@@ -1,7 +1,6 @@
 use failure::bail;
 use structopt::StructOpt;
-use tsunami::providers::{Launcher, MachineSetup};
-use tsunami::TsunamiBuilder;
+use tsunami::providers::Launcher;
 
 #[derive(Debug)]
 enum Providers {
@@ -41,41 +40,34 @@ fn wait_for_continue(log: &slog::Logger) {
     iterator.next().unwrap().unwrap();
 }
 
-fn launch_and_wait<M: MachineSetup + Clone, L: Launcher<MachineDescriptor = M>>(
-    b: TsunamiBuilder<M>,
-    l: &mut L,
-) -> Result<(), failure::Error> {
-    let log = b.logger();
-    b.spawn(l)?;
-    wait_for_continue(&log);
-    Ok(())
-}
-
 // just launch an instance in the specified region and wait.
-fn main() -> Result<(), failure::Error> {
+#[tokio::main]
+async fn main() -> Result<(), failure::Error> {
     let opt = Opt::from_args();
 
     match opt.provider {
         Providers::AWS => {
-            let mut b = TsunamiBuilder::default();
-            b.use_term_logger();
+            let log = tsunami::get_term_logger();
+            let mut l: tsunami::providers::aws::Launcher<_> = Default::default();
+            l.open_ports();
             let m = tsunami::providers::aws::Setup::default()
                 .region_with_ubuntu_ami(opt.region.parse()?)
                 .instance_type("t3.medium");
 
-            b.add("machine", m).unwrap();
-            let mut l: tsunami::providers::aws::Launcher<_> = Default::default();
-            l.open_ports();
-            launch_and_wait(b, &mut l)?;
+            l.spawn(vec![(String::from(""), m)], None, Some(log.clone()))
+                .await?;
+            wait_for_continue(&log);
+            l.cleanup().await?;
         }
         Providers::Azure => {
-            let mut b = TsunamiBuilder::default();
-            b.use_term_logger();
+            let log = tsunami::get_term_logger();
+            let mut l: tsunami::providers::azure::Launcher = Default::default();
             let m = tsunami::providers::azure::Setup::default().region(opt.region.parse()?);
 
-            b.add("machine", m).unwrap();
-            let mut l: tsunami::providers::azure::Launcher = Default::default();
-            launch_and_wait(b, &mut l)?;
+            l.spawn(vec![(String::from(""), m)], None, Some(log.clone()))
+                .await?;
+            wait_for_continue(&log);
+            l.cleanup().await?;
         }
     }
 

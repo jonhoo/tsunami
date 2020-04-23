@@ -241,6 +241,10 @@ impl super::Launcher for Machine {
             Ok(hmap)
         })
     }
+
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
+        Box::pin(async move { Ok(()) })
+    }
 }
 
 impl Drop for Machine {

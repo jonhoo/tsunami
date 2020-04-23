@@ -58,6 +58,9 @@ pub trait Launcher {
         &'l self,
     ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
 
+    /// Shut down all instances.
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>>;
+
     /// Start up all the hosts.
     ///
     /// This call will block until the instances are spawned into the provided launcher.
