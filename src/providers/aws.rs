@@ -83,8 +83,9 @@ use std::{thread, time};
 pub enum AvailabilityZoneSpec {
     /// `Any` (the default) will place the instance anywhere there is capacity.
     Any,
-    /// `Cluster` will place all the instances with the given id together, without specifying
-    /// where.
+    /// `Cluster` will group instances by the given `usize` id, and ensure that each group is
+    /// placed in the same availability zone. To specify exactly which availability zone the
+    /// machines should be placed in, see `AvailabilityZoneSpec::Specify`.
     Cluster(usize),
     /// `Specify` will place all the instances in the named availability zone.
     Specify(String),
