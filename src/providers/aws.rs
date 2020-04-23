@@ -93,8 +93,9 @@ use std::pin::Pin;
 pub enum AvailabilityZoneSpec {
     /// `Any` (the default) will place the instance anywhere there is capacity.
     Any,
-    /// `Cluster` will place all the instances with the given id together, without specifying
-    /// where.
+    /// `Cluster` will group instances by the given `usize` id, and ensure that each group is
+    /// placed in the same availability zone. To specify exactly which availability zone the
+    /// machines should be placed in, see `AvailabilityZoneSpec::Specify`.
     Cluster(usize),
     /// `Specify` will place all the instances in the named availability zone.
     Specify(String),
@@ -396,11 +397,14 @@ struct IpInfo {
     private_ip: String,
 }
 
+// Internal representation of an instance.
+//
+// Tagged with its nickname, and ip_info gets populated once it is available.
 #[derive(Debug, Clone)]
 struct TaggedSetup {
     name: String,
     setup: Setup,
-    ipinfo: Option<IpInfo>,
+    ip_info: Option<IpInfo>,
 }
 
 /// Region specific. Launch AWS EC2 spot instances.
@@ -737,7 +741,7 @@ impl RegionLauncher {
                     TaggedSetup {
                         name: req.0,
                         setup: req.1,
-                        ipinfo: None,
+                        ip_info: None,
                     },
                 );
             }
@@ -934,7 +938,7 @@ impl RegionLauncher {
                             );
 
                             let tag_setup = self.instances.get_mut(&instance_id).unwrap();
-                            tag_setup.ipinfo = Some(IpInfo {
+                            tag_setup.ip_info = Some(IpInfo {
                                 public_ip: public_ip.clone(),
                                 public_dns: public_dns.clone(),
                                 private_ip: private_ip.clone(),
@@ -956,8 +960,8 @@ impl RegionLauncher {
 
         futures_util::future::join_all(
         self.instances.iter()
-            .map(|(_instance_id, TaggedSetup { ipinfo, name, setup })| { async move {
-                let IpInfo { public_ip, .. } = ipinfo.as_ref().unwrap();
+            .map(|(_instance_id, TaggedSetup { ip_info, name, setup })| { async move {
+                let IpInfo { public_ip, .. } = ip_info.as_ref().unwrap();
                 if let Setup {
                     username,
                     setup_fn: Some(f),
@@ -991,7 +995,7 @@ impl RegionLauncher {
                 TaggedSetup { 
                     name,
                     setup: Setup { username, .. },
-                    ipinfo: Some(IpInfo {
+                    ip_info: Some(IpInfo {
                         public_dns,
                         public_ip,
                         private_ip,
