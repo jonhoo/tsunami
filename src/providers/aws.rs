@@ -234,9 +234,8 @@ impl Setup {
         setup: impl for<'r> Fn(
                 &'r mut ssh::Session,
                 &'r slog::Logger,
-            )
-                -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
-            + Send 
+            ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+            + Send
             + Sync
             + 'static,
     ) -> Self {
@@ -326,17 +325,12 @@ impl<P> Launcher<P> {
     /// The provided function is called once for each region, and is expected to produce a
     /// [`P: ProvideAwsCredentials`](https://docs.rs/rusoto_core/0.40.0/rusoto_core/trait.ProvideAwsCredentials.html)
     /// that gives access to the region in question.
-    pub fn with_credentials<P2>(
-        mut self,
-        f: impl Fn() -> Result<P2, Error> + 'static,
-    ) -> Launcher<P2> {
-        // Launcher impls Drop, so can't move out of it.
-        let regions = self.regions.drain().collect();
+    pub fn with_credentials<P2>(self, f: impl Fn() -> Result<P2, Error> + 'static) -> Launcher<P2> {
         Launcher {
             credential_provider: Box::new(f),
             max_instance_duration_hours: self.max_instance_duration_hours,
             use_open_ports: self.use_open_ports,
-            regions,
+            regions: self.regions,
         }
     }
 }
@@ -380,6 +374,108 @@ where
                 .launch(*max_instance_duration_hours, l.max_wait, l.machines)
                 .await?;
             Ok(())
+        })
+    }
+
+    fn spawn<'l>(
+        &'l mut self,
+        descriptors: impl IntoIterator<Item = (String, Self::MachineDescriptor)> + 'static,
+        max_wait: Option<std::time::Duration>,
+        log: Option<slog::Logger>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
+        use super::MachineSetup;
+        Box::pin(async move {
+            let log = log.unwrap_or_else(|| slog::Logger::root(slog::Discard, o!()));
+
+            info!(log, "spinning up tsunami");
+
+            // group by region
+            let names_to_setups = descriptors
+                .into_iter()
+                .map(|(name, setup)| (MachineSetup::region(&setup), (name, setup)))
+                .into_group_map();
+
+            // separate into two lists:
+            // 1. we already have a RegionLauncher
+            // 2. we don't
+            let (mut haves, have_nots): (Vec<_>, Vec<_>) = names_to_setups
+                .into_iter()
+                .partition(|(region_name, _)| self.regions.contains_key(region_name));
+
+            // check that this works before unwrap() below
+            let _prov = (*self.credential_provider)()?;
+            let use_open_ports = self.use_open_ports;
+
+            let newly_initialized: Vec<Result<_, _>> =
+                futures_util::future::join_all(have_nots.iter().map(|(region_name, s)| {
+                    let region_log = log.new(slog::o!("region" => region_name.clone().to_string()));
+                    let prov = (*self.credential_provider)().unwrap();
+                    async move {
+                        let awsregion = RegionLauncher::new(
+                            &region_name.to_string(),
+                            // availability_zone spec is guaranteed to be the same because it's included in
+                            // the region specifier.
+                            s[0].1.availability_zone.clone(),
+                            prov,
+                            use_open_ports,
+                            region_log,
+                        )
+                        .await?;
+                        Ok::<_, Error>((region_name.clone(), awsregion))
+                    }
+                }))
+                .await;
+            self.regions.extend(
+                newly_initialized
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+
+            haves.extend(have_nots);
+            let max_wait = max_wait;
+            let max_instance_duration_hours = self.max_instance_duration_hours;
+
+            let regions =
+                futures_util::future::join_all(haves.into_iter().map(|(region_name, machines)| {
+                    // unwrap ok because of the have_nots setup we did above
+                    let mut region_launcher = self.regions.remove(&region_name).unwrap();
+                    async move {
+                        if let Err(e) = region_launcher
+                            .launch(max_instance_duration_hours, max_wait, machines)
+                            .await
+                        {
+                            Err((region_name, region_launcher, e))
+                        } else {
+                            Ok((region_name, region_launcher))
+                        }
+                    }
+                }))
+                .await;
+
+            let (regions, res) =
+                regions
+                    .into_iter()
+                    .fold((vec![], None), |acc, r| match (acc, r) {
+                        ((mut rs, x), Ok((name, rl))) => {
+                            rs.push((name, rl));
+                            (rs, x)
+                        }
+                        ((mut rs, None), Err((name, rl, e))) => {
+                            rs.push((name, rl));
+                            (rs, Some(e))
+                        }
+                        ((mut rs, x @ Some(_)), Err((name, rl, _))) => {
+                            rs.push((name, rl));
+                            (rs, x)
+                        }
+                    });
+
+            self.regions.extend(regions.into_iter());
+            if let Some(e) = res {
+                Err(e)
+            } else {
+                Ok(())
+            }
         })
     }
 
