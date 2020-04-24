@@ -88,7 +88,7 @@ impl Setup {
     /// ```rust
     /// use tsunami::providers::baremetal::Setup;
     ///
-    /// let m = Setup::new("127.0.0.1:22", None)
+    /// let m = Setup::new("127.0.0.1:22", None).unwrap()
     ///     .setup(|ssh, log| { Box::pin(async move {
     ///         slog::info!(log, "running setup!");
     ///         ssh.command("sudo").arg("apt").arg("update").status().await?;
