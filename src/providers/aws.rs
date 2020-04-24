@@ -431,13 +431,20 @@ where
                     .collect::<Result<Vec<_>, _>>()?,
             );
 
+            // the have-nots are now haves
             haves.extend(have_nots);
+
+            // Launch instances in the regions concurrently.
+            //
+            // The borrow checker can't know that each future only accesses one entry of the
+            // hashmap - for its RegionLauncher (guaranteed by the `into_group_map()` above).
+            // So, we help it by taking the appropriate RegionLauncher out of the hashmap,
+            // running `launch()`, then putting everything back later.
             let max_wait = max_wait;
             let max_instance_duration_hours = self.max_instance_duration_hours;
-
             let regions =
                 futures_util::future::join_all(haves.into_iter().map(|(region_name, machines)| {
-                    // unwrap ok because of the have_nots setup we did above
+                    // unwrap ok because everything is a have now
                     let mut region_launcher = self.regions.remove(&region_name).unwrap();
                     async move {
                         if let Err(e) = region_launcher
@@ -452,6 +459,7 @@ where
                 }))
                 .await;
 
+            // Put our stuff back where we found it.
             let (regions, res) =
                 regions
                     .into_iter()
@@ -469,8 +477,8 @@ where
                             (rs, x)
                         }
                     });
-
             self.regions.extend(regions.into_iter());
+
             if let Some(e) = res {
                 Err(e)
             } else {
