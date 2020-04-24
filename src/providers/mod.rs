@@ -202,7 +202,8 @@ async fn setup_machine(
         _tsunami: Default::default(),
     };
 
-    m.connect_ssh(log, username, private_key, max_wait).await?;
+    m.connect_ssh(log, username, private_key, max_wait, 22)
+        .await?;
     let mut sess = m.ssh.unwrap();
 
     debug!(log, "setting up instance"; "ip" => &pub_ip);

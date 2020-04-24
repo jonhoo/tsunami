@@ -118,11 +118,12 @@ impl<'t> Machine<'t> {
         username: &str,
         key_path: Option<&std::path::Path>,
         timeout: Option<std::time::Duration>,
+        port: u16,
     ) -> Result<(), failure::Error> {
         use failure::ResultExt;
         let mut sess = ssh::SessionBuilder::default();
 
-        sess.user(username.to_string()).port(22);
+        sess.user(username.to_string()).port(port);
 
         if let Some(k) = key_path {
             sess.keyfile(k);

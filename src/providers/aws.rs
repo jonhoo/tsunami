@@ -82,11 +82,11 @@ use rusoto_core::request::HttpClient;
 use rusoto_core::Region;
 use rusoto_ec2::Ec2;
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::Write;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::{thread, time};
-use std::future::Future;
-use std::pin::Pin;
 
 /// Available configurations of availability zone specifiers.
 ///
@@ -126,7 +126,18 @@ pub struct Setup {
     ami: String,
     username: String,
     #[educe(Debug(ignore))]
-    setup_fn: Option<Arc<dyn for<'r> Fn(&'r mut ssh::Session, &'r slog::Logger) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>> + Send + Sync + 'static>>,
+    setup_fn: Option<
+        Arc<
+            dyn for<'r> Fn(
+                    &'r mut ssh::Session,
+                    &'r slog::Logger,
+                )
+                    -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+                + Send
+                + Sync
+                + 'static,
+        >,
+    >,
 }
 
 impl super::MachineSetup for Setup {
@@ -336,7 +347,10 @@ where
 {
     type MachineDescriptor = Setup;
 
-    fn launch<'l>(&'l mut self, l: super::LaunchDescriptor<Self::MachineDescriptor>) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
+    fn launch<'l>(
+        &'l mut self,
+        l: super::LaunchDescriptor<Self::MachineDescriptor>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
         Box::pin(async move {
             let prov = (*self.credential_provider)()?;
             let Self {
@@ -346,33 +360,34 @@ where
                 ..
             } = self;
 
-                if !regions.contains_key(&l.region) {
-                    let awsregion = RegionLauncher::new(
-                        &l.region.to_string(),
-                        // availability_zone spec is guaranteed to be the same because it's included in
-                        // the region specifier.
-                        l.machines[0].1.availability_zone.clone(),
-                        prov,
-                        *use_open_ports,
-                        l.log,
-                    )
-                    .await?;
-                    regions.insert(l.region.clone(), awsregion);
-                }
+            if !regions.contains_key(&l.region) {
+                let awsregion = RegionLauncher::new(
+                    &l.region.to_string(),
+                    // availability_zone spec is guaranteed to be the same because it's included in
+                    // the region specifier.
+                    l.machines[0].1.availability_zone.clone(),
+                    prov,
+                    *use_open_ports,
+                    l.log,
+                )
+                .await?;
+                regions.insert(l.region.clone(), awsregion);
+            }
 
-                regions.get_mut(&l.region).unwrap()
-                    .launch(*max_instance_duration_hours, l.max_wait, l.machines)
-                    .await?;
-                Ok(())
+            regions
+                .get_mut(&l.region)
+                .unwrap()
+                .launch(*max_instance_duration_hours, l.max_wait, l.machines)
+                .await?;
+            Ok(())
         })
     }
 
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>> {
-        Box::pin(async move {
-            collect!(self.regions)
-        })
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>
+    {
+        Box::pin(async move { collect!(self.regions) })
     }
 
     fn cleanup(mut self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
@@ -385,7 +400,8 @@ where
                 self.regions
                     .drain()
                     .map(|(_, mut rl)| async move { rl.shutdown().await }),
-            ).await;
+            )
+            .await;
             Ok(())
         })
     }
@@ -419,7 +435,7 @@ struct TaggedSetup {
 /// maximum). To change this, RegionLauncher respects the limit specified in
 /// [`Launcher::set_max_instance_duration`](Launcher::set_max_instance_duration).
 ///
-/// You must call [`RegionLauncher::shutdown`] to terminate the instances. 
+/// You must call [`RegionLauncher::shutdown`] to terminate the instances.
 #[derive(Educe, Default)]
 #[educe(Debug)]
 pub struct RegionLauncher {
@@ -827,7 +843,7 @@ impl RegionLauncher {
                             trace!(log, "spot request satisfied"; "iid" => &instance_id);
 
                             Some((
-                                instance_id, 
+                                instance_id,
                                 self.outstanding_spot_request_ids
                                     .remove(&sir.spot_instance_request_id.unwrap())
                                     .unwrap()
@@ -931,17 +947,47 @@ impl RegionLauncher {
                             private_ip_address: Some(private_ip),
                             ..
                         } => {
-                            debug!(log, "instance ready";
+                            trace!(log, "instance running";
                                 "instance_id" => instance_id.clone(),
                                 "ip" => &public_ip,
                             );
 
+                            // try connecting. If can't, not ready.
                             let tag_setup = self.instances.get_mut(&instance_id).unwrap();
-                            tag_setup.ip_info = Some(IpInfo {
-                                public_ip: public_ip.clone(),
-                                public_dns: public_dns.clone(),
-                                private_ip: private_ip.clone(),
-                            });
+
+                            let mut m = crate::Machine {
+                                nickname: Default::default(),
+                                public_dns: Default::default(),
+                                public_ip: public_ip.to_string(),
+                                private_ip: None,
+                                ssh: None,
+                                _tsunami: Default::default(),
+                            };
+
+                            if let Err(e) = m
+                                .connect_ssh(
+                                    log,
+                                    &tag_setup.setup.username,
+                                    Some(private_key_path.path()),
+                                    max_wait,
+                                    22,
+                                )
+                                .await
+                            {
+                                trace!(log, "ssh failed"; "instance_id" => instance_id.clone(), "ip" => &public_ip, "err" => ?e);
+                                all_ready = false;
+                            } else {
+                                debug!(log, "instance ready";
+                                    "instance_id" => instance_id.clone(),
+                                    "ip" => &public_ip,
+                                );
+
+                                tag_setup.ip_info = Some(IpInfo {
+                                    public_ip: public_ip.clone(),
+                                    public_dns: public_dns.clone(),
+                                    private_ip: private_ip.clone(),
+                                });
+                            }
                         }
                         _ => {
                             all_ready = false;
@@ -957,30 +1003,42 @@ impl RegionLauncher {
             }
         }
 
-        futures_util::future::join_all(
-        self.instances.iter()
-            .map(|(_instance_id, TaggedSetup { ip_info, name, setup })| { async move {
-                let IpInfo { public_ip, .. } = ip_info.as_ref().unwrap();
-                if let Setup {
-                    username,
-                    setup_fn: Some(f),
-                    ..
-                } = setup
-                {
-                    super::setup_machine(
-                        log,
-                        &name,
-                        &public_ip,
-                        &username,
-                        max_wait,
-                        Some(private_key_path.path()),
-                        f.as_ref(),
-                    ).await?;
-                }
+        futures_util::future::join_all(self.instances.iter().map(
+            |(
+                _instance_id,
+                TaggedSetup {
+                    ip_info,
+                    name,
+                    setup,
+                },
+            )| {
+                async move {
+                    let IpInfo { public_ip, .. } = ip_info.as_ref().unwrap();
+                    if let Setup {
+                        username,
+                        setup_fn: Some(f),
+                        ..
+                    } = setup
+                    {
+                        super::setup_machine(
+                            log,
+                            &name,
+                            &public_ip,
+                            &username,
+                            max_wait,
+                            Some(private_key_path.path()),
+                            f.as_ref(),
+                        )
+                        .await?;
+                    }
 
-                Ok(())
-            }})
-        ).await.into_iter().collect()
+                    Ok(())
+                }
+            },
+        ))
+        .await
+        .into_iter()
+        .collect()
     }
 
     /// Establish SSH connections to the machines. The `Ok` value is a `HashMap` associating the
@@ -988,17 +1046,17 @@ impl RegionLauncher {
     pub async fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
         let log = self.log.as_ref().unwrap();
         let private_key_path = self.private_key_path.as_ref().unwrap();
-        futures_util::future::join_all(self.instances
-            .values()
-            .map(|info| async move {match info {
-                TaggedSetup { 
+        futures_util::future::join_all(self.instances.values().map(|info| async move {
+            match info {
+                TaggedSetup {
                     name,
                     setup: Setup { username, .. },
-                    ip_info: Some(IpInfo {
-                        public_dns,
-                        public_ip,
-                        private_ip,
-                    }),
+                    ip_info:
+                        Some(IpInfo {
+                            public_dns,
+                            public_ip,
+                            private_ip,
+                        }),
                 } => {
                     let mut m = Machine {
                         public_ip: public_ip.clone(),
@@ -1009,13 +1067,16 @@ impl RegionLauncher {
                         _tsunami: Default::default(),
                     };
 
-                    m.connect_ssh(log, &username, Some(private_key_path.path()), None).await?;
+                    m.connect_ssh(log, &username, Some(private_key_path.path()), None, 22)
+                        .await?;
                     Ok((name.clone(), m))
                 }
                 _ => bail!("Machines not initialized"),
-            }})).await
-            .into_iter()
-            .collect()
+            }
+        }))
+        .await
+        .into_iter()
+        .collect()
     }
 
     /// Terminate all running instances.
@@ -1120,31 +1181,63 @@ mod test {
     use rusoto_core::credential::DefaultCredentialsProvider;
     use rusoto_core::region::Region;
     use rusoto_ec2::Ec2;
+    use std::future::Future;
+
+    fn do_make_machine_and_ssh_setupfn<'l>(
+        l: &'l mut super::Launcher,
+    ) -> impl Future<Output = Result<(), Error>> + 'l {
+        use crate::providers::Launcher;
+        async move {
+            l.spawn(
+                vec![(
+                    String::from("my machine"),
+                    super::Setup::default().setup(|ssh, _| {
+                        Box::pin(async move {
+                            if ssh.command("whoami").status().await?.success() {
+                                Ok(())
+                            } else {
+                                Err(failure::format_err!("failed"))
+                            }
+                        })
+                    }),
+                )],
+                None,
+                None,
+            )
+            .await?;
+            let vms = l.connect_all().await?;
+            let my_machine = vms
+                .get("my machine")
+                .ok_or_else(|| failure::format_err!("machine not found"))?;
+            my_machine
+                .ssh
+                .as_ref()
+                .unwrap()
+                .command("echo")
+                .arg("\"Hello, EC2\"")
+                .status()
+                .await?;
+
+            Ok(())
+        }
+    }
 
     #[test]
     #[ignore]
-    fn make_machine_and_ssh() {
-        use crate::providers::{aws, Launcher};
+    fn make_machine_and_ssh_setupfn() {
+        use crate::providers::Launcher;
         let mut rt = tokio::runtime::Runtime::new().unwrap();
-        let mut l = aws::Launcher::default();
+        let mut l = super::Launcher::default();
         // make the defined-duration instances expire after 1 hour
         l.set_max_instance_duration(1);
         rt.block_on(async move {
-        l.spawn(vec![(String::from("my machine"), aws::Setup::default())], None, None).await.unwrap();
-        let vms = l.connect_all().await.unwrap();
-        let my_machine = vms.get("my machine").unwrap();
-        let out = my_machine
-            .ssh
-            .as_ref()
-            .unwrap()
-            .command("echo")
-            .arg("\"Hello, EC2\"")
-            .output().await
-            .unwrap();
-        let stdout = std::string::String::from_utf8(out.stdout).unwrap();
-        let stderr = std::string::String::from_utf8(out.stderr).unwrap();
-        println!("{}", stdout);
-        println!("{}", stderr);
+            if let Err(e) = do_make_machine_and_ssh_setupfn(&mut l).await {
+                // failed test.
+                l.cleanup().await.unwrap();
+                panic!(e);
+            } else {
+                l.cleanup().await.unwrap();
+            }
         })
     }
 
@@ -1183,6 +1276,27 @@ mod test {
         })
     }
 
+    fn do_multi_instance_spot_request<'l>(
+        ec2: &'l mut super::RegionLauncher,
+        logger: slog::Logger,
+    ) -> impl Future<Output = Result<(), Error>> + 'l {
+        async move {
+            use super::Setup;
+
+            let names = (1..).map(|x| format!("{}", x));
+            let setup = Setup::default();
+            let ms: Vec<(String, Setup)> = names.zip(itertools::repeat_n(setup, 5)).collect();
+
+            debug!(&logger, "make spot instance requests"; "num" => ms.len());
+            ec2.make_spot_instance_requests(60 as _, ms).await?;
+            assert_eq!(ec2.outstanding_spot_request_ids.len(), 5);
+            debug!(&logger, "wait for spot instance requests");
+            ec2.wait_for_spot_instance_requests(None).await?;
+
+            Ok(())
+        }
+    }
+
     #[test]
     #[ignore]
     fn multi_instance_spot_request() -> Result<(), Error> {
@@ -1201,17 +1315,13 @@ mod test {
             )
             .await?;
 
-            use super::Setup;
+            if let Err(e) = do_multi_instance_spot_request(&mut ec2, logger).await {
+                ec2.shutdown().await;
+                panic!(e);
+            } else {
+                ec2.shutdown().await;
+            }
 
-            let names = (1..).map(|x| format!("{}", x));
-            let setup = Setup::default();
-            let ms: Vec<(String, Setup)> = names.zip(itertools::repeat_n(setup, 5)).collect();
-
-            debug!(&logger, "make spot instance requests"; "num" => ms.len());
-            ec2.make_spot_instance_requests(60, ms).await?;
-            assert_eq!(ec2.outstanding_spot_request_ids.len(), 5);
-            debug!(&logger, "wait for spot instance requests");
-            ec2.wait_for_spot_instance_requests(None).await?;
             Ok(())
         })
     }

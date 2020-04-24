@@ -380,7 +380,7 @@ impl super::Launcher for RegionLauncher {
                 };
 
                 async move {
-                    m.connect_ssh(log, username, None, None).await?;
+                    m.connect_ssh(log, username, None, None, 22).await?;
                     Ok::<_, Error>((name.clone(), m))
                 }
             }))
@@ -646,6 +646,8 @@ mod azcmd {
 #[cfg(test)]
 mod test {
     use super::{azcmd, Region, Setup};
+    use failure::Error;
+    use std::future::Future;
 
     #[test]
     #[ignore]
@@ -663,22 +665,65 @@ mod test {
         })
     }
 
-    #[test]
-    #[ignore]
-    fn azure_launch() {
+    fn do_make_machine_and_ssh_setupfn<'l>(
+        l: &'l mut super::Launcher,
+        logger: slog::Logger,
+    ) -> impl Future<Output = Result<(), Error>> + 'l {
         use crate::providers::{LaunchDescriptor, Launcher};
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        let l = crate::test::test_logger();
-        let m = Setup::default();
+        let m = Setup::default().setup(|ssh, _| {
+            Box::pin(async move {
+                if ssh.command("whoami").status().await?.success() {
+                    Ok(())
+                } else {
+                    Err(failure::format_err!("failed"))
+                }
+            })
+        });
+
         let ld = LaunchDescriptor {
             region: m.region,
-            log: l,
+            log: logger.clone(),
             max_wait: None,
             machines: vec![("foo".to_owned(), m)],
         };
+
+        async move {
+            debug!(&logger, "launching");
+            l.launch(ld).await?;
+            debug!(&logger, "connecting");
+            let vms = l.connect_all().await?;
+            debug!(&logger, "get machine");
+            let my_machine = vms
+                .get("foo")
+                .ok_or_else(|| failure::format_err!("machine not found"))?;
+            debug!(&logger, "running command");
+            my_machine
+                .ssh
+                .as_ref()
+                .unwrap()
+                .command("echo")
+                .arg("\"Hello, Azure\"")
+                .status()
+                .await?;
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn azure_launch_with_setupfn() {
+        use crate::providers::Launcher;
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let l = crate::test::test_logger();
         let mut azure = super::Launcher::default();
         rt.block_on(async move {
-            azure.launch(ld).await.unwrap();
+            if let Err(e) = do_make_machine_and_ssh_setupfn(&mut azure, l).await {
+                azure.cleanup().await.unwrap();
+                panic!(e);
+            } else {
+                azure.cleanup().await.unwrap();
+            }
         })
     }
 }

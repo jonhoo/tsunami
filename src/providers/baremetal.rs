@@ -21,8 +21,18 @@ pub struct Setup {
     username: String,
     key_path: Option<std::path::PathBuf>,
     #[educe(Debug(ignore))]
-    setup_fn:
-        Option<Arc<dyn Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync>>,
+    setup_fn: Option<
+        Arc<
+            dyn for<'r> Fn(
+                    &'r mut ssh::Session,
+                    &'r slog::Logger,
+                )
+                    -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+                + Send
+                + Sync
+                + 'static,
+        >,
+    >,
 }
 
 impl super::MachineSetup for Setup {
@@ -72,14 +82,31 @@ impl Setup {
     /// for every spawned instances of this type with a handle
     /// to the target machine. Use [`crate::Machine::ssh`] to issue
     /// commands on the host in question.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tsunami::providers::baremetal::Setup;
+    ///
+    /// let m = Setup::new("127.0.0.1:22", None)
+    ///     .setup(|ssh, log| { Box::pin(async move {
+    ///         slog::info!(log, "running setup!");
+    ///         ssh.command("sudo").arg("apt").arg("update").status().await?;
+    ///         Ok(())
+    ///     })});
+    /// ```
     pub fn setup(
-        self,
-        setup: impl Fn(&mut ssh::Session, &slog::Logger) -> Result<(), Error> + Send + Sync + 'static,
+        mut self,
+        setup: impl for<'r> Fn(
+                &'r mut ssh::Session,
+                &'r slog::Logger,
+            ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+            + Send
+            + Sync
+            + 'static,
     ) -> Self {
-        Self {
-            setup_fn: Some(Arc::new(setup)),
-            ..self
-        }
+        self.setup_fn = Some(Arc::new(setup));
+        self
     }
 }
 
@@ -93,8 +120,8 @@ async fn try_addrs(
     while let Some(addr) = s.addr.pop() {
         let mut m = crate::Machine {
             nickname: Default::default(),
-            public_dns: addr.to_string(),
-            public_ip: addr.to_string(),
+            public_dns: addr.ip().to_string(),
+            public_ip: addr.ip().to_string(),
             private_ip: None,
             ssh: None,
             _tsunami: Default::default(),
@@ -106,6 +133,7 @@ async fn try_addrs(
                 &s.username,
                 s.key_path.as_ref().map(|p| p.as_path()),
                 max_wait,
+                addr.port(),
             )
             .await
         {
@@ -170,8 +198,8 @@ impl super::Launcher for Machine {
             {
                 let mut m = crate::Machine {
                     nickname: Default::default(),
-                    public_dns: addr.to_string(),
-                    public_ip: addr.to_string(),
+                    public_dns: addr.ip().to_string(),
+                    public_ip: addr.ip().to_string(),
                     private_ip: None,
                     ssh: None,
                     _tsunami: Default::default(),
@@ -182,6 +210,7 @@ impl super::Launcher for Machine {
                     &username,
                     key_path.as_ref().map(|p| p.as_path()),
                     l.max_wait,
+                    addr.port(),
                 )
                 .await
                 .map_err(|e| {
@@ -191,7 +220,7 @@ impl super::Launcher for Machine {
 
                 let mut sess = m.ssh.unwrap();
 
-                f(&mut sess, log).map_err(|e| {
+                f(&mut sess, log).await.map_err(|e| {
                     error!(
                         log,
                         "machine setup failed";
@@ -221,7 +250,7 @@ impl super::Launcher for Machine {
                 .ok_or_else(|| format_err!("Address uninitialized"))?;
             let mut m = crate::Machine {
                 nickname: self.name.clone(),
-                public_dns: addr.to_string(),
+                public_dns: addr.ip().to_string(),
                 public_ip: addr.ip().to_string(),
                 private_ip: None,
                 ssh: None,
@@ -233,6 +262,7 @@ impl super::Launcher for Machine {
                 &self.username,
                 self.key_path.as_ref().map(|p| p.as_path()),
                 None,
+                addr.port(),
             )
             .await?;
 
@@ -250,7 +280,7 @@ impl super::Launcher for Machine {
 impl Drop for Machine {
     fn drop(&mut self) {
         let log = self.log.as_ref().expect("Baremetal machine uninitialized");
-        debug!(log, "Dropping baremetal machine"; "addr" => self.addr.unwrap());
+        debug!(log, "Dropping baremetal machine"; "addr" => ?self.addr);
     }
 }
 
