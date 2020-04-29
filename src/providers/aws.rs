@@ -1243,27 +1243,27 @@ struct UbuntuAmi(String);
 
 impl From<Region> for UbuntuAmi {
     fn from(r: Region) -> Self {
-        // https://cloud-images.ubuntu.com/locator/
-        // ec2 20190814 releases
+        // https://cloud-images.ubuntu.com/locator/ec2
+        // 20200408 hvm:ebs-ssd amd64 bionic 18.04
         UbuntuAmi(
             match r {
-                Region::ApEast1 => "ami-e0ff8491",               // Hong Kong
-                Region::ApNortheast1 => "ami-0cb1c8cab7f5249b6", // Tokyo
-                Region::ApNortheast2 => "ami-081626bfb3fbc9f49", // Seoul
-                Region::ApSouth1 => "ami-0cf8402efdb171312",     // Mumbai
-                Region::ApSoutheast1 => "ami-099d318f80eab7e94", // Singapore
-                Region::ApSoutheast2 => "ami-08a648fb5cc86fb74", // Sydney
-                Region::CaCentral1 => "ami-0bc1dd4eb012a451e",   // Canada
-                Region::EuCentral1 => "ami-0cdab515472ca0bac",   // Frankfurt
-                Region::EuNorth1 => "ami-c37bf0bd",              // Stockholm
-                Region::EuWest1 => "ami-01cca82393e531118",      // Ireland
-                Region::EuWest2 => "ami-0a7c91b6616d113b1",      // London
-                Region::EuWest3 => "ami-033e0056c336ecff0",      // Paris
-                Region::SaEast1 => "ami-094c359b4d8c6a8ca",      // Sao Paulo
-                Region::UsEast1 => "ami-064a0193585662d74",      // N Virginia
-                Region::UsEast2 => "ami-021b7b04f1ac696c2",      // Ohio
-                Region::UsWest1 => "ami-056d04da775d124d7",      // N California
-                Region::UsWest2 => "ami-09a3d8a7177216dcf",      // Oregon
+                Region::ApEast1 => "ami-c790d6b6",               //  Hong Kong
+                Region::ApNortheast1 => "ami-0278fe6949f6b1a06", //  Tokyo
+                Region::ApNortheast2 => "ami-00edfb46b107f643c", //  Seoul
+                Region::ApSouth1 => "ami-0b44050b2d893d5f7",     //  Mumbai
+                Region::ApSoutheast1 => "ami-0f7719e8b7ba25c61", //  Singapore
+                Region::ApSoutheast2 => "ami-04fcc97b5f6edcd89", //  Sydney
+                Region::CaCentral1 => "ami-0edd51cc29813e254",   //  Canada
+                Region::EuCentral1 => "ami-0e342d72b12109f91",   //  Frankfurt
+                Region::EuNorth1 => "ami-050981837962d44ac",     //  Stockholm
+                Region::EuWest1 => "ami-0701e7be9b2a77600",      //  Ireland
+                Region::EuWest2 => "ami-0eb89db7593b5d434",      //  London
+                Region::EuWest3 => "ami-08c757228751c5335",      //  Paris
+                Region::SaEast1 => "ami-077d5d3682940b34a",      //  Sao Paulo
+                Region::UsEast1 => "ami-085925f297f89fce1",      //  N Virginia
+                Region::UsEast2 => "ami-07c1207a9d40bc3bd",      //  Ohio
+                Region::UsWest1 => "ami-0f56279347d2fa43e",      //  N California
+                Region::UsWest2 => "ami-003634241a8fcdec0",      //  Oregon
                 x => panic!("Unsupported Region {:?}", x),
             }
             .into(),
