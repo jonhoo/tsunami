@@ -24,7 +24,7 @@ maintenance = { status = "passively-maintained" }
 [features]
 default = ["aws", "azure", "baremetal"]
 debug = ["slog/max_level_trace", "slog/release_max_level_debug"]
-aws = ["rusoto_core", "rusoto_ec2", "futures-util", "tempfile"]
+aws = ["rusoto_core", "rusoto_ec2", "futures-util", "tempfile", "ubuntu-ami"]
 azure = ["serde", "serde_json", "futures-util", "tokio", "tokio/process"]
 baremetal = []
 args = ["structopt"]
@@ -45,6 +45,7 @@ tokio = { version = "0.2.0", optional = true }
 serde_json = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true}
 structopt = { version = "0.2", optional = true }
+ubuntu-ami = { version = "0.1", optional = true }
 
 [dev-dependencies]
 rusoto_sts = "0.43.0"

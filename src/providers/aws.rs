@@ -111,11 +111,11 @@ impl Default for AvailabilityZoneSpec {
 
 /// A descriptor for a particular machine setup in a tsunami.
 ///
-/// An AMI and username must be set (indicated by marker type [`Yes`]) for this to be useful.
-/// The default region and ami is Ubuntu 18.04 LTS in us-east-1. Users can call one of:
+/// The default region and ami is Ubuntu 18.04 LTS in us-east-1. The default AMI is updated on a
+/// passive basis, so you almost certainly want to call one of:
 /// - [`Setup::region_with_ubuntu_ami`]
 /// - [`Setup::ami`]
-/// - [`Setup::region`] followed by [`Setup::ami`]
+/// - [`Setup::region`]
 /// to change these defaults.
 #[derive(Clone, Educe)]
 #[educe(Debug)]
@@ -158,7 +158,7 @@ impl Default for Setup {
             region: Region::UsEast1,
             availability_zone: AvailabilityZoneSpec::Any,
             instance_type: "t3.small".into(),
-            ami: UbuntuAmi::from(Region::UsEast1).into(),
+            ami: String::from("ami-085925f297f89fce1"),
             username: "ubuntu".into(),
             setup_fn: None,
         }
@@ -170,14 +170,16 @@ impl Setup {
     /// [`Region`](http://rusoto.github.io/rusoto/rusoto_core/region/enum.Region.html).
     ///
     /// The default region is us-east-1. [Available regions are listed
-    /// here](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#concepts-available-regions)
+    /// here.](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#concepts-available-regions)
     ///
-    /// AMIs are region-specific. This will overwrite the ami field to
-    /// the Ubuntu 18.04 LTS AMI in the selected region.
-    pub fn region_with_ubuntu_ami(mut self, region: Region) -> Self {
+    /// AMIs are region-specific.  This method uses
+    /// [`ubuntu-ami`](https://crates.io/crates/ubuntu-ami), which queries [Ubuntu's cloud image
+    /// list](https://cloud-images.ubuntu.com/) to get the latest Ubuntu 18.04 LTS AMI in the
+    /// selected region.
+    pub async fn region_with_ubuntu_ami(mut self, region: Region) -> Result<Self, Error> {
         self.region = region.clone();
-        let ami: String = UbuntuAmi::from(region).into();
-        self.ami(ami, "ubuntu")
+        let ami: String = UbuntuAmi::new(region).await?.into();
+        Ok(self.ami(ami, "ubuntu"))
     }
 
     /// Set the username used to ssh into the machine.
@@ -1241,33 +1243,19 @@ impl RegionLauncher {
 
 struct UbuntuAmi(String);
 
-impl From<Region> for UbuntuAmi {
-    fn from(r: Region) -> Self {
-        // https://cloud-images.ubuntu.com/locator/ec2
-        // 20200408 hvm:ebs-ssd amd64 bionic 18.04
-        UbuntuAmi(
-            match r {
-                Region::ApEast1 => "ami-c790d6b6",               //  Hong Kong
-                Region::ApNortheast1 => "ami-0278fe6949f6b1a06", //  Tokyo
-                Region::ApNortheast2 => "ami-00edfb46b107f643c", //  Seoul
-                Region::ApSouth1 => "ami-0b44050b2d893d5f7",     //  Mumbai
-                Region::ApSoutheast1 => "ami-0f7719e8b7ba25c61", //  Singapore
-                Region::ApSoutheast2 => "ami-04fcc97b5f6edcd89", //  Sydney
-                Region::CaCentral1 => "ami-0edd51cc29813e254",   //  Canada
-                Region::EuCentral1 => "ami-0e342d72b12109f91",   //  Frankfurt
-                Region::EuNorth1 => "ami-050981837962d44ac",     //  Stockholm
-                Region::EuWest1 => "ami-0701e7be9b2a77600",      //  Ireland
-                Region::EuWest2 => "ami-0eb89db7593b5d434",      //  London
-                Region::EuWest3 => "ami-08c757228751c5335",      //  Paris
-                Region::SaEast1 => "ami-077d5d3682940b34a",      //  Sao Paulo
-                Region::UsEast1 => "ami-085925f297f89fce1",      //  N Virginia
-                Region::UsEast2 => "ami-07c1207a9d40bc3bd",      //  Ohio
-                Region::UsWest1 => "ami-0f56279347d2fa43e",      //  N California
-                Region::UsWest2 => "ami-003634241a8fcdec0",      //  Oregon
-                x => panic!("Unsupported Region {:?}", x),
-            }
-            .into(),
-        )
+impl UbuntuAmi {
+    async fn new(r: Region) -> Result<Self, Error> {
+        Ok(UbuntuAmi(
+            ubuntu_ami::get_latest(
+                &r.name(),
+                Some("bionic"),
+                None,
+                Some("hvm:ebs-ssd"),
+                Some("amd64"),
+            )
+            .await
+            .map_err(Error::from_boxed_compat)?,
+        ))
     }
 }
 
