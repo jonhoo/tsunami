@@ -380,7 +380,7 @@ where
 {
     type MachineDescriptor = Setup;
 
-    #[instrument(debug, skip(self))]
+    #[instrument(level = "debug", skip(self))]
     fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
