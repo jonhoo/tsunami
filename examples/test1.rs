@@ -1,42 +1,85 @@
 extern crate tsunami;
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::time;
-use tsunami::{Machine, MachineSetup, TsunamiBuilder};
+use rusoto_core::Region;
+use slog::{info, warn};
+use tsunami::providers::{aws, Launcher};
+use tsunami::Machine;
 
-fn main() {
-    let mut b = TsunamiBuilder::default();
-    b.use_term_logger();
-    b.add_set(
-        "server",
-        1,
-        MachineSetup::new("c5.xlarge", "ami-e18aa89b", |ssh| {
-            ssh.upload(Path::new("/etc/hostname"), Path::new("local-hostname"))?;
-            ssh.cmd("cat local-hostname").map(|out| {
-                println!("{}", out);
-            })?;
+async fn ping(
+    from: &Machine<'_>,
+    to: &Machine<'_>,
+    log: &slog::Logger,
+) -> Result<(), failure::Error> {
+    let to_ip = &to.public_ip;
 
-            ssh.download(Path::new("/etc/hostname"), Path::new("server-hostname"))
-        }),
-    );
-    b.add_set(
-        "client",
-        3,
-        MachineSetup::new("c5.xlarge", "ami-e18aa89b", |ssh| {
-            ssh.cmd("date").map(|out| {
-                println!("{}", out);
-            })
-        }),
-    );
+    let ssh = from.ssh.as_ref().unwrap();
+    let out = ssh
+        .command("ping")
+        .arg("-c")
+        .arg("10")
+        .arg(&to_ip)
+        .output()
+        .await?;
+    let stdout = std::string::String::from_utf8(out.stdout)?;
+    info!(log, "ping"; "from" => &from.public_ip, "to" => to_ip, "ping" => stdout);
+    Ok(())
+}
 
-    b.wait_limit(time::Duration::from_secs(10));
-    b.run(|vms: HashMap<String, Vec<Machine>>| {
-        println!("==> {}", vms["server"][0].private_ip);
-        for c in &vms["client"] {
-            println!(" -> {}", c.private_ip);
-        }
-        Ok(())
-    })
-    .unwrap();
+#[tokio::main]
+async fn main() -> Result<(), failure::Error> {
+    let ms = vec![
+        (
+            String::from("east"),
+            aws::Setup::default()
+                .region_with_ubuntu_ami(Region::UsEast1)
+                .await?
+                .setup(|ssh, log| {
+                    Box::pin(async move {
+                        if let Err(e) = ssh.command("sudo").arg("apt").arg("update").status().await
+                        {
+                            warn!(&log, "apt update failed"; "err" => ?e);
+                        };
+
+                        Ok(())
+                    })
+                }),
+        ),
+        (
+            String::from("india"),
+            aws::Setup::default()
+                .region_with_ubuntu_ami(Region::ApSouth1)
+                .await?
+                .instance_type("t3.small")
+                .setup(|ssh, log| {
+                    Box::pin(async move {
+                        if let Err(e) = ssh.command("sudo").arg("apt").arg("update").status().await
+                        {
+                            warn!(&log, "apt update failed"; "err" => ?e);
+                        };
+
+                        Ok(())
+                    })
+                }),
+        ),
+    ];
+
+    let log = tsunami::get_term_logger();
+    let mut l: tsunami::providers::aws::Launcher<_> = Default::default();
+    l.spawn(
+        ms,
+        Some(std::time::Duration::from_secs(30)),
+        Some(log.clone()),
+    )
+    .await?;
+
+    let vms = l.connect_all().await?;
+
+    let east = vms.get("east").unwrap();
+    let india = vms.get("india").unwrap();
+
+    ping(east, india, &log).await?;
+    ping(india, east, &log).await?;
+
+    l.terminate_all().await?;
+    Ok(())
 }

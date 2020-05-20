@@ -1,796 +1,337 @@
-//! `tsunami` provides an interface for running short-lived jobs and experiments on EC2 spot block
-//! instances. Most interaction with this library happens through
-//! [`TsunamiBuilder`](struct.TsunamiBuilder.html).
+//! `tsunami` provides an interface for running short-lived jobs and experiments on cloud
+//! instances.
 //!
-//! # Examples
+//! # Example
 //!
 //! ```rust,no_run
-//! # use tsunami::{Machine, MachineSetup, TsunamiBuilder};
-//! # use std::collections::HashMap;
-//! let mut b = TsunamiBuilder::default();
-//! b.use_term_logger();
-//! b.add_set(
-//!     "server",
-//!     1,
-//!     MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
-//!         ssh.cmd("yum install nginx").map(|out| {
-//!             println!("{}", out);
-//!         })
-//!     }),
-//! );
-//! b.add_set(
-//!     "client",
-//!     3,
-//!     MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
-//!         ssh.cmd("yum install wget").map(|out| {
-//!             println!("{}", out);
-//!         })
-//!     }),
-//! );
+//! use azure::Region as AzureRegion;
+//! use rusoto_core::{credential::DefaultCredentialsProvider, Region as AWSRegion};
+//! use tsunami::Tsunami;
+//! use tsunami::providers::{aws, azure};
+//! #[tokio::main]
+//! async fn main() -> Result<(), failure::Error> {
+//!     // Initialize AWS
+//!     let mut aws = aws::Launcher::default();
+//!     // Create an AWS machine descriptor and add it to the AWS Tsunami
+//!     aws.spawn(
+//!         vec![(
+//!             String::from("aws_vm"),
+//!             aws::Setup::default()
+//!                 .region_with_ubuntu_ami(AWSRegion::UsWest1) // default is UsEast1
+//!                 .await
+//!                 .unwrap()
+//!                 .setup(|ssh, _| {
+//!                     // default is a no-op
+//!                     Box::pin(async move {
+//!                         ssh.command("sudo")
+//!                             .arg("apt")
+//!                             .arg("update")
+//!                             .status()
+//!                             .await?;
+//!                         ssh.command("bash")
+//!                             .arg("-c")
+//!                             .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"")
+//!                             .status()
+//!                             .await?;
+//!                         Ok(())
+//!                     })
+//!                 }),
+//!         )],
+//!         None,
+//!         None,
+//!     )
+//!     .await?;
 //!
-//! b.run(|vms: HashMap<String, Vec<Machine>>| {
-//!     println!("==> {}", vms["server"][0].private_ip);
-//!     for c in &vms["client"] {
-//!         println!(" -> {}", c.private_ip);
-//!     }
-//!     // ...
+//!     // Initialize Azure
+//!     let mut azure = azure::Launcher::default();
+//!     // Create an Azure machine descriptor and add it to the Azure Tsunami
+//!     azure
+//!         .spawn(
+//!             vec![(
+//!                 String::from("azure_vm"),
+//!                 azure::Setup::default()
+//!                     .region(AzureRegion::FranceCentral) // default is EastUs
+//!                     .setup(|ssh, _| {
+//!                         // default is a no-op
+//!                         Box::pin(async move {
+//!                             ssh.command("sudo")
+//!                                 .arg("apt")
+//!                                 .arg("update")
+//!                                 .status()
+//!                                 .await?;
+//!                             ssh.command("bash")
+//!                                 .arg("-c")
+//!                                 .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"")
+//!                                 .status()
+//!                                 .await?;
+//!                             Ok(())
+//!                         })
+//!                     }),
+//!             )],
+//!             None,
+//!             None,
+//!         )
+//!         .await?;
+//!
+//!     // SSH to the VM and run a command on it
+//!     let aws_vms = aws.connect_all().await?;
+//!     let azure_vms = azure.connect_all().await?;
+//!
+//!     let vms = aws_vms.into_iter().chain(azure_vms.into_iter());
+//!
+//!     // do things with my VMs!
+//!
+//!     // call terminate_all() to terminate the instances.
+//!     aws.terminate_all().await?;
+//!     azure.terminate_all().await?;
 //!     Ok(())
-//! }).unwrap();
+//! }
 //! ```
 //!
 //! # Live-coding
 //!
-//! The crate is under development as part of a live-coding stream series intended for users who
+//! An earlier version of this crate was written as part of a live-coding stream series intended for users who
 //! are already somewhat familiar with Rust, and who want to see something larger and more involved
 //! be built. You can find the recordings of past sessions [on
 //! YouTube](https://www.youtube.com/playlist?list=PLqbS7AVVErFgY2faCIYjJZv_RluGkTlKt).
-#![deny(missing_docs, rust_2018_idioms)]
+#![warn(unreachable_pub)]
+#![warn(missing_docs)]
+#![warn(missing_copy_implementations)]
+#![warn(trivial_casts)]
+#![warn(trivial_numeric_casts)]
+#![warn(unused_extern_crates)]
+#![warn(rust_2018_idioms)]
+#![warn(missing_debug_implementations)]
+#![allow(clippy::type_complexity)]
 
-#[macro_use]
-extern crate failure;
 #[macro_use]
 extern crate slog;
+#[macro_use]
+extern crate failure;
 
-use failure::{Error, ResultExt};
-use rayon::prelude::*;
-use rusoto_core::credential::{DefaultCredentialsProvider, ProvideAwsCredentials};
-use rusoto_core::request::HttpClient;
-use rusoto_core::Region;
+use failure::Error;
+pub use openssh as ssh;
+pub use ssh::Session;
 use std::collections::HashMap;
-use std::io::Write;
-use std::{thread, time};
+use std::future::Future;
+use std::pin::Pin;
 
-mod ssh;
-pub use crate::ssh::Session;
+pub mod providers;
 
 /// A handle to an instance currently running as part of a tsunami.
-pub struct Machine {
-    /// An established SSH session to this host.
-    pub ssh: Option<ssh::Session>,
-
-    /// AWS EC2 instance type hosting this machine.
+///
+/// Run commands on the machine using the [`ssh::Session`] via the `ssh` field.
+#[derive(Debug)]
+pub struct Machine<'tsunami> {
+    /// The friendly name for this machine.
     ///
-    /// See https://aws.amazon.com/ec2/instance-types/ for details.
-    pub instance_type: String,
-
-    /// The private IP address of this host on its designated VPC.
-    pub private_ip: String,
-
-    /// The publicly accessible hostname of this host.
+    /// Corresponds to the name set in [`TsunamiBuilder::add`].
+    pub nickname: String,
+    /// The public IP address of the machine.
+    pub public_ip: String,
+    /// The private IP address of the machine, if available.
+    pub private_ip: Option<String>,
+    /// The public DNS name of the machine.
+    ///
+    /// If the instance doesn't have a DNS name, this field will be
+    /// equivalent to `public_ip`.
     pub public_dns: String,
 
-    /// The publicly accessible IP address of this host.
-    pub public_ip: String,
+    /// If `Some(_)`, an established SSH session to this host.
+    pub ssh: Option<ssh::Session>,
+
+    // tie the lifetime of the machine to the Tsunami.
+    _tsunami: std::marker::PhantomData<&'tsunami ()>,
 }
 
-/// A template for a particular machine setup in a tsunami.
-pub struct MachineSetup {
-    instance_type: String,
-    ami: String,
-    username: String,
-    setup: Box<dyn Fn(&mut ssh::Session) -> Result<(), Error> + Sync>,
-}
+impl<'t> Machine<'t> {
+    #[cfg(any(feature = "aws", feature = "azure", feature = "baremetal"))]
+    async fn connect_ssh(
+        &mut self,
+        log: &slog::Logger,
+        username: &str,
+        key_path: Option<&std::path::Path>,
+        timeout: Option<std::time::Duration>,
+        port: u16,
+    ) -> Result<(), failure::Error> {
+        use failure::ResultExt;
+        let mut sess = ssh::SessionBuilder::default();
 
-impl MachineSetup {
-    /// Define a new template for a tsunami machine setup.
-    ///
-    /// The given AWS EC2 instance type will be used. Note that only [EC2 Defined Duration Spot
-    /// Instance types](https://aws.amazon.com/ec2/spot/pricing/) are allowed.
-    ///
-    /// The `setup` argument is called once for every spawned instances of this type with a handle
-    /// to the target machine. Use [`Machine::ssh`](struct.Machine.html#structfield.ssh) to issue
-    /// commands on the host in question.
-    ///
-    /// The new instance will start out in the state dictated by the Amazon Machine Image specified
-    /// in `ami`.
-    ///
-    /// ```rust
-    /// # use tsunami::MachineSetup;
-    /// MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
-    ///     ssh.cmd("cat /etc/hostname").map(|out| {
-    ///         println!("{}", out);
-    ///     })
-    /// });
-    /// ```
-    pub fn new<F>(instance_type: &str, ami: &str, setup: F) -> Self
-    where
-        F: Fn(&mut ssh::Session) -> Result<(), Error> + 'static + Sync,
-    {
-        MachineSetup {
-            instance_type: instance_type.to_string(),
-            ami: ami.to_string(),
-            username: String::from("ec2-user"),
-            setup: Box::new(setup),
+        sess.user(username.to_string()).port(port);
+
+        if let Some(k) = key_path {
+            sess.keyfile(k);
         }
-    }
 
-    /// Set the username to SSH into this machine type as.
-    ///
-    /// Defaults to `ec2-user`.
-    pub fn as_user(mut self, username: &str) -> Self {
-        self.username = username.to_string();
-        self
+        if let Some(t) = timeout {
+            sess.connect_timeout(t);
+        }
+
+        let sess = sess
+            .connect(&self.public_ip)
+            .await
+            .context(format!("failed to ssh to machine {}", self.public_dns))
+            .map_err(|e| {
+                slog::error!(log, "failed to ssh to {}", self.public_ip);
+                e
+            })?;
+
+        self.ssh = Some(sess);
+        Ok(())
     }
 }
 
-/// Use this to prepare and execute a new tsunami.
+/// Use this trait to launch machines into providers.
 ///
-/// A tsunami consists of one or more [`MachineSetup`](struct.MachineSetup.html)s that will be
-/// spawned as EC2 spot instances. See
-/// [`TsunamiBuilder#add_set`](struct.TsunamiBuilder.html#method.add_set)) for how to construct a
-/// tsunami.
-#[must_use]
-pub struct TsunamiBuilder {
-    descriptors: HashMap<String, (MachineSetup, u32)>,
-    log: slog::Logger,
-    max_duration: i64,
-    region: Region,
-    availability_zone: Option<String>,
-    cluster: bool,
-    max_wait: Option<time::Duration>,
-}
+/// Important: You must call `terminate_all` to shut down the instances once you are done. Otherwise, you
+/// may incur unexpected charges from the cloud provider.
+///
+/// This trait is sealed. If you want to implement support for a provider, see [`providers::Launcher`].
+pub trait Tsunami: sealed::Sealed {
+    /// A type describing a single instance to launch.
+    type MachineDescriptor: providers::MachineSetup;
 
-impl Default for TsunamiBuilder {
-    fn default() -> Self {
-        TsunamiBuilder {
-            descriptors: Default::default(),
-            log: slog::Logger::root(slog::Discard, o!()),
-            max_duration: 60,
-            region: Region::UsEast1,
-            availability_zone: None,
-            cluster: true,
-            max_wait: None,
-        }
-    }
-}
-
-impl TsunamiBuilder {
-    /// Add a new (named) machine setup template, and set how many instances of that type should be
-    /// spawned as part of the tsunami.
+    /// Start up all the hosts.
     ///
-    /// ```rust
-    /// # use tsunami::{TsunamiBuilder, MachineSetup};
-    /// let mut b = TsunamiBuilder::default();
-    /// b.add_set(
-    ///     "server",
-    ///     1,
-    ///     MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
-    ///         ssh.cmd("yum install nginx").map(|out| {
-    ///             println!("{}", out);
-    ///         })
-    ///     }),
-    /// );
-    /// b.add_set(
-    ///     "client",
-    ///     10,
-    ///     MachineSetup::new("m5.large", "ami-e18aa89b", |ssh| {
-    ///         ssh.cmd("yum install wget").map(|out| {
-    ///             println!("{}", out);
-    ///         })
-    ///     }),
-    /// );
+    /// The returned future will resolve when the instances are spawned into the provided launcher.
+    /// SSH connections to each instance are accesssible via
+    /// [`connect_all`](providers::Launcher::connect_all).
+    ///
+    /// # Arguments
+    /// - `descriptors` is an iterator of machine nickname to descriptor. Duplicate nicknames will
+    /// cause an error. To add many and auto-generate nicknames, see the helper function
+    /// [`crate::make_multiple`].
+    /// - `max_wait` limits how long we should wait for instances to be available before giving up.
+    /// Passing `None` implies no limit.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), failure::Error> {
+    ///     use tsunami::Tsunami;
+    ///     // make a launcher
+    ///     let mut aws: tsunami::providers::aws::Launcher<_> = Default::default();
+    ///     // spawn a host into the launcher
+    ///     aws.spawn(
+    ///         vec![(String::from("my_tsunami"), Default::default())],
+    ///         None,
+    ///         None,
+    ///     )
+    ///     .await?;
+    ///     // access the host via the launcher
+    ///     let vms = aws.connect_all().await?;
+    ///     // we're done! terminate the instance.
+    ///     aws.terminate_all().await?;
+    ///     Ok(())
+    /// }
     /// ```
-    pub fn add_set(&mut self, name: &str, number: u32, setup: MachineSetup) {
-        // TODO: what if name is already in use?
-        self.descriptors.insert(name.to_string(), (setup, number));
+    fn spawn<'l, I>(
+        &'l mut self,
+        descriptors: I,
+        max_wait: Option<std::time::Duration>,
+        log: Option<slog::Logger>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>>
+    where
+        I: IntoIterator<Item = (String, Self::MachineDescriptor)> + Send + 'static,
+        I::IntoIter: Send;
+
+    /// Return connections to the [`Machine`s](crate::Machine) that `spawn` spawned.
+    fn connect_all<'l>(
+        &'l self,
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>;
+
+    /// Shut down all instances.
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
+}
+
+impl<L: providers::Launcher> Tsunami for L {
+    type MachineDescriptor = L::MachineDescriptor;
+
+    fn connect_all<'l>(
+        &'l self,
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>
+    {
+        self.connect_all()
     }
 
-    /// Set up the machines in a specific EC2
-    /// [`Region`](http://rusoto.github.io/rusoto/rusoto_core/region/enum.Region.html).
-    ///
-    /// The default region is us-east-1. [Available regions are listed
-    /// here](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#concepts-available-regions)
-    pub fn set_region(&mut self, region: Region) {
-        self.region = region;
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
+        self.terminate_all()
     }
 
-    /// Set up the machines in a specific EC2 availability zone.
-    ///
-    /// This controls the `availability_zone` field of the
-    /// [`SpotPlacement`](https://rusoto.github.io/rusoto/rusoto_ec2/struct.SpotPlacement.html)
-    /// struct (N.B.: even though the documentation claims that the parameter only affects spot
-    /// fleets, it does appear to affect *all* spot instances).
-    pub fn set_availability_zone(&mut self, zone: &str) {
-        self.availability_zone = Some(zone.to_string());
+    fn spawn<'l, I>(
+        &'l mut self,
+        descriptors: I,
+        max_wait: Option<std::time::Duration>,
+        log: Option<slog::Logger>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>>
+    where
+        I: IntoIterator<Item = (String, Self::MachineDescriptor)> + Send + 'static,
+        I::IntoIter: Send,
+    {
+        self.spawn(descriptors, max_wait, log)
     }
+}
 
-    /// By default, all spawned instances are launched in a single [Placement
-    /// Group](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html) using the
-    /// [cluster](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html#placement-groups-cluster)
-    /// policy. This ensures that all the instances are located in the same availability region,
-    /// and in close proximity to one another.
-    ///
-    /// This places [some
-    /// restrictions](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html#concepts-placement-groups)
-    /// on the launched instances, and causes it to be more likely for placements to fail. Call
-    /// this method to disable clustering. This will leave instance placing entirely up to ec2,
-    /// which may choose to place your instances in disparate availability zones.
-    pub fn no_clustering(&mut self) {
-        self.cluster = false;
-    }
+mod sealed {
+    pub trait Sealed {}
 
-    /// Limit how long we should wait for instances to be available before giving up.
-    ///
-    /// This includes both waiting for spot requests to be satisfied, and for SSH connections to be
-    /// established. Defaults to no limit.
-    pub fn wait_limit(&mut self, t: time::Duration) {
-        self.max_wait = Some(t);
-    }
+    impl<L: crate::providers::Launcher> Sealed for L {}
+}
 
-    /// Set the maxium lifetime of spawned spot instances.
-    ///
-    /// EC2 spot instances are normally subject to termination at any point. This library instead
-    /// uses [defined
-    /// duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
-    /// instances, which cost slightly more, but are never prematurely terminated. The lifetime of
-    /// such instances must be declared in advance (1-6 hours), and can be changed with this
-    /// method.
-    ///
-    /// The default duration is 1 hour.
-    pub fn set_max_duration(&mut self, hours: u8) {
-        self.max_duration = hours as i64 * 60;
-    }
+/// Get a reasonable default logger.
+pub fn get_term_logger() -> slog::Logger {
+    use slog::Drain;
+    use std::sync::Mutex;
 
-    /// Set the logging target for this tsunami.
-    ///
-    /// By default, logging is disabled (i.e., the default logger is `slog::Discard`).
-    pub fn set_logger(&mut self, log: slog::Logger) {
-        self.log = log;
-    }
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = Mutex::new(slog_term::FullFormat::new(decorator).build()).fuse();
+    slog::Logger::root(drain, slog::o!())
+}
 
-    /// Enable logging to terminal.
-    pub fn use_term_logger(&mut self) {
+/// Make multiple machine descriptors.
+///
+/// The `nickname_prefix` is used to name the machines, indexed from 0 to `n`:
+/// ```rust,no_run
+/// #[tokio::main]
+/// async fn main() -> Result<(), failure::Error> {
+///     use tsunami::{
+///         get_term_logger, make_multiple,
+///         providers::{
+///             aws::{self, Setup},
+///             Launcher,
+///         },
+///     };
+///     let mut aws: aws::Launcher<_> = Default::default();
+///     aws.spawn(
+///         make_multiple(3, "my_tsunami", Setup::default()),
+///         None,
+///         Some(get_term_logger()),
+///     )
+///     .await?;
+///
+///     let vms = aws.connect_all().await?;
+///     let my_first_vm = vms.get("my_tsunami-0").unwrap();
+///     let my_last_vm = vms.get("my_tsunami-2").unwrap();
+///     Ok(())
+/// }
+/// ```
+pub fn make_multiple<M: Clone>(n: usize, nickname_prefix: &str, m: M) -> Vec<(String, M)> {
+    std::iter::repeat(m)
+        .take(n)
+        .enumerate()
+        .map(|(i, m)| {
+            let name = format!("{}-{}", nickname_prefix, i);
+            (name, m)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod test {
+    pub(crate) fn test_logger() -> slog::Logger {
         use slog::Drain;
-        use std::sync::Mutex;
-
-        let decorator = slog_term::TermDecorator::new().build();
-        let drain = Mutex::new(slog_term::FullFormat::new(decorator).build()).fuse();
-        self.log = slog::Logger::root(drain, o!());
-    }
-
-    /// Spin up a tsunami batching the defined machine sets in this builder.
-    ///
-    /// When all instances are up and running, the given closure will be called with a handle to
-    /// all spawned hosts. When the closure exits, the instances are all terminated automatically.
-    ///
-    /// This method uses the rusoto
-    /// [`DefaultCredentialsProvider`](https://docs.rs/rusoto_credential/0.11.0/rusoto_credential/type.DefaultCredentialsProvider.html),
-    /// which (primarily) uses standard [AWS environtment
-    /// variables](https://docs.aws.amazon.com/cli/latest/userguide/cli-environment.html) for
-    /// authentication. See also the underlying [`ChainProvider`
-    /// documentation](https://docs.rs/rusoto_credential/0.11.0/rusoto_credential/struct.ChainProvider.html).
-    ///
-    /// ```rust,no_run
-    /// # use tsunami::{TsunamiBuilder, Machine};
-    /// # use std::collections::HashMap;
-    /// let mut b = TsunamiBuilder::default();
-    /// // ...
-    /// b.run(|vms: HashMap<String, Vec<Machine>>| {
-    ///     println!("==> {}", vms["server"][0].private_ip);
-    ///     for c in &vms["client"] {
-    ///         println!(" -> {}", c.private_ip);
-    ///     }
-    ///     Ok(())
-    /// }).unwrap();
-    pub fn run<F, R>(self, f: F) -> Result<R, Error>
-    where
-        F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<R, Error>,
-    {
-        self.run_as(DefaultCredentialsProvider::new()?, f)
-    }
-
-    /// Spin up a tsunami batching the defined machine sets in this builder with a custom
-    /// credentials provider.
-    ///
-    /// When all instances are up and running, the given closure will be called with a handle to
-    /// all spawned hosts. When the closure exits, the instances are all terminated automatically.
-    ///
-    /// ```rust,no_run
-    /// # extern crate rusoto_core;
-    /// # extern crate rusoto_sts;
-    /// # extern crate tsunami;
-    /// # fn main() {
-    /// # use tsunami::{TsunamiBuilder, Machine};
-    /// # use std::collections::HashMap;
-    /// // https://github.com/rusoto/rusoto/blob/master/AWS-CREDENTIALS.md
-    /// let sts = rusoto_sts::StsClient::new(rusoto_core::Region::UsEast1);
-    /// let provider = rusoto_sts::StsAssumeRoleSessionCredentialsProvider::new(
-    ///     sts,
-    ///     "arn:aws:sts::1122334455:role/myrole".to_owned(),
-    ///     "session-name".to_owned(),
-    ///     None,
-    ///     None,
-    ///     None,
-    ///     None,
-    /// );
-    ///
-    /// let mut b = TsunamiBuilder::default();
-    /// // ...
-    /// b.run_as(provider, |vms: HashMap<String, Vec<Machine>>| {
-    ///     println!("==> {}", vms["server"][0].private_ip);
-    ///     for c in &vms["client"] {
-    ///         println!(" -> {}", c.private_ip);
-    ///     }
-    ///     Ok(())
-    /// }).unwrap();
-    /// # }
-    pub fn run_as<P, F, R>(self, provider: P, f: F) -> Result<R, Error>
-    where
-        P: ProvideAwsCredentials + Send + Sync + 'static,
-        F: FnOnce(HashMap<String, Vec<Machine>>) -> Result<R, Error>,
-    {
-        use rusoto_ec2::Ec2;
-
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        let log = &self.log;
-        let rng = rand::thread_rng();
-
-        debug!(log, "connecting to ec2");
-
-        let ec2 = rusoto_ec2::Ec2Client::new_with(HttpClient::new()?, provider, self.region);
-
-        info!(log, "spinning up tsunami");
-
-        // set up network firewall for machines
-        use rand::Rng;
-        let mut group_name = String::from("tsunami_security_");
-        group_name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
-        trace!(log, "creating security group"; "name" => &group_name);
-        let mut req = rusoto_ec2::CreateSecurityGroupRequest::default();
-        req.group_name = group_name;
-        req.description = "temporary access group for tsunami VMs".to_string();
-        let res = rt
-            .block_on(ec2.create_security_group(req))
-            .context("failed to create security group for new machines")?;
-        let group_id = res
-            .group_id
-            .expect("aws created security group with no group id");
-        trace!(log, "created security group"; "id" => &group_id);
-
-        let mut req = rusoto_ec2::AuthorizeSecurityGroupIngressRequest::default();
-        req.group_id = Some(group_id.clone());
-
-        // ssh access
-        req.ip_protocol = Some("tcp".to_string());
-        req.from_port = Some(22);
-        req.to_port = Some(22);
-        req.cidr_ip = Some("0.0.0.0/0".to_string());
-        trace!(log, "adding ssh access to security group");
-        let _ = rt
-            .block_on(ec2.authorize_security_group_ingress(req.clone()))
-            .context("failed to fill in security group for new machines")?;
-
-        // cross-VM talk
-        req.from_port = Some(0);
-        req.to_port = Some(65535);
-        req.cidr_ip = Some("172.31.0.0/16".to_string());
-        trace!(log, "adding internal VM access to security group");
-        let _ = rt
-            .block_on(ec2.authorize_security_group_ingress(req))
-            .context("failed to fill in security group for new machines")?;
-
-        // construct keypair for ssh access
-        trace!(log, "creating keypair");
-        let mut req = rusoto_ec2::CreateKeyPairRequest::default();
-        let mut key_name = String::from("tsunami_key_");
-        key_name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
-        req.key_name = key_name.clone();
-        let res = rt
-            .block_on(ec2.create_key_pair(req))
-            .context("failed to generate new key pair")?;
-        trace!(log, "created keypair"; "fingerprint" => res.key_fingerprint);
-
-        // write keypair to disk
-        let private_key = res
-            .key_material
-            .expect("aws did not generate key material for new key");
-        let mut private_key_file = tempfile::NamedTempFile::new()
-            .context("failed to create temporary file for keypair")?;
-        private_key_file
-            .write_all(private_key.as_bytes())
-            .context("could not write private key to file")?;
-        trace!(log, "wrote keypair to file"; "filename" => private_key_file.path().display());
-
-        let mut setup_fns = HashMap::new();
-        let mut usernames = HashMap::new();
-        let expected_num: u32 = self.descriptors.values().map(|&(_, n)| n).sum();
-
-        // determine a placement if the user has requested one
-        let placement = if self.cluster {
-            trace!(log, "creating placement group");
-            let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
-            let mut placement_name = String::from("tsunami_placement_");
-            placement_name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
-            req.group_name = Some(placement_name.clone());
-            req.strategy = Some(String::from("cluster"));
-            rt.block_on(ec2.create_placement_group(req))
-                .context("failed to create new placement group")?;
-            trace!(log, "created placement group");
-
-            let mut placement = rusoto_ec2::SpotPlacement::default();
-            placement.availability_zone = self.availability_zone;
-            placement.group_name = Some(placement_name);
-            Some(placement)
-        } else {
-            None
-        };
-
-        // 1. issue spot requests
-        let mut id_to_name = HashMap::new();
-        let mut spot_req_ids = Vec::new();
-        debug!(log, "issuing spot requests");
-        // TODO: issue spot requests in parallel
-        for (name, (setup, number)) in self.descriptors {
-            let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
-            launch.image_id = Some(setup.ami);
-            launch.instance_type = Some(setup.instance_type);
-            launch.placement = placement.clone();
-            setup_fns.insert(name.clone(), setup.setup);
-            usernames.insert(name.clone(), setup.username);
-
-            launch.security_group_ids = Some(vec![group_id.clone()]);
-            launch.key_name = Some(key_name.clone());
-
-            // TODO: VPC
-
-            let req = rusoto_ec2::RequestSpotInstancesRequest {
-                instance_count: Some(i64::from(number)),
-                block_duration_minutes: Some(self.max_duration),
-                launch_specification: Some(launch),
-                // one-time spot instances are only fulfilled once and therefore do not need to be
-                // cancelled.
-                type_: Some("one-time".into()),
-                ..Default::default()
-            };
-
-            trace!(log, "issuing spot request for {}", name; "#" => number);
-            let res = rt
-                .block_on(ec2.request_spot_instances(req))
-                .context(format!("failed to request spot instances for {}", name))?;
-            let res = res
-                .spot_instance_requests
-                .expect("request_spot_instances should always return spot instance requests");
-            spot_req_ids.extend(
-                res.into_iter()
-                    .filter_map(|sir| sir.spot_instance_request_id)
-                    .map(|sir| {
-                        // TODO: add more info if in parallel
-                        trace!(log, "activated spot request"; "id" => &sir);
-                        id_to_name.insert(sir.clone(), name.clone());
-                        sir
-                    }),
-            );
-        }
-
-        // 2. wait for instances to come up
-        let start = time::Instant::now();
-        let mut error = None;
-        let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
-        req.spot_instance_request_ids = Some(spot_req_ids);
-
-        let instances: Vec<_>;
-        debug!(log, "waiting for instances to spawn");
-        loop {
-            trace!(log, "checking spot request status");
-
-            let res = rt.block_on(ec2.describe_spot_instance_requests(req.clone()));
-            if let Err(e) = res {
-                let msg = format!("{}", e);
-                if msg.contains("The spot instance request ID") && msg.contains("does not exist") {
-                    trace!(log, "spot instance requests not yet ready");
-                    continue;
-                } else {
-                    return Err(e)
-                        .context(format!("failed to describe spot instances"))
-                        .map_err(|e| e.into());
-                }
-            }
-            let res = res.expect("Err checked above");
-
-            let any_pending = res
-                .spot_instance_requests
-                .as_ref()
-                .expect("describe always returns at least one spot instance")
-                .iter()
-                .map(|sir| {
-                    (
-                        sir,
-                        sir.state
-                            .as_ref()
-                            .expect("spot request did not have state specified"),
-                    )
-                })
-                .any(|(sir, state)| {
-                    if state == "open" || (state == "active" && sir.instance_id.is_none()) {
-                        true
-                    } else {
-                        trace!(log, "spot request ready"; "state" => state, "id" => &sir.spot_instance_request_id);
-                        false
-                    }
-                });
-
-            if !any_pending {
-                // unwraps okay because they are the same as expects above
-                instances = res
-                    .spot_instance_requests
-                    .unwrap()
-                    .into_iter()
-                    .filter_map(|sir| {
-                        let name = id_to_name
-                            .remove(
-                                &sir.spot_instance_request_id
-                                    .expect("spot request must have spot request id"),
-                            )
-                            .expect("every spot request id is made for some machine set");
-
-                        if sir.state.as_ref().unwrap() == "active" {
-                            // unwrap ok because active implies instance_id.is_some()
-                            // because !any_pending
-                            let instance_id = sir.instance_id.unwrap();
-                            trace!(log, "spot request satisfied"; "set" => &name, "iid" => &instance_id);
-                            id_to_name.insert(instance_id.clone(), name);
-
-                            Some(instance_id)
-                        } else {
-                            error!(log, "spot request failed: {:?}", &sir.status; "set" => &name, "state" => &sir.state.unwrap());
-                            None
-                        }
-                    })
-                    .collect();
-                break;
-            } else {
-                thread::sleep(time::Duration::from_secs(1));
-            }
-
-            if let Some(wait_limit) = self.max_wait {
-                if start.elapsed() > wait_limit {
-                    warn!(log, "wait time exceeded -- cancelling run");
-                    let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
-                    cancel.spot_instance_request_ids = req
-                        .spot_instance_request_ids
-                        .clone()
-                        .expect("we set this to Some above");
-                    rt.block_on(ec2.cancel_spot_instance_requests(cancel))
-                        .context("failed to cancel spot instances")
-                        .map_err(|e| {
-                            warn!(log, "failed to cancel spot instance request: {:?}", e);
-                            e
-                        })?;
-
-                    trace!(
-                        log,
-                        "spot instances cancelled -- gathering remaining instances"
-                    );
-                    // wait for a little while for the cancelled spot requests to settle
-                    // and any that were *just* made active to be associated with their instances
-                    thread::sleep(time::Duration::from_secs(1));
-
-                    instances = rt.block_on(ec2
-                        .describe_spot_instance_requests(req))?
-                        .spot_instance_requests
-                        .map(|reqs| {
-                            reqs.into_iter()
-                                .filter_map(|mut sir| {
-                                    sir.instance_id
-                                        .take()
-                                        .map(|instance_id| {
-                                            trace!(log, "spot request cancelled"; "iid" => &instance_id);
-                                            instance_id
-                                        })
-                                        .or_else(|| {
-                                            error!(log, "spot request failed: {:?}", &sir.status);
-                                            None
-                                        })
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    error = Some("wait limit reached");
-                    break;
-                }
-            }
-        }
-
-        let mut term_instances = instances.clone();
-        // NOTE: this is really just a try block
-        let rest = {
-            let rt = &mut rt;
-            let ec2 = &ec2;
-            let max_wait = &self.max_wait;
-            move || {
-                if let Some(e) = error {
-                    bail!(e);
-                }
-
-                // 3. wait until all instances are up
-                // note that we *don't* do this check if we have no instances, b/c empty instance list
-                // means "list all instances".
-                let mut machines = HashMap::new();
-                let mut desc_req = rusoto_ec2::DescribeInstancesRequest::default();
-                let mut all_ready = instances.is_empty();
-                desc_req.instance_ids = Some(instances);
-                while !all_ready {
-                    all_ready = true;
-                    machines.clear();
-
-                    for reservation in rt
-                        .block_on(ec2.describe_instances(desc_req.clone()))
-                        .context("failed to cancel spot instances")?
-                        .reservations
-                        .unwrap_or_else(Vec::new)
-                    {
-                        for instance in reservation.instances.unwrap_or_else(Vec::new) {
-                            match instance {
-                                rusoto_ec2::Instance {
-                                    instance_id: Some(instance_id),
-                                    instance_type: Some(instance_type),
-                                    private_ip_address: Some(private_ip),
-                                    public_dns_name: Some(public_dns),
-                                    public_ip_address: Some(public_ip),
-                                    ..
-                                } => {
-                                    let machine = Machine {
-                                        ssh: None,
-                                        instance_type,
-                                        private_ip,
-                                        public_ip,
-                                        public_dns,
-                                    };
-                                    let name = id_to_name[&instance_id].clone();
-                                    trace!(log, "instance ready"; "set" => &name, "ip" => &machine.public_ip);
-                                    machines.entry(name).or_insert_with(Vec::new).push(machine);
-                                }
-                                _ => {
-                                    all_ready = false;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let mut res = None;
-                let mut errors = Vec::new();
-                let running: u32 = machines.values().map(|ms| ms.len() as u32).sum();
-                if running == expected_num {
-                    info!(log, "all machines instantiated; running setup");
-
-                    //    - once an instance is ready, run setup closure
-                    let usernames = &usernames;
-                    let private_key_file = &private_key_file;
-                    let wait_for = max_wait.map(|wl| wl - start.elapsed());
-                    errors.par_extend(machines.par_iter_mut().flat_map(|(name, machines)| {
-                let f = &setup_fns[name];
-                machines
-                    .par_iter_mut()
-                    .map(move |machine| -> Result<_, Error> {
-                        use std::net::{IpAddr, SocketAddr};
-                        let mut sess = ssh::Session::connect(
-                            &log,
-                            &usernames[name],
-                            SocketAddr::new(
-                                machine
-                                    .public_ip
-                                    .parse::<IpAddr>()
-                                    .context("machine ip is not an ip address")?,
-                                22,
-                            ),
-                            private_key_file.path(),
-                            wait_for,
-                        ).context(format!(
-                            "failed to ssh to {} machine {}",
-                            name, machine.public_dns
-                        ))
-                            .map_err(|e| {
-                                error!(log, "failed to ssh to {}:{}", &name, &machine.public_ip);
-                                e
-                            })?;
-
-                        debug!(log, "setting up {} instance", name; "ip" => &machine.public_ip);
-                        f(&mut sess)
-                            .context(format!("setup procedure for {} machine failed", name))
-                            .map_err(|e| {
-                                error!(log, "setup for {} machine failed", name);
-                                e
-                            })?;
-                        info!(log, "finished setting up {} instance", name; "ip" => &machine.public_ip);
-
-                        machine.ssh = Some(sess);
-                        Ok(())
-                    })
-                    .filter_map(Result::err)
-            }));
-
-                    if errors.is_empty() {
-                        // 4. invoke F with Machine descriptors
-                        let start = time::Instant::now();
-                        info!(log, "quiet before the storm");
-                        res = Some(f(machines).context("tsunami main routine failed").map_err(
-                            |e| {
-                                crit!(log, "main tsunami routine failed");
-                                e
-                            },
-                        )?);
-                        info!(log, "the power of the tsunami was unleashed"; "duration" => start.elapsed().as_secs());
-                    }
-                } else {
-                    crit!(
-                        log,
-                        "only {} out of {} machines were started; aborting",
-                        running,
-                        expected_num
-                    );
-                }
-
-                debug!(log, "all done");
-
-                // TODO: this will only expose first setup error -- fix that
-                errors
-                    .into_iter()
-                    .next()
-                    .map(|e| Err(e))
-                    .unwrap_or_else(|| {
-                        Ok(res
-                            .expect("if there are no errors, then we ran the user's main function"))
-                    })
-            }
-        };
-
-        let result = rest();
-        use std::mem;
-
-        // 5. terminate all instances
-        if !term_instances.is_empty() {
-            debug!(log, "terminating instances");
-            let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
-            termination_req.instance_ids = mem::replace(&mut term_instances, Vec::new());
-            while let Err(e) = rt.block_on(ec2.terminate_instances(termination_req.clone())) {
-                let msg = format!("{}", e);
-                if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
-                    trace!(log, "retrying instance termination");
-                    continue;
-                } else {
-                    warn!(log, "failed to terminate tsunami instances: {:?}", e);
-                    break;
-                }
-            }
-        }
-
-        /*
-        debug!(log, "cleaning up temporary resources");
-        trace!(log, "cleaning up temporary security group");
-        // clean up security groups and keys
-        let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
-        req.group_id = Some(group_id);
-        rt.block_on(ec2.delete_security_group(&req))
-            .context("failed to clean up security group")?;
-        trace!(log, "cleaning up temporary keypair");
-        let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
-        req.key_name = key_name;
-        rt.block_on(ec2.delete_key_pair(&req))
-          .context("failed to clean up key pair")?;
-        // TODO: clean up created placement group
-        */
-
-        result
+        let plain = slog_term::PlainSyncDecorator::new(slog_term::TestStdoutWriter);
+        let drain = slog_term::FullFormat::new(plain).build().fuse();
+        slog::Logger::root(drain, o!())
     }
 }
