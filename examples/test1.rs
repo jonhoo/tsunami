@@ -32,6 +32,7 @@ async fn main() -> Result<(), failure::Error> {
             String::from("east"),
             aws::Setup::default()
                 .region_with_ubuntu_ami(Region::UsEast1)
+                .await?
                 .setup(|ssh, log| {
                     Box::pin(async move {
                         if let Err(e) = ssh.command("sudo").arg("apt").arg("update").status().await
@@ -47,6 +48,7 @@ async fn main() -> Result<(), failure::Error> {
             String::from("india"),
             aws::Setup::default()
                 .region_with_ubuntu_ami(Region::ApSouth1)
+                .await?
                 .instance_type("t3.small")
                 .setup(|ssh, log| {
                     Box::pin(async move {
