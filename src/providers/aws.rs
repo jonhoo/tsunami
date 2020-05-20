@@ -283,7 +283,7 @@ impl Setup {
 #[educe(Debug)]
 pub struct Launcher<P = DefaultCredentialsProvider> {
     #[educe(Debug(ignore))]
-    credential_provider: Box<dyn Fn() -> Result<P, Error>>,
+    credential_provider: Box<dyn Fn() -> Result<P, Error> + Send + Sync>,
     max_instance_duration_hours: usize,
     use_open_ports: bool,
     regions: HashMap<<Setup as super::MachineSetup>::Region, RegionLauncher>,
@@ -327,7 +327,10 @@ impl<P> Launcher<P> {
     /// The provided function is called once for each region, and is expected to produce a
     /// [`P: ProvideAwsCredentials`](https://docs.rs/rusoto_core/0.40.0/rusoto_core/trait.ProvideAwsCredentials.html)
     /// that gives access to the region in question.
-    pub fn with_credentials<P2>(self, f: impl Fn() -> Result<P2, Error> + 'static) -> Launcher<P2> {
+    pub fn with_credentials<P2>(
+        self,
+        f: impl Fn() -> Result<P2, Error> + Send + Sync + 'static,
+    ) -> Launcher<P2> {
         Launcher {
             credential_provider: Box::new(f),
             max_instance_duration_hours: self.max_instance_duration_hours,
