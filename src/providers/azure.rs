@@ -478,9 +478,9 @@ impl Default for Region {
     }
 }
 
-impl ToString for Region {
-    fn to_string(&self) -> String {
-        String::from(match self {
+impl AsRef<str> for Region {
+    fn as_ref(&self) -> &str {
+        match self {
             Region::EastUs => "eastus",
             Region::EastUs2 => "eastus2",
             Region::WestUs => "westus",
@@ -512,7 +512,13 @@ impl ToString for Region {
             Region::SouthAfricaNorth => "southafricanorth",
             Region::UaeNorth => "uaenorth",
             Region::GermanyWestCentral => "germanywestcentral",
-        })
+        }
+    }
+}
+
+impl std::fmt::Display for Region {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_ref())
     }
 }
 
@@ -520,37 +526,37 @@ impl std::str::FromStr for Region {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "eastus" => Region::EastUs,
-            "eastus2" => Region::EastUs2,
-            "westus" => Region::WestUs,
-            "centralus" => Region::CentralUs,
-            "northcentralus" => Region::NorthCentralUs,
-            "southcentralus" => Region::SouthCentralUs,
-            "northeurope" => Region::NorthEurope,
-            "westeurope" => Region::WestEurope,
-            "eastasia" => Region::EastUsia,
-            "southeastasia" => Region::SouthEastAsia,
-            "japaneast" => Region::JapanEast,
-            "japanwest" => Region::JapanWest,
-            "australiaeast" => Region::AustraliaEast,
-            "australiasoutheast" => Region::AustraliaSoutheast,
-            "australiacentral" => Region::AustraliaCentral,
-            "brazilsouth" => Region::BrazilSouth,
-            "southindia" => Region::SouthIndia,
-            "centralindia" => Region::CentralIndia,
-            "westindia" => Region::WestIndia,
-            "canadacentral" => Region::CanadaCentral,
-            "canadaeast" => Region::CanadaEast,
-            "westus2" => Region::WestUs2,
-            "westcentralus" => Region::WestCentralus,
-            "uksouth" => Region::UkSouth,
-            "ukwest" => Region::UkWest,
-            "koreacentral" => Region::KoreaCentral,
-            "koreasouth" => Region::KoreaSouth,
-            "francecentral" => Region::FranceCentral,
-            "southafricanorth" => Region::SouthAfricaNorth,
-            "uaenorth" => Region::UaeNorth,
-            "germanywestcentral" => Region::GermanyWestCentral,
+            r if r == Region::EastUs.as_ref() => Region::EastUs,
+            r if r == Region::EastUs2.as_ref() => Region::EastUs2,
+            r if r == Region::WestUs.as_ref() => Region::WestUs,
+            r if r == Region::CentralUs.as_ref() => Region::CentralUs,
+            r if r == Region::NorthCentralUs.as_ref() => Region::NorthCentralUs,
+            r if r == Region::SouthCentralUs.as_ref() => Region::SouthCentralUs,
+            r if r == Region::NorthEurope.as_ref() => Region::NorthEurope,
+            r if r == Region::WestEurope.as_ref() => Region::WestEurope,
+            r if r == Region::EastUsia.as_ref() => Region::EastUsia,
+            r if r == Region::SouthEastAsia.as_ref() => Region::SouthEastAsia,
+            r if r == Region::JapanEast.as_ref() => Region::JapanEast,
+            r if r == Region::JapanWest.as_ref() => Region::JapanWest,
+            r if r == Region::AustraliaEast.as_ref() => Region::AustraliaEast,
+            r if r == Region::AustraliaSoutheast.as_ref() => Region::AustraliaSoutheast,
+            r if r == Region::AustraliaCentral.as_ref() => Region::AustraliaCentral,
+            r if r == Region::BrazilSouth.as_ref() => Region::BrazilSouth,
+            r if r == Region::SouthIndia.as_ref() => Region::SouthIndia,
+            r if r == Region::CentralIndia.as_ref() => Region::CentralIndia,
+            r if r == Region::WestIndia.as_ref() => Region::WestIndia,
+            r if r == Region::CanadaCentral.as_ref() => Region::CanadaCentral,
+            r if r == Region::CanadaEast.as_ref() => Region::CanadaEast,
+            r if r == Region::WestUs2.as_ref() => Region::WestUs2,
+            r if r == Region::WestCentralus.as_ref() => Region::WestCentralus,
+            r if r == Region::UkSouth.as_ref() => Region::UkSouth,
+            r if r == Region::UkWest.as_ref() => Region::UkWest,
+            r if r == Region::KoreaCentral.as_ref() => Region::KoreaCentral,
+            r if r == Region::KoreaSouth.as_ref() => Region::KoreaSouth,
+            r if r == Region::FranceCentral.as_ref() => Region::FranceCentral,
+            r if r == Region::SouthAfricaNorth.as_ref() => Region::SouthAfricaNorth,
+            r if r == Region::UaeNorth.as_ref() => Region::UaeNorth,
+            r if r == Region::GermanyWestCentral.as_ref() => Region::GermanyWestCentral,
             u => bail!("Unknown azure region {}. Valid regions: eastus, eastus2, westus, centralus, northcentralus, southcentralus, northeurope, westeurope, eastasia, southeastasia, japaneast, japanwest, australiaeast, australiasoutheast, australiacentral, brazilsouth, southindia, centralindia, westindia, canadacentral, canadaeast, westus2, westcentralus, uksouth, ukwest, koreacentral, koreasouth, francecentral, southafricanorth, uaenorth, germanywestcentral", u),
         })
     }
