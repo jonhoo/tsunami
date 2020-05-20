@@ -34,9 +34,9 @@ pub trait MachineSetup {
     fn region(&self) -> Self::Region;
 }
 
-/// Implement this trait to implement support for a cloud provider.
+/// Use this trait to implement support for launching machines in a cloud provider.
 ///
-/// Users should use [`crate::Tsunami`] instead of this trait.
+/// If you just want to launch machines, use [`crate::Tsunami`] instead of this trait.
 pub trait Launcher {
     /// A type describing a single instance to launch.
     type MachineDescriptor: MachineSetup;
