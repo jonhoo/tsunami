@@ -19,12 +19,16 @@
 //! # Example
 //! ```rust,no_run
 //! use tsunami::providers::{azure, Launcher};
-//! use azure::Region;
-//!
 //! #[tokio::main]
 //! async fn main() {
 //!     let mut l = azure::Launcher::default();
-//!     l.spawn(vec![(String::from("my machine"), azure::Setup::default())], None, None).await.unwrap();
+//!     l.spawn(
+//!         vec![(String::from("my machine"), azure::Setup::default())],
+//!         None,
+//!         None,
+//!     )
+//!     .await
+//!     .unwrap();
 //!     let vms = l.connect_all().await.unwrap();
 //!     let my_machine = vms.get("my machine").unwrap();
 //!     let out = my_machine
@@ -42,7 +46,7 @@
 //! }
 //! ```
 //! ```rust,no_run
-//! use tsunami::providers::{Launcher, azure};
+//! use tsunami::providers::{azure, Launcher};
 //! #[tokio::main]
 //! async fn main() -> Result<(), failure::Error> {
 //!     // Initialize Azure
@@ -51,25 +55,43 @@
 //!     // Create a machine descriptor and add it to the Tsunami
 //!     let m = azure::Setup::default()
 //!         .region(azure::Region::FranceCentral) // default is EastUs
-//!         .setup(|ssh, _| { // default is a no-op
+//!         .setup(|ssh, _| {
+//!             // default is a no-op
 //!             Box::pin(async move {
-//!                 ssh.command("sudo").arg("apt").arg("update").status().await?;
-//!                 ssh.command("bash").arg("-c")
-//!                     .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status().await?;
+//!                 ssh.command("sudo")
+//!                     .arg("apt")
+//!                     .arg("update")
+//!                     .status()
+//!                     .await?;
+//!                 ssh.command("bash")
+//!                     .arg("-c")
+//!                     .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"")
+//!                     .status()
+//!                     .await?;
 //!                 Ok(())
 //!             })
 //!         });
 //!
 //!     // Launch the VM
-//!     azure.spawn(vec![(String::from("my_vm"), m)], None, None).await?;
+//!     azure
+//!         .spawn(vec![(String::from("my_vm"), m)], None, None)
+//!         .await?;
 //!
 //!     // SSH to the VM and run a command on it
 //!     let vms = azure.connect_all().await?;
 //!     let my_vm = vms.get("my_vm").unwrap();
 //!     println!("public ip: {}", my_vm.public_ip);
 //!     let ssh = my_vm.ssh.as_ref().unwrap();
-//!     ssh.command("git").arg("clone").arg("https://github.com/jonhoo/tsunami").status().await?;
-//!     ssh.command("bash").arg("-c").arg("\"cd tsunami && cargo build\"").status().await?;
+//!     ssh.command("git")
+//!         .arg("clone")
+//!         .arg("https://github.com/jonhoo/tsunami")
+//!         .status()
+//!         .await?;
+//!     ssh.command("bash")
+//!         .arg("-c")
+//!         .arg("\"cd tsunami && cargo build\"")
+//!         .status()
+//!         .await?;
 //!     azure.cleanup().await?;
 //!     Ok(())
 //! }
@@ -169,12 +191,17 @@ impl Setup {
     /// ```rust
     /// use tsunami::providers::azure::Setup;
     ///
-    /// let m = Setup::default()
-    ///     .setup(|ssh, log| { Box::pin(async move {
+    /// let m = Setup::default().setup(|ssh, log| {
+    ///     Box::pin(async move {
     ///         slog::info!(log, "running setup!");
-    ///         ssh.command("sudo").arg("apt").arg("update").status().await?;
+    ///         ssh.command("sudo")
+    ///             .arg("apt")
+    ///             .arg("update")
+    ///             .status()
+    ///             .await?;
     ///         Ok(())
-    ///     })});
+    ///     })
+    /// });
     /// ```
     pub fn setup(
         mut self,

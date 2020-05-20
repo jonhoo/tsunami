@@ -16,8 +16,13 @@
 //!     let mut l = aws::Launcher::default();
 //!     // make the defined-duration instances expire after 1 hour
 //!     l.set_max_instance_duration(1);
-//!     l.spawn(vec![(String::from("my machine"), aws::Setup::default())], None, None)
-//!         .await.unwrap();
+//!     l.spawn(
+//!         vec![(String::from("my machine"), aws::Setup::default())],
+//!         None,
+//!         None,
+//!     )
+//!     .await
+//!     .unwrap();
 //!     let vms = l.connect_all().await.unwrap();
 //!     let my_machine = vms.get("my machine").unwrap();
 //!     let out = my_machine
@@ -35,8 +40,8 @@
 //! }
 //! ```
 //! ```rust,no_run
-//! use tsunami::providers::{Launcher, aws};
-//! use rusoto_core::{credential::DefaultCredentialsProvider, Region};
+//! use rusoto_core::{credential::DefaultCredentialsProvider};
+//! use tsunami::providers::{aws::{self, Region}, Launcher};
 //! #[tokio::main]
 //! async fn main() -> Result<(), failure::Error> {
 //!     // Initialize AWS
@@ -48,25 +53,44 @@
 //!     // Create a machine descriptor and add it to the Tsunami
 //!     let m = aws::Setup::default()
 //!         .region_with_ubuntu_ami(Region::UsWest1) // default is UsEast1
-//!         .setup(|ssh, _| { // default is a no-op
+//!         .await
+//!         .unwrap()
+//!         .setup(|ssh, _| {
+//!             // default is a no-op
 //!             Box::pin(async move {
-//!                 ssh.command("sudo").arg("apt").arg("update").status().await?;
-//!                 ssh.command("bash").arg("-c")
-//!                     .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"").status().await?;
+//!                 ssh.command("sudo")
+//!                     .arg("apt")
+//!                     .arg("update")
+//!                     .status()
+//!                     .await?;
+//!                 ssh.command("bash")
+//!                     .arg("-c")
+//!                     .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"")
+//!                     .status()
+//!                     .await?;
 //!                 Ok(())
 //!             })
 //!         });
 //!
 //!     // Launch the VM
-//!     aws.spawn(vec![(String::from("my_vm"), m)], None, None).await?;
+//!     aws.spawn(vec![(String::from("my_vm"), m)], None, None)
+//!         .await?;
 //!
 //!     // SSH to the VM and run a command on it
 //!     let vms = aws.connect_all().await?;
 //!     let my_vm = vms.get("my_vm").unwrap();
 //!     println!("public ip: {}", my_vm.public_ip);
 //!     let ssh = my_vm.ssh.as_ref().unwrap();
-//!     ssh.command("git").arg("clone").arg("https://github.com/jonhoo/tsunami").status().await?;
-//!     ssh.command("bash").arg("-c").arg("\"cd tsunami && cargo build\"").status().await?;
+//!     ssh.command("git")
+//!         .arg("clone")
+//!         .arg("https://github.com/jonhoo/tsunami")
+//!         .status()
+//!         .await?;
+//!     ssh.command("bash")
+//!         .arg("-c")
+//!         .arg("\"cd tsunami && cargo build\"")
+//!         .status()
+//!         .await?;
 //!     aws.cleanup().await?;
 //!     Ok(())
 //! }
@@ -224,12 +248,17 @@ impl Setup {
     /// ```rust
     /// use tsunami::providers::aws::Setup;
     ///
-    /// let m = Setup::default()
-    ///     .setup(|ssh, log| { Box::pin(async move {
+    /// let m = Setup::default().setup(|ssh, log| {
+    ///     Box::pin(async move {
     ///         slog::info!(log, "running setup!");
-    ///         ssh.command("sudo").arg("apt").arg("update").status().await?;
+    ///         ssh.command("sudo")
+    ///             .arg("apt")
+    ///             .arg("update")
+    ///             .status()
+    ///             .await?;
     ///         Ok(())
-    ///     })});
+    ///     })
+    /// });
     /// ```
     pub fn setup(
         mut self,
