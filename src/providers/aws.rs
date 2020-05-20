@@ -79,7 +79,7 @@ use failure::{Error, ResultExt};
 use itertools::Itertools;
 use rusoto_core::credential::{DefaultCredentialsProvider, ProvideAwsCredentials};
 use rusoto_core::request::HttpClient;
-use rusoto_core::Region;
+pub use rusoto_core::Region;
 use rusoto_ec2::Ec2;
 use std::collections::HashMap;
 use std::future::Future;
