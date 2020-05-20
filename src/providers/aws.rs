@@ -539,7 +539,7 @@ where
         )
     }
 
-    #[instrument(debug)]
+    #[instrument(level = "debug")]
     fn connect_all<'l>(
         &'l self,
     ) -> Pin<
@@ -548,7 +548,7 @@ where
         Box::pin(async move { collect!(self.regions) }.in_current_span())
     }
 
-    #[instrument(debug)]
+    #[instrument(level = "debug")]
     fn terminate_all(mut self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>> {
         Box::pin(
             async move {
@@ -640,7 +640,7 @@ impl RegionLauncher {
         Ok(ec2)
     }
 
-    #[instrument(debug, skip(provider))]
+    #[instrument(level = "debug", skip(provider))]
     fn connect<P>(
         region: rusoto_core::region::Region,
         availability_zone: AvailabilityZoneSpec,
@@ -675,7 +675,7 @@ impl RegionLauncher {
     ///
     /// Make spot instance requests, wait for the instances, and then call the
     /// instance setup functions.
-    #[instrument(debug, skip(self, max_instance_duration_hours, max_wait))]
+    #[instrument(level = "debug", skip(self, max_instance_duration_hours, max_wait))]
     pub async fn launch<M>(
         &mut self,
         max_instance_duration_hours: usize,
@@ -706,7 +706,7 @@ impl RegionLauncher {
         Ok(())
     }
 
-    #[instrument(trace, skip(self))]
+    #[instrument(level = "trace", skip(self))]
     async fn make_security_group(mut self, use_open_ports: bool) -> Result<Self, Report> {
         let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
 
@@ -783,7 +783,7 @@ impl RegionLauncher {
         Ok(self)
     }
 
-    #[instrument(trace, skip(self))]
+    #[instrument(level = "trace", skip(self))]
     async fn make_ssh_key(mut self) -> Result<Self, Report> {
         let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
         let private_key_path = self
@@ -828,7 +828,7 @@ impl RegionLauncher {
     ///
     /// Will *not* wait for the spot instance requests to complete. To wait, call
     /// [`wait_for_spot_instance_requests`](RegionLauncher::wait_for_spot_instance_requests).
-    #[instrument(trace, skip(self, max_duration))]
+    #[instrument(level = "trace", skip(self, max_duration))]
     async fn make_spot_instance_requests<M>(
         &mut self,
         max_duration: usize,
@@ -957,7 +957,7 @@ impl RegionLauncher {
     ///
     /// To wait for the instances to be ready, call
     /// [`wait_for_instances`](RegionLauncher::wait_for_instances).
-    #[instrument(trace, skip(self, max_wait))]
+    #[instrument(level = "trace", skip(self, max_wait))]
     async fn wait_for_spot_instance_requests(
         &mut self,
         max_wait: Option<time::Duration>,
@@ -1092,7 +1092,7 @@ impl RegionLauncher {
     }
 
     /// Poll AWS until `max_wait` (if not `None`) or the instances are ready to SSH to.
-    #[instrument(trace, skip(self, max_wait))]
+    #[instrument(level = "trace", skip(self, max_wait))]
     async fn wait_for_instances(&mut self, max_wait: Option<time::Duration>) -> Result<(), Report> {
         let start = time::Instant::now();
         let mut desc_req = rusoto_ec2::DescribeInstancesRequest::default();
@@ -1217,7 +1217,7 @@ impl RegionLauncher {
 
     /// Establish SSH connections to the machines. The `Ok` value is a `HashMap` associating the
     /// friendly name for each `Setup` with the corresponding SSH connection.
-    #[instrument(debug)]
+    #[instrument(level = "debug")]
     pub async fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Report> {
         let private_key_path = self.private_key_path.as_ref().unwrap();
         futures_util::future::join_all(self.instances.values().map(|info| {
@@ -1261,7 +1261,7 @@ impl RegionLauncher {
     ///
     /// Additionally deletes ephemeral keys and security groups. Note: it is a known issue that
     /// security groups often will not be deleted, due to timing quirks in the AWS api.
-    #[instrument(debug)]
+    #[instrument(level = "debug")]
     pub async fn shutdown(&mut self) {
         let client = self.client.as_ref().unwrap();
         // terminate instances

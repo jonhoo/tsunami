@@ -338,7 +338,7 @@ impl RegionLauncher {
 impl super::Launcher for RegionLauncher {
     type MachineDescriptor = Setup;
 
-    #[instrument(debug, skip(self))]
+    #[instrument(level = "debug", skip(self))]
     fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
@@ -399,7 +399,7 @@ impl super::Launcher for RegionLauncher {
         )
     }
 
-    #[instrument(debug)]
+    #[instrument(level = "debug")]
     fn connect_all<'l>(
         &'l self,
     ) -> Pin<
@@ -442,7 +442,7 @@ impl super::Launcher for RegionLauncher {
         )
     }
 
-    #[instrument(debug)]
+    #[instrument(level = "debug")]
     fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>> {
         let name = self.resource_group_name.clone();
         Box::pin(
@@ -599,7 +599,7 @@ mod azcmd {
         Ok(())
     }
 
-    #[instrument(trace)]
+    #[instrument(level = "trace")]
     pub(crate) async fn create_resource_group(r: Region, name: &str) -> Result<(), Report> {
         let out = Command::new("az")
             .args(&[
@@ -618,7 +618,7 @@ mod azcmd {
         Ok(())
     }
 
-    #[instrument(trace)]
+    #[instrument(level = "trace")]
     pub(crate) async fn create_vm(
         rg: &str,
         name: &str,
@@ -670,7 +670,7 @@ mod azcmd {
         })
     }
 
-    #[instrument(trace)]
+    #[instrument(level = "trace")]
     pub(crate) async fn open_ports(rg: &str, vm_name: &str) -> Result<(), Report> {
         let out = Command::new("az")
             .args(&[
@@ -696,7 +696,7 @@ mod azcmd {
         Ok(())
     }
 
-    #[instrument(trace)]
+    #[instrument(level = "trace")]
     pub(crate) async fn delete_resource_group(rg: &str) -> Result<(), Report> {
         let out = Command::new("az")
             .args(&["group", "delete", "--name", rg, "--yes"])

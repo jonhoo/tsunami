@@ -44,7 +44,7 @@ impl super::MachineSetup for Setup {
 
 impl Setup {
     /// Create a new instance of Setup.
-    #[instrument(debug)]
+    #[instrument(level = "debug")]
     pub fn new<A: std::net::ToSocketAddrs + std::fmt::Debug>(
         addr: A,
         username: Option<String>,
@@ -170,7 +170,7 @@ pub struct Machine {
 impl super::Launcher for Machine {
     type MachineDescriptor = Setup;
 
-    #[instrument(debug, skip(self))]
+    #[instrument(level = "debug", skip(self))]
     fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
@@ -230,7 +230,7 @@ impl super::Launcher for Machine {
         })
     }
 
-    #[instrument(debug)]
+    #[instrument(level = "debug")]
     fn connect_all<'l>(
         &'l self,
     ) -> Pin<
