@@ -809,7 +809,7 @@ impl RegionLauncher {
         private_key_path
             .write_all(private_key.as_bytes())
             .context("could not write private key to file")?;
-        tracing::trace!(
+        tracing::debug!(
             filename = %private_key_path.path().display(),
             "wrote keypair to file"
         );
