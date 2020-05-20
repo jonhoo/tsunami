@@ -80,6 +80,6 @@ async fn main() -> Result<(), failure::Error> {
     ping(east, india, &log).await?;
     ping(india, east, &log).await?;
 
-    l.cleanup().await?;
+    l.terminate_all().await?;
     Ok(())
 }

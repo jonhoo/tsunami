@@ -87,9 +87,9 @@ async fn main() -> Result<(), failure::Error> {
 
     // do things with my VMs!
 
-    // call cleanup() to terminate the instances.
-    aws.cleanup().await?;
-    azure.cleanup().await?;
+    // call terminate_all() to terminate the instances.
+    aws.terminate_all().await?;
+    azure.terminate_all().await?;
     Ok(())
 }
 ```

@@ -62,7 +62,7 @@ pub trait Launcher: Send {
     ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>;
 
     /// Shut down all instances.
-    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
 
     /// Helper method to group `MachineDescriptor`s into regions and call `launch`.
     ///

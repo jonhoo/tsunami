@@ -37,7 +37,7 @@
 //!         .unwrap();
 //!     let stdout = std::string::String::from_utf8(out.stdout).unwrap();
 //!     println!("{}", stdout);
-//!     l.cleanup().await.unwrap();
+//!     l.terminate_all().await.unwrap();
 //! }
 //! ```
 //! ```rust,no_run
@@ -93,7 +93,7 @@
 //!         .arg("\"cd tsunami && cargo build\"")
 //!         .status()
 //!         .await?;
-//!     aws.cleanup().await?;
+//!     aws.terminate_all().await?;
 //!     Ok(())
 //! }
 //! ```
@@ -534,7 +534,7 @@ where
         Box::pin(async move { collect!(self.regions) })
     }
 
-    fn cleanup(mut self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
+    fn terminate_all(mut self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
         Box::pin(async move {
             if self.regions.is_empty() {
                 return Ok(());
@@ -1363,10 +1363,10 @@ mod test {
         rt.block_on(async move {
             if let Err(e) = do_make_machine_and_ssh_setupfn(&mut l).await {
                 // failed test.
-                l.cleanup().await.unwrap();
+                l.terminate_all().await.unwrap();
                 panic!(e);
             } else {
-                l.cleanup().await.unwrap();
+                l.terminate_all().await.unwrap();
             }
         })
     }

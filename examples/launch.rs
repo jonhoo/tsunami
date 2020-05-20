@@ -57,7 +57,7 @@ async fn main() -> Result<(), failure::Error> {
             l.spawn(vec![(String::from(""), m)], None, Some(log.clone()))
                 .await?;
             wait_for_continue(&log);
-            l.cleanup().await?;
+            l.terminate_all().await?;
         }
         Providers::Azure => {
             let log = tsunami::get_term_logger();
@@ -67,7 +67,7 @@ async fn main() -> Result<(), failure::Error> {
             l.spawn(vec![(String::from(""), m)], None, Some(log.clone()))
                 .await?;
             wait_for_continue(&log);
-            l.cleanup().await?;
+            l.terminate_all().await?;
         }
     }
 

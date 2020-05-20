@@ -81,9 +81,9 @@
 //!
 //!     // do things with my VMs!
 //!
-//!     // call cleanup() to terminate the instances.
-//!     aws.cleanup().await?;
-//!     azure.cleanup().await?;
+//!     // call terminate_all() to terminate the instances.
+//!     aws.terminate_all().await?;
+//!     azure.terminate_all().await?;
 //!     Ok(())
 //! }
 //! ```
@@ -183,7 +183,7 @@ impl<'t> Machine<'t> {
 
 /// Use this trait to launch machines into providers.
 ///
-/// Important: You must call `cleanup` to shut down the instances once you are done. Otherwise, you
+/// Important: You must call `terminate_all` to shut down the instances once you are done. Otherwise, you
 /// may incur unexpected charges from the cloud provider.
 ///
 /// This trait is sealed. If you want to implement support for a provider, see [`providers::Launcher`].
@@ -221,7 +221,7 @@ pub trait Tsunami: sealed::Sealed {
     ///     // access the host via the launcher
     ///     let vms = aws.connect_all().await?;
     ///     // we're done! terminate the instance.
-    ///     aws.cleanup().await?;
+    ///     aws.terminate_all().await?;
     ///     Ok(())
     /// }
     /// ```
@@ -241,7 +241,7 @@ pub trait Tsunami: sealed::Sealed {
     ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>;
 
     /// Shut down all instances.
-    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
 }
 
 impl<L: providers::Launcher> Tsunami for L {
@@ -254,8 +254,8 @@ impl<L: providers::Launcher> Tsunami for L {
         self.connect_all()
     }
 
-    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
-        self.cleanup()
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
+        self.terminate_all()
     }
 
     fn spawn<'l, I>(

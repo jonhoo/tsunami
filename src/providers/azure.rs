@@ -5,7 +5,7 @@
 //! Both these types use [`azure::Setup`] as their descriptor type.
 //!
 //! Azure does not support Spot or Defined Duration instances.
-//! As a result, *if your tsunami crashes or you forget to call `cleanup()`, you must manually terminate your instances to avoid extra costs*.
+//! As a result, *if your tsunami crashes or you forget to call `terminate_all()`, you must manually terminate your instances to avoid extra costs*.
 //! The easiest way to do this is to delete resource groups beginning with `tsunami_`:
 //! `az group delete --name <name> --yes`.
 //! You can find such resource groups using:
@@ -43,7 +43,7 @@
 //!         .unwrap();
 //!     let stdout = std::string::String::from_utf8(out.stdout).unwrap();
 //!     println!("{}", stdout);
-//!     l.cleanup().await.unwrap();
+//!     l.terminate_all().await.unwrap();
 //! }
 //! ```
 //! ```rust,no_run
@@ -94,7 +94,7 @@
 //!         .arg("\"cd tsunami && cargo build\"")
 //!         .status()
 //!         .await?;
-//!     azure.cleanup().await?;
+//!     azure.terminate_all().await?;
 //!     Ok(())
 //! }
 //! ```
@@ -266,10 +266,10 @@ impl super::Launcher for Launcher {
         Box::pin(async move { collect!(self.regions) })
     }
 
-    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
         Box::pin(async move {
             for (_, r) in self.regions {
-                r.cleanup().await?;
+                r.terminate_all().await?;
             }
 
             Ok(())
@@ -293,7 +293,7 @@ struct Descriptor {
 /// Region-specific connection to Azure.
 ///
 /// Each instance of this type creates one Azure
-/// "resource group" and deletes the group on `cleanup()`. See also [`Launcher`].
+/// "resource group" and deletes the group on `terminate_all()`. See also [`Launcher`].
 ///
 /// This implementation relies on the [Azure
 /// CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
@@ -423,7 +423,7 @@ impl super::Launcher for RegionLauncher {
         })
     }
 
-    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
         debug!(self.log.as_ref().unwrap(), "Cleaning up resource group");
         let name = self.resource_group_name.clone();
         Box::pin(async move {
@@ -752,10 +752,10 @@ mod test {
         let mut azure = super::Launcher::default();
         rt.block_on(async move {
             if let Err(e) = do_make_machine_and_ssh_setupfn(&mut azure, l).await {
-                azure.cleanup().await.unwrap();
+                azure.terminate_all().await.unwrap();
                 panic!(e);
             } else {
-                azure.cleanup().await.unwrap();
+                azure.terminate_all().await.unwrap();
             }
         })
     }

@@ -275,7 +275,7 @@ impl super::Launcher for Machine {
         })
     }
 
-    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
         Box::pin(async move { Ok(()) })
     }
 }
