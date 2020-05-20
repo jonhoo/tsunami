@@ -113,10 +113,13 @@
 //! tracing_subscriber::fmt::init();
 //! ```
 //!
-//! And then run your application with, for example, `RUST_LOG=info` to get logs. If you also want
-//! automatic logging of errors, take a look at the documentation for
-//! [`color-eyre`](https://docs.rs/color_eyre/), which includes information about how to integrate
-//! with [`tracing-error`](https://docs.rs/tracing-error).
+//! And then run your application with, for example, `RUST_LOG=info` to get logs. If you're using
+//! the `log` crate, you can instead just add a dependency on `tracing` with the `log` feature
+//! enabled, and things should just "magically" work.
+//!
+//! If you also want automatic logging of errors (which I think you do), take a look at the
+//! documentation for [`color-eyre`](https://docs.rs/color_eyre/), which includes an example for
+//! how to set up `tracing` with [`tracing-error`](https://docs.rs/tracing-error).
 //!
 //! # Live-coding
 //!
