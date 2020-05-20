@@ -852,98 +852,102 @@ impl RegionLauncher {
         // group by the labels
         {
             let spot_span = tracing::debug_span!("spot_request", params = ?group);
-            let _guard = spot_span.enter();
+            async {
+                // and issue one spot request per group
+                let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
+                launch.image_id = Some(reqs[0].1.ami.clone());
+                launch.instance_type = Some(reqs[0].1.instance_type.clone());
+                launch.placement = {
+                    if let AvailabilityZoneSpec::Any = self.availability_zone {
+                        None
+                    } else {
+                        let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
+                        tracing::trace!("creating placement group");
+                        let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
+                        let placement_name = super::rand_name("placement");
+                        req.group_name = Some(placement_name.clone());
+                        req.strategy = Some(String::from("cluster"));
+                        ec2.create_placement_group(req)
+                            .in_current_span()
+                            .await
+                            .wrap_err("failed to create new placement group")?;
+                        tracing::trace!("created placement group");
+                        let mut placement = rusoto_ec2::SpotPlacement::default();
+                        placement.group_name = Some(placement_name);
+                        match self.availability_zone {
+                            AvailabilityZoneSpec::Cluster(_) => {
+                                placement.availability_zone = None;
+                            }
+                            AvailabilityZoneSpec::Specify(ref av) => {
+                                placement.availability_zone = Some(av.clone());
+                            }
+                            _ => unreachable!(),
+                        }
 
-            // and issue one spot request per group
-            let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
-            launch.image_id = Some(reqs[0].1.ami.clone());
-            launch.instance_type = Some(reqs[0].1.instance_type.clone());
-            launch.placement = {
-                if let AvailabilityZoneSpec::Any = self.availability_zone {
-                    None
-                } else {
-                    let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
-                    tracing::trace!("creating placement group");
-                    let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
-                    let placement_name = super::rand_name("placement");
-                    req.group_name = Some(placement_name.clone());
-                    req.strategy = Some(String::from("cluster"));
-                    ec2.create_placement_group(req)
-                        .in_current_span()
-                        .await
-                        .wrap_err("failed to create new placement group")?;
-                    tracing::trace!("created placement group");
-                    let mut placement = rusoto_ec2::SpotPlacement::default();
-                    placement.group_name = Some(placement_name);
-                    match self.availability_zone {
-                        AvailabilityZoneSpec::Cluster(_) => {
-                            placement.availability_zone = None;
-                        }
-                        AvailabilityZoneSpec::Specify(ref av) => {
-                            placement.availability_zone = Some(av.clone());
-                        }
-                        _ => unreachable!(),
+                        Some(placement)
                     }
+                };
 
-                    Some(placement)
-                }
-            };
+                launch.security_group_ids = Some(vec![self.security_group_id.clone()]);
+                launch.key_name = Some(self.ssh_key_name.clone());
 
-            launch.security_group_ids = Some(vec![self.security_group_id.clone()]);
-            launch.key_name = Some(self.ssh_key_name.clone());
+                // TODO: VPC
 
-            // TODO: VPC
+                let req = rusoto_ec2::RequestSpotInstancesRequest {
+                    instance_count: Some(reqs.len() as i64),
+                    block_duration_minutes: Some(max_duration as i64),
+                    launch_specification: Some(launch),
+                    // one-time spot instances are only fulfilled once and therefore do not need to be
+                    // cancelled.
+                    type_: Some("one-time".into()),
+                    ..Default::default()
+                };
 
-            let req = rusoto_ec2::RequestSpotInstancesRequest {
-                instance_count: Some(reqs.len() as i64),
-                block_duration_minutes: Some(max_duration as i64),
-                launch_specification: Some(launch),
-                // one-time spot instances are only fulfilled once and therefore do not need to be
-                // cancelled.
-                type_: Some("one-time".into()),
-                ..Default::default()
-            };
+                tracing::trace!("issuing spot request");
+                let res = self
+                    .client
+                    .as_mut()
+                    .unwrap()
+                    .request_spot_instances(req)
+                    .in_current_span()
+                    .await
+                    .wrap_err("failed to request spot instance")?;
 
-            tracing::trace!("issuing spot request");
-            let res = self
-                .client
-                .as_mut()
-                .unwrap()
-                .request_spot_instances(req)
-                .in_current_span()
-                .await
-                .wrap_err("failed to request spot instance")?;
+                // collect for length check below
+                let spot_instance_requests: Vec<String> = res
+                    .spot_instance_requests
+                    .expect("request_spot_instances should always return spot instance requests")
+                    .into_iter()
+                    .filter_map(|sir| sir.spot_instance_request_id)
+                    .map(|sir| {
+                        tracing::trace!(id = %sir, "activated spot request");
+                        sir
+                    })
+                    .collect();
 
-            // collect for length check below
-            let spot_instance_requests: Vec<String> = res
-                .spot_instance_requests
-                .expect("request_spot_instances should always return spot instance requests")
-                .into_iter()
-                .filter_map(|sir| sir.spot_instance_request_id)
-                .map(|sir| {
-                    tracing::trace!(id = %sir, "activated spot request");
-                    sir
-                })
-                .collect();
-
-            // zip_eq will panic if lengths not equal, so check beforehand
-            eyre::ensure!(
-                spot_instance_requests.len() == reqs.len(),
-                "Got {} spot instance requests but expected {}",
-                spot_instance_requests.len(),
-                reqs.len(),
-            );
-
-            for (sir, req) in spot_instance_requests.into_iter().zip_eq(reqs.into_iter()) {
-                self.outstanding_spot_request_ids.insert(
-                    sir,
-                    TaggedSetup {
-                        name: req.0,
-                        setup: req.1,
-                        ip_info: None,
-                    },
+                // zip_eq will panic if lengths not equal, so check beforehand
+                eyre::ensure!(
+                    spot_instance_requests.len() == reqs.len(),
+                    "Got {} spot instance requests but expected {}",
+                    spot_instance_requests.len(),
+                    reqs.len(),
                 );
+
+                for (sir, req) in spot_instance_requests.into_iter().zip_eq(reqs.into_iter()) {
+                    self.outstanding_spot_request_ids.insert(
+                        sir,
+                        TaggedSetup {
+                            name: req.0,
+                            setup: req.1,
+                            ip_info: None,
+                        },
+                    );
+                }
+
+                Ok(())
             }
+            .instrument(spot_span)
+            .await?;
         }
 
         Ok(())
@@ -1124,43 +1128,46 @@ impl RegionLauncher {
                         } => {
                             let instance_span =
                                 tracing::debug_span!("instance", %instance_id, ip = %public_ip);
-                            let _guard = instance_span.enter();
+                            let instances = &mut self.instances;
+                            async {
+                                tracing::trace!("instance running");
 
-                            tracing::trace!("instance running");
+                                // try connecting. If can't, not ready.
+                                let tag_setup = instances.get_mut(&instance_id).unwrap();
 
-                            // try connecting. If can't, not ready.
-                            let tag_setup = self.instances.get_mut(&instance_id).unwrap();
+                                let mut m = crate::Machine {
+                                    nickname: Default::default(),
+                                    public_dns: Default::default(),
+                                    public_ip: public_ip.to_string(),
+                                    private_ip: None,
+                                    ssh: None,
+                                    _tsunami: Default::default(),
+                                };
 
-                            let mut m = crate::Machine {
-                                nickname: Default::default(),
-                                public_dns: Default::default(),
-                                public_ip: public_ip.to_string(),
-                                private_ip: None,
-                                ssh: None,
-                                _tsunami: Default::default(),
-                            };
+                                if let Err(e) = m
+                                    .connect_ssh(
+                                        &tag_setup.setup.username,
+                                        Some(private_key_path.path()),
+                                        max_wait,
+                                        22,
+                                    )
+                                    .in_current_span()
+                                    .await
+                                {
+                                    tracing::trace!("ssh failed: {}", e);
+                                    all_ready = false;
+                                } else {
+                                    tracing::debug!("instance ready");
 
-                            if let Err(e) = m
-                                .connect_ssh(
-                                    &tag_setup.setup.username,
-                                    Some(private_key_path.path()),
-                                    max_wait,
-                                    22,
-                                )
-                                .in_current_span()
-                                .await
-                            {
-                                tracing::trace!("ssh failed: {}", e);
-                                all_ready = false;
-                            } else {
-                                tracing::debug!("instance ready");
-
-                                tag_setup.ip_info = Some(IpInfo {
-                                    public_ip: public_ip.clone(),
-                                    public_dns: public_dns.clone(),
-                                    private_ip: private_ip.clone(),
-                                });
+                                    tag_setup.ip_info = Some(IpInfo {
+                                        public_ip: public_ip.clone(),
+                                        public_dns: public_dns.clone(),
+                                        private_ip: private_ip.clone(),
+                                    });
+                                }
                             }
+                            .instrument(instance_span)
+                            .await
                         }
                         _ => {
                             all_ready = false;
@@ -1286,29 +1293,33 @@ impl RegionLauncher {
         tracing::debug!("cleaning up temporary resources");
         if !self.security_group_id.trim().is_empty() {
             let group_span = tracing::trace_span!("security_group", id = %self.security_group_id);
-            let _guard = group_span.enter();
-
-            tracing::trace!("removing security group");
-            // clean up security groups and keys
-            // TODO need a retry loop for the security group. Currently, this fails
-            // because AWS takes some time to allow the security group to be deleted.
-            let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
-            req.group_id = Some(self.security_group_id.clone());
-            if let Err(e) = client.delete_security_group(req).in_current_span().await {
-                tracing::warn!("failed to clean up temporary security group: {}", e);
+            async {
+                tracing::trace!("removing security group");
+                // clean up security groups and keys
+                // TODO need a retry loop for the security group. Currently, this fails
+                // because AWS takes some time to allow the security group to be deleted.
+                let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
+                req.group_id = Some(self.security_group_id.clone());
+                if let Err(e) = client.delete_security_group(req).in_current_span().await {
+                    tracing::warn!("failed to clean up temporary security group: {}", e);
+                }
             }
+            .instrument(group_span)
+            .await;
         }
 
         if !self.ssh_key_name.trim().is_empty() {
             let key_span = tracing::trace_span!("key", name = %self.ssh_key_name);
-            let _guard = key_span.enter();
-
-            tracing::trace!("removing keypair");
-            let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
-            req.key_name = self.ssh_key_name.clone();
-            if let Err(e) = client.delete_key_pair(req).in_current_span().await {
-                tracing::warn!("failed to clean up temporary SSH key: {}", e);
+            async {
+                tracing::trace!("removing keypair");
+                let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
+                req.key_name = self.ssh_key_name.clone();
+                if let Err(e) = client.delete_key_pair(req).in_current_span().await {
+                    tracing::warn!("failed to clean up temporary SSH key: {}", e);
+                }
             }
+            .instrument(key_span)
+            .await;
         }
     }
 }
