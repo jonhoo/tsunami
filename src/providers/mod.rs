@@ -10,7 +10,7 @@ use std::pin::Pin;
 ///
 /// The machines are constrained to a single `region`.
 #[derive(Debug)]
-pub struct LaunchDescriptor<M: MachineSetup> {
+pub struct LaunchDescriptor<M: MachineSetup + Send> {
     /// The region to launch into.
     pub region: M::Region,
     /// A logger.
@@ -29,7 +29,7 @@ pub struct LaunchDescriptor<M: MachineSetup> {
 /// connection to each region.
 pub trait MachineSetup {
     /// Grouping type.
-    type Region: Eq + std::hash::Hash + Clone + ToString;
+    type Region: Eq + std::hash::Hash + Clone + ToString + Send;
     /// Get the region.
     fn region(&self) -> Self::Region;
 }
@@ -37,9 +37,9 @@ pub trait MachineSetup {
 /// Use this trait to implement support for launching machines in a cloud provider.
 ///
 /// If you just want to launch machines, use [`crate::Tsunami`] instead of this trait.
-pub trait Launcher {
+pub trait Launcher: Send {
     /// A type describing a single instance to launch.
-    type MachineDescriptor: MachineSetup;
+    type MachineDescriptor: MachineSetup + Send;
 
     /// Spawn the instances.
     ///
@@ -54,26 +54,30 @@ pub trait Launcher {
     fn launch<'l>(
         &'l mut self,
         desc: LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>>;
 
     /// Return connections to the [`Machine`s](crate::Machine) that `launch` spawned.
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>;
 
     /// Shut down all instances.
-    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>>;
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
 
     /// Helper method to group `MachineDescriptor`s into regions and call `launch`.
     ///
     /// This implementation initializes each region serially. It may be useful for performance to
     /// provide an implementation that initializes the regions concurrently.
-    fn spawn<'l>(
+    fn spawn<'l, I>(
         &'l mut self,
-        descriptors: impl IntoIterator<Item = (String, Self::MachineDescriptor)> + 'static,
+        descriptors: I,
         max_wait: Option<std::time::Duration>,
         log: Option<slog::Logger>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>>
+    where
+        I: IntoIterator<Item = (String, Self::MachineDescriptor)> + Send + 'static,
+        I::IntoIter: Send,
+    {
         Box::pin(async move {
             let max_wait = max_wait;
             let log = log.unwrap_or_else(|| slog::Logger::root(slog::Discard, o!()));
@@ -166,10 +170,12 @@ async fn setup_machine(
     username: &str,
     max_wait: Option<std::time::Duration>,
     private_key: Option<&std::path::Path>,
-    f: &dyn for<'r> Fn(
+    f: &(dyn for<'r> Fn(
         &'r mut crate::ssh::Session,
         &'r slog::Logger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+          + Send
+          + Sync),
 ) -> Result<(), Error> {
     use failure::ResultExt;
 

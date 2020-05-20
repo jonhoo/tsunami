@@ -174,7 +174,7 @@ impl super::Launcher for Machine {
     fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>> {
         Box::pin(async move {
             self.log = Some(l.log);
             let log = self.log.as_ref().expect("Baremetal machine uninitialized");
@@ -244,7 +244,7 @@ impl super::Launcher for Machine {
 
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>
     {
         Box::pin(async move {
             let log = self.log.as_ref().expect("Baremetal machine uninitialized");
@@ -275,7 +275,7 @@ impl super::Launcher for Machine {
         })
     }
 
-    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
         Box::pin(async move { Ok(()) })
     }
 }

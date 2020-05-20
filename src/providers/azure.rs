@@ -19,7 +19,7 @@
 //! # Example
 //! ```rust,no_run
 //! use tsunami::Tsunami;
-//! use tsunami::providers::{azure};
+//! use tsunami::providers::azure;
 //! #[tokio::main]
 //! async fn main() {
 //!     let mut l = azure::Launcher::default();
@@ -47,8 +47,8 @@
 //! }
 //! ```
 //! ```rust,no_run
+//! use tsunami::providers::azure;
 //! use tsunami::Tsunami;
-//! use tsunami::providers::{azure};
 //! #[tokio::main]
 //! async fn main() -> Result<(), failure::Error> {
 //!     // Initialize Azure
@@ -121,10 +121,13 @@ pub struct Setup {
     setup_fn: Option<
         Arc<
             dyn for<'r> Fn(
-                &'r mut ssh::Session,
-                &'r slog::Logger,
-            )
-                -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>,
+                    &'r mut ssh::Session,
+                    &'r slog::Logger,
+                )
+                    -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+                + Send
+                + Sync
+                + 'static,
         >,
     >,
 }
@@ -212,6 +215,7 @@ impl Setup {
                 &'r slog::Logger,
             ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
             + Send
+            + Sync
             + 'static,
     ) -> Self {
         self.setup_fn = Some(Arc::new(setup));
@@ -242,7 +246,7 @@ impl super::Launcher for Launcher {
     fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>> {
         Box::pin(async move {
             azcmd::check_az().await?;
             if !self.regions.contains_key(&l.region) {
@@ -257,12 +261,12 @@ impl super::Launcher for Launcher {
 
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>
     {
         Box::pin(async move { collect!(self.regions) })
     }
 
-    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
         Box::pin(async move {
             for (_, r) in self.regions {
                 r.cleanup().await?;
@@ -328,7 +332,7 @@ impl super::Launcher for RegionLauncher {
     fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>> {
         Box::pin(async move {
             self.log = Some(l.log);
             let log = self.log.as_ref().unwrap();
@@ -385,7 +389,7 @@ impl super::Launcher for RegionLauncher {
 
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>
     {
         Box::pin(async move {
             let log = self.log.as_ref().expect("RegionLauncher uninitialized");
@@ -419,7 +423,7 @@ impl super::Launcher for RegionLauncher {
         })
     }
 
-    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
         debug!(self.log.as_ref().unwrap(), "Cleaning up resource group");
         let name = self.resource_group_name.clone();
         Box::pin(async move {

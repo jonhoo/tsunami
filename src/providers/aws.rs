@@ -12,7 +12,7 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     use tsunami::Tsunami;
-//!     use tsunami::providers::{aws};
+//!     use tsunami::providers::aws;
 //!
 //!     let mut l = aws::Launcher::default();
 //!     // make the defined-duration instances expire after 1 hour
@@ -43,7 +43,7 @@
 //! ```rust,no_run
 //! use rusoto_core::{credential::DefaultCredentialsProvider};
 //! use tsunami::Tsunami;
-//! use tsunami::providers::{aws::{self, Region}};
+//! use tsunami::providers::aws::{self, Region};
 //! #[tokio::main]
 //! async fn main() -> Result<(), failure::Error> {
 //!     // Initialize AWS
@@ -380,7 +380,7 @@ where
     fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>> {
         Box::pin(async move {
             let prov = (*self.credential_provider)()?;
             let Self {
@@ -413,12 +413,16 @@ where
         })
     }
 
-    fn spawn<'l>(
+    fn spawn<'l, I>(
         &'l mut self,
-        descriptors: impl IntoIterator<Item = (String, Self::MachineDescriptor)> + 'static,
+        descriptors: I,
         max_wait: Option<std::time::Duration>,
         log: Option<slog::Logger>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>>
+    where
+        I: IntoIterator<Item = (String, Self::MachineDescriptor)> + Send + 'static,
+        I::IntoIter: Send,
+    {
         use super::MachineSetup;
         Box::pin(async move {
             let log = log.unwrap_or_else(|| slog::Logger::root(slog::Discard, o!()));
@@ -525,12 +529,12 @@ where
 
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>
     {
         Box::pin(async move { collect!(self.regions) })
     }
 
-    fn cleanup(mut self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
+    fn cleanup(mut self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
         Box::pin(async move {
             if self.regions.is_empty() {
                 return Ok(());

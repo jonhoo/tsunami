@@ -225,20 +225,23 @@ pub trait Tsunami: sealed::Sealed {
     ///     Ok(())
     /// }
     /// ```
-    fn spawn<'l>(
+    fn spawn<'l, I>(
         &'l mut self,
-        descriptors: impl IntoIterator<Item = (String, Self::MachineDescriptor)> + 'static,
+        descriptors: I,
         max_wait: Option<std::time::Duration>,
         log: Option<slog::Logger>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>>
+    where
+        I: IntoIterator<Item = (String, Self::MachineDescriptor)> + Send + 'static,
+        I::IntoIter: Send;
 
     /// Return connections to the [`Machine`s](crate::Machine) that `spawn` spawned.
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>;
 
     /// Shut down all instances.
-    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>>;
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
 }
 
 impl<L: providers::Launcher> Tsunami for L {
@@ -246,21 +249,25 @@ impl<L: providers::Launcher> Tsunami for L {
 
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>
     {
         self.connect_all()
     }
 
-    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
         self.cleanup()
     }
 
-    fn spawn<'l>(
+    fn spawn<'l, I>(
         &'l mut self,
-        descriptors: impl IntoIterator<Item = (String, Self::MachineDescriptor)> + 'static,
+        descriptors: I,
         max_wait: Option<std::time::Duration>,
         log: Option<slog::Logger>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>>
+    where
+        I: IntoIterator<Item = (String, Self::MachineDescriptor)> + Send + 'static,
+        I::IntoIter: Send,
+    {
         self.spawn(descriptors, max_wait, log)
     }
 }
@@ -268,7 +275,7 @@ impl<L: providers::Launcher> Tsunami for L {
 mod sealed {
     pub trait Sealed {}
 
-    impl<T: super::Tsunami> Sealed for T {}
+    impl<L: crate::providers::Launcher> Sealed for L {}
 }
 
 /// Get a reasonable default logger.
