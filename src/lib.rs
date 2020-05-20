@@ -108,14 +108,17 @@
 //! for users who are already somewhat familiar with Rust, and who want to see something larger and
 //! more involved be built. You can find the recordings of past sessions [on
 //! YouTube](https://www.youtube.com/playlist?list=PLqbS7AVVErFgY2faCIYjJZv_RluGkTlKt).
-#![warn(unreachable_pub)]
-#![warn(missing_docs)]
-#![warn(missing_copy_implementations)]
-#![warn(trivial_casts)]
-#![warn(trivial_numeric_casts)]
-#![warn(unused_extern_crates)]
-#![warn(rust_2018_idioms)]
-#![warn(missing_debug_implementations)]
+
+#![warn(
+    unreachable_pub,
+    missing_docs,
+    missing_copy_implementations,
+    trivial_casts,
+    trivial_numeric_casts,
+    unused_extern_crates,
+    rust_2018_idioms,
+    missing_debug_implementations
+)]
 #![allow(clippy::type_complexity)]
 
 #[macro_use]
