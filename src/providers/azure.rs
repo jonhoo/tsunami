@@ -92,9 +92,9 @@
 //! ```
 
 use crate::ssh;
-use color_eyre::Report;
+use color_eyre::{Help, Report};
 use educe::Educe;
-use eyre::WrapErr;
+use eyre::{eyre, WrapErr};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -579,7 +579,7 @@ impl std::str::FromStr for Region {
             r if r == Region::SouthAfricaNorth.as_ref() => Region::SouthAfricaNorth,
             r if r == Region::UaeNorth.as_ref() => Region::UaeNorth,
             r if r == Region::GermanyWestCentral.as_ref() => Region::GermanyWestCentral,
-            u => eyre::bail!("Unknown azure region {}. Valid regions: eastus, eastus2, westus, centralus, northcentralus, southcentralus, northeurope, westeurope, eastasia, southeastasia, japaneast, japanwest, australiaeast, australiasoutheast, australiacentral, brazilsouth, southindia, centralindia, westindia, canadacentral, canadaeast, westus2, westcentralus, uksouth, ukwest, koreacentral, koreasouth, francecentral, southafricanorth, uaenorth, germanywestcentral", u),
+            r => return Err(eyre!(r.to_string())).wrap_err("unknown azure region").suggestion("Valid regions: eastus, eastus2, westus, centralus, northcentralus, southcentralus, northeurope, westeurope, eastasia, southeastasia, japaneast, japanwest, australiaeast, australiasoutheast, australiacentral, brazilsouth, southindia, centralindia, westindia, canadacentral, canadaeast, westus2, westcentralus, uksouth, ukwest, koreacentral, koreasouth, francecentral, southafricanorth, uaenorth, germanywestcentral"),
         })
     }
 }
