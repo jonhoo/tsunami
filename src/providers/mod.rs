@@ -82,28 +82,31 @@ pub trait Launcher: Send {
         I: std::fmt::Debug,
         I::IntoIter: Send,
     {
-        Box::pin(async move {
-            let max_wait = max_wait;
+        Box::pin(
+            async move {
+                let max_wait = max_wait;
 
-            tracing::info!("spinning up tsunami");
+                tracing::info!("spinning up tsunami");
 
-            for (region_name, setups) in descriptors
-                .into_iter()
-                .map(|(name, setup)| (setup.region(), (name, setup)))
-                .into_group_map()
-            {
-                let region_span = tracing::debug_span!("region", region = %region_name);
-                let dsc = LaunchDescriptor {
-                    region: region_name.clone(),
-                    max_wait,
-                    machines: setups,
-                };
+                for (region_name, setups) in descriptors
+                    .into_iter()
+                    .map(|(name, setup)| (setup.region(), (name, setup)))
+                    .into_group_map()
+                {
+                    let region_span = tracing::debug_span!("region", region = %region_name);
+                    let dsc = LaunchDescriptor {
+                        region: region_name.clone(),
+                        max_wait,
+                        machines: setups,
+                    };
 
-                self.launch(dsc).instrument(region_span).await?;
+                    self.launch(dsc).instrument(region_span).await?;
+                }
+
+                Ok(())
             }
-
-            Ok(())
-        })
+            .in_current_span(),
+        )
     }
 }
 

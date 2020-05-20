@@ -417,7 +417,7 @@ where
                 .instrument(region_span)
                 .await?;
             Ok(())
-        })
+        }.in_current_span())
     }
 
     #[instrument(skip(self, max_wait))]
@@ -432,107 +432,111 @@ where
         I::IntoIter: Send,
     {
         use super::MachineSetup;
-        Box::pin(async move {
-            tracing::info!("spinning up tsunami");
+        Box::pin(
+            async move {
+                tracing::info!("spinning up tsunami");
 
-            // group by region
-            let names_to_setups = descriptors
-                .into_iter()
-                .map(|(name, setup)| (MachineSetup::region(&setup), (name, setup)))
-                .into_group_map();
-
-            // separate into two lists:
-            // 1. we already have a RegionLauncher
-            // 2. we don't
-            let (mut haves, have_nots): (Vec<_>, Vec<_>) = names_to_setups
-                .into_iter()
-                .partition(|(region_name, _)| self.regions.contains_key(region_name));
-
-            // check that this works before unwrap() below
-            let _prov = (*self.credential_provider)()?;
-            let use_open_ports = self.use_open_ports;
-
-            let newly_initialized: Vec<Result<_, _>> =
-                futures_util::future::join_all(have_nots.iter().map(|(region_name, s)| {
-                    let region_span = tracing::debug_span!("new_region", region = %region_name);
-                    let prov = (*self.credential_provider)().unwrap();
-                    async move {
-                        let awsregion = RegionLauncher::new(
-                            &region_name.to_string(),
-                            // availability_zone spec is guaranteed to be the same because it's included in
-                            // the region specifier.
-                            s[0].1.availability_zone.clone(),
-                            prov,
-                            use_open_ports,
-                        )
-                        .await?;
-                        Ok::<_, Report>((region_name.clone(), awsregion))
-                    }
-                    .instrument(region_span)
-                }))
-                .await;
-            self.regions.extend(
-                newly_initialized
+                // group by region
+                let names_to_setups = descriptors
                     .into_iter()
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
+                    .map(|(name, setup)| (MachineSetup::region(&setup), (name, setup)))
+                    .into_group_map();
 
-            // the have-nots are now haves
-            haves.extend(have_nots);
+                // separate into two lists:
+                // 1. we already have a RegionLauncher
+                // 2. we don't
+                let (mut haves, have_nots): (Vec<_>, Vec<_>) = names_to_setups
+                    .into_iter()
+                    .partition(|(region_name, _)| self.regions.contains_key(region_name));
 
-            // Launch instances in the regions concurrently.
-            //
-            // The borrow checker can't know that each future only accesses one entry of the
-            // hashmap - for its RegionLauncher (guaranteed by the `into_group_map()` above).
-            // So, we help it by taking the appropriate RegionLauncher out of the hashmap,
-            // running `launch()`, then putting everything back later.
-            let max_wait = max_wait;
-            let max_instance_duration_hours = self.max_instance_duration_hours;
-            let regions =
-                futures_util::future::join_all(haves.into_iter().map(|(region_name, machines)| {
-                    // unwrap ok because everything is a have now
-                    let mut region_launcher = self.regions.remove(&region_name).unwrap();
-                    let region_span = tracing::debug_span!("region", region = %region_name);
-                    async move {
-                        if let Err(e) = region_launcher
-                            .launch(max_instance_duration_hours, max_wait, machines)
-                            .await
-                        {
-                            Err((region_name, region_launcher, e))
-                        } else {
-                            Ok((region_name, region_launcher))
+                // check that this works before unwrap() below
+                let _prov = (*self.credential_provider)()?;
+                let use_open_ports = self.use_open_ports;
+
+                let newly_initialized: Vec<Result<_, _>> =
+                    futures_util::future::join_all(have_nots.iter().map(|(region_name, s)| {
+                        let region_span = tracing::debug_span!("new_region", region = %region_name);
+                        let prov = (*self.credential_provider)().unwrap();
+                        async move {
+                            let awsregion = RegionLauncher::new(
+                                &region_name.to_string(),
+                                // availability_zone spec is guaranteed to be the same because it's included in
+                                // the region specifier.
+                                s[0].1.availability_zone.clone(),
+                                prov,
+                                use_open_ports,
+                            )
+                            .await?;
+                            Ok::<_, Report>((region_name.clone(), awsregion))
                         }
-                    }
-                    .instrument(region_span)
-                }))
+                        .instrument(region_span)
+                    }))
+                    .await;
+                self.regions.extend(
+                    newly_initialized
+                        .into_iter()
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+
+                // the have-nots are now haves
+                haves.extend(have_nots);
+
+                // Launch instances in the regions concurrently.
+                //
+                // The borrow checker can't know that each future only accesses one entry of the
+                // hashmap - for its RegionLauncher (guaranteed by the `into_group_map()` above).
+                // So, we help it by taking the appropriate RegionLauncher out of the hashmap,
+                // running `launch()`, then putting everything back later.
+                let max_wait = max_wait;
+                let max_instance_duration_hours = self.max_instance_duration_hours;
+                let regions = futures_util::future::join_all(haves.into_iter().map(
+                    |(region_name, machines)| {
+                        // unwrap ok because everything is a have now
+                        let mut region_launcher = self.regions.remove(&region_name).unwrap();
+                        let region_span = tracing::debug_span!("region", region = %region_name);
+                        async move {
+                            if let Err(e) = region_launcher
+                                .launch(max_instance_duration_hours, max_wait, machines)
+                                .await
+                            {
+                                Err((region_name, region_launcher, e))
+                            } else {
+                                Ok((region_name, region_launcher))
+                            }
+                        }
+                        .instrument(region_span)
+                    },
+                ))
                 .await;
 
-            // Put our stuff back where we found it.
-            let (regions, res) =
-                regions
-                    .into_iter()
-                    .fold((vec![], None), |acc, r| match (acc, r) {
-                        ((mut rs, x), Ok((name, rl))) => {
-                            rs.push((name, rl));
-                            (rs, x)
-                        }
-                        ((mut rs, None), Err((name, rl, e))) => {
-                            rs.push((name, rl));
-                            (rs, Some(e))
-                        }
-                        ((mut rs, x @ Some(_)), Err((name, rl, _))) => {
-                            rs.push((name, rl));
-                            (rs, x)
-                        }
-                    });
-            self.regions.extend(regions.into_iter());
+                // Put our stuff back where we found it.
+                let (regions, res) =
+                    regions
+                        .into_iter()
+                        .fold((vec![], None), |acc, r| match (acc, r) {
+                            ((mut rs, x), Ok((name, rl))) => {
+                                rs.push((name, rl));
+                                (rs, x)
+                            }
+                            ((mut rs, None), Err((name, rl, e))) => {
+                                rs.push((name, rl));
+                                (rs, Some(e))
+                            }
+                            ((mut rs, x @ Some(_)), Err((name, rl, _))) => {
+                                rs.push((name, rl));
+                                (rs, x)
+                            }
+                        });
+                self.regions.extend(regions.into_iter());
 
-            if let Some(e) = res {
-                Err(e)
-            } else {
-                Ok(())
+                if let Some(e) = res {
+                    Err(e)
+                } else {
+                    Ok(())
+                }
             }
-        })
+            .in_current_span(),
+        )
     }
 
     #[instrument(debug)]
@@ -541,23 +545,26 @@ where
     ) -> Pin<
         Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Report>> + Send + 'l>,
     > {
-        Box::pin(async move { collect!(self.regions) })
+        Box::pin(async move { collect!(self.regions) }.in_current_span())
     }
 
     #[instrument(debug)]
     fn terminate_all(mut self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>> {
-        Box::pin(async move {
-            if self.regions.is_empty() {
-                return Ok(());
-            }
+        Box::pin(
+            async move {
+                if self.regions.is_empty() {
+                    return Ok(());
+                }
 
-            futures_util::future::join_all(self.regions.drain().map(|(region, mut rl)| {
-                let region_span = tracing::debug_span!("region", %region);
-                async move { rl.shutdown().await }.instrument(region_span)
-            }))
-            .await;
-            Ok(())
-        })
+                futures_util::future::join_all(self.regions.drain().map(|(region, mut rl)| {
+                    let region_span = tracing::debug_span!("region", %region);
+                    async move { rl.shutdown().await }.instrument(region_span)
+                }))
+                .await;
+                Ok(())
+            }
+            .in_current_span(),
+        )
     }
 }
 

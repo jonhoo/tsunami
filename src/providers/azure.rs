@@ -240,25 +240,28 @@ impl super::Launcher for Launcher {
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
     ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'l>> {
-        Box::pin(async move {
-            azcmd::check_az().await?;
-            if !self.regions.contains_key(&l.region) {
-                let region_span = tracing::debug_span!("new_region", region = %l.region);
-                let az_region = RegionLauncher::new(l.region)
+        Box::pin(
+            async move {
+                azcmd::check_az().await?;
+                if !self.regions.contains_key(&l.region) {
+                    let region_span = tracing::debug_span!("new_region", region = %l.region);
+                    let az_region = RegionLauncher::new(l.region)
+                        .instrument(region_span)
+                        .await?;
+                    self.regions.insert(l.region, az_region);
+                }
+
+                let region_span = tracing::debug_span!("region", region = %l.region);
+                self.regions
+                    .get_mut(&l.region)
+                    .unwrap()
+                    .launch(l)
                     .instrument(region_span)
                     .await?;
-                self.regions.insert(l.region, az_region);
+                Ok(())
             }
-
-            let region_span = tracing::debug_span!("region", region = %l.region);
-            self.regions
-                .get_mut(&l.region)
-                .unwrap()
-                .launch(l)
-                .instrument(region_span)
-                .await?;
-            Ok(())
-        })
+            .in_current_span(),
+        )
     }
 
     #[instrument]
@@ -267,19 +270,22 @@ impl super::Launcher for Launcher {
     ) -> Pin<
         Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Report>> + Send + 'l>,
     > {
-        Box::pin(async move { collect!(self.regions) })
+        Box::pin(async move { collect!(self.regions) }.in_current_span())
     }
 
     #[instrument]
     fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>> {
-        Box::pin(async move {
-            for (region, r) in self.regions {
-                let region_span = tracing::debug_span!("region", %region);
-                r.terminate_all().instrument(region_span).await?;
-            }
+        Box::pin(
+            async move {
+                for (region, r) in self.regions {
+                    let region_span = tracing::debug_span!("region", %region);
+                    r.terminate_all().instrument(region_span).await?;
+                }
 
-            Ok(())
-        })
+                Ok(())
+            }
+            .in_current_span(),
+        )
     }
 }
 
@@ -337,56 +343,60 @@ impl super::Launcher for RegionLauncher {
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
     ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'l>> {
-        Box::pin(async move {
-            let max_wait = l.max_wait;
-            self.machines =
-                futures_util::future::join_all(l.machines.into_iter().map(|(nickname, desc)| {
-                    let machine_span = tracing::debug_span!("machine", %nickname, ?desc);
-                    async {
-                        let vm_name = super::rand_name_sep("vm", "-");
-                        tracing::debug!(%vm_name, "setting up instance");
+        Box::pin(
+            async move {
+                let max_wait = l.max_wait;
+                self.machines = futures_util::future::join_all(l.machines.into_iter().map(
+                    |(nickname, desc)| {
+                        let machine_span = tracing::debug_span!("machine", %nickname, ?desc);
+                        async {
+                            let vm_name = super::rand_name_sep("vm", "-");
+                            tracing::debug!(%vm_name, "setting up instance");
 
-                        let ipinfo = azcmd::create_vm(
-                            &self.resource_group_name,
-                            &vm_name,
-                            &desc.instance_type,
-                            &desc.image,
-                            &desc.username,
-                        )
-                        .await?;
-                        azcmd::open_ports(&self.resource_group_name, &vm_name).await?;
-
-                        if let Setup {
-                            ref username,
-                            setup_fn: Some(ref f),
-                            ..
-                        } = desc
-                        {
-                            super::setup_machine(
-                                &nickname,
-                                &ipinfo.public_ip,
-                                &username,
-                                max_wait,
-                                None,
-                                f.as_ref(),
+                            let ipinfo = azcmd::create_vm(
+                                &self.resource_group_name,
+                                &vm_name,
+                                &desc.instance_type,
+                                &desc.image,
+                                &desc.username,
                             )
                             .await?;
-                        }
+                            azcmd::open_ports(&self.resource_group_name, &vm_name).await?;
 
-                        Ok::<_, Report>(Descriptor {
-                            name: nickname,
-                            username: desc.username,
-                            ip: ipinfo,
-                        })
-                    }
-                    .instrument(machine_span)
-                }))
+                            if let Setup {
+                                ref username,
+                                setup_fn: Some(ref f),
+                                ..
+                            } = desc
+                            {
+                                super::setup_machine(
+                                    &nickname,
+                                    &ipinfo.public_ip,
+                                    &username,
+                                    max_wait,
+                                    None,
+                                    f.as_ref(),
+                                )
+                                .await?;
+                            }
+
+                            Ok::<_, Report>(Descriptor {
+                                name: nickname,
+                                username: desc.username,
+                                ip: ipinfo,
+                            })
+                        }
+                        .instrument(machine_span)
+                    },
+                ))
                 .await
                 .into_iter()
                 .collect::<Result<Vec<_>, Report>>()?;
 
-            Ok(())
-        })
+                Ok(())
+            }
+            .in_current_span(),
+        )
     }
 
     #[instrument(debug)]
@@ -395,47 +405,53 @@ impl super::Launcher for RegionLauncher {
     ) -> Pin<
         Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Report>> + Send + 'l>,
     > {
-        Box::pin(async move {
-            futures_util::future::join_all(self.machines.iter().map(|desc| {
-                let machine_span = tracing::debug_span!("machine", name = %desc.name, ?desc);
+        Box::pin(
+            async move {
+                futures_util::future::join_all(self.machines.iter().map(|desc| {
+                    let machine_span = tracing::debug_span!("machine", name = %desc.name, ?desc);
 
-                let Descriptor {
-                    name,
-                    username,
-                    ip:
-                        IpInfo {
-                            public_ip,
-                            private_ip,
-                        },
-                } = desc;
-                let mut m = crate::Machine {
-                    nickname: name.clone(),
-                    public_dns: public_ip.clone(),
-                    public_ip: public_ip.clone(),
-                    private_ip: Some(private_ip.clone()),
-                    ssh: None,
-                    _tsunami: Default::default(),
-                };
+                    let Descriptor {
+                        name,
+                        username,
+                        ip:
+                            IpInfo {
+                                public_ip,
+                                private_ip,
+                            },
+                    } = desc;
+                    let mut m = crate::Machine {
+                        nickname: name.clone(),
+                        public_dns: public_ip.clone(),
+                        public_ip: public_ip.clone(),
+                        private_ip: Some(private_ip.clone()),
+                        ssh: None,
+                        _tsunami: Default::default(),
+                    };
 
-                async move {
-                    m.connect_ssh(username, None, None, 22).await?;
-                    Ok::<_, Report>((name.clone(), m))
-                }
-                .instrument(machine_span)
-            }))
-            .await
-            .into_iter()
-            .collect::<Result<HashMap<_, _>, Report>>()
-        })
+                    async move {
+                        m.connect_ssh(username, None, None, 22).await?;
+                        Ok::<_, Report>((name.clone(), m))
+                    }
+                    .instrument(machine_span)
+                }))
+                .await
+                .into_iter()
+                .collect::<Result<HashMap<_, _>, Report>>()
+            }
+            .in_current_span(),
+        )
     }
 
     #[instrument(debug)]
     fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>> {
         let name = self.resource_group_name.clone();
-        Box::pin(async move {
-            azcmd::delete_resource_group(&name).await?;
-            Ok(())
-        })
+        Box::pin(
+            async move {
+                azcmd::delete_resource_group(&name).await?;
+                Ok(())
+            }
+            .in_current_span(),
+        )
     }
 }
 
