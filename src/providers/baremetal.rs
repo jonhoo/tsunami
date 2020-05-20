@@ -11,6 +11,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tracing::instrument;
+use tracing_futures::Instrument;
 
 /// Descriptor for a single, existing machine to connect to.
 /// Therefore, the `impl MachineSetup` includes the address of the machine in `region`; i.e.,
@@ -52,7 +53,7 @@ impl Setup {
         let username: Result<String, Report> = username.map(Ok).unwrap_or_else(|| {
             let stdout = std::process::Command::new("whoami")
                 .output()
-                .wrap_err("whoami to determine local user")?
+                .wrap_err("failed to execute whoami to determine local user")?
                 .stdout;
             let user = String::from_utf8_lossy(&stdout);
             tracing::trace!(username = %user, "re-using local username");
@@ -118,40 +119,62 @@ impl Setup {
     }
 }
 
+#[instrument(level = "trace", skip(s, max_wait))]
 async fn try_addrs(
     s: &mut Setup,
     max_wait: Option<std::time::Duration>,
 ) -> Result<std::net::SocketAddr, Report> {
-    let mut err = Err(eyre!("failed to connect to baremetal instance"));
+    let mut errs = Vec::new();
     while let Some(addr) = s.addr.pop() {
-        tracing::trace!(host = %addr, "testing address");
+        let host_span = tracing::debug_span!("host", host = %addr);
+        let ret = async {
+            tracing::trace!("testing address");
 
-        let mut m = crate::Machine {
-            nickname: Default::default(),
-            public_dns: addr.ip().to_string(),
-            public_ip: addr.ip().to_string(),
-            private_ip: None,
-            ssh: None,
-            _tsunami: Default::default(),
-        };
+            let mut m = crate::Machine {
+                nickname: Default::default(),
+                public_dns: addr.ip().to_string(),
+                public_ip: addr.ip().to_string(),
+                private_ip: None,
+                ssh: None,
+                _tsunami: Default::default(),
+            };
 
-        match m
-            .connect_ssh(
-                &s.username,
-                s.key_path.as_ref().map(|p| p.as_path()),
-                max_wait,
-                addr.port(),
-            )
-            .await
-        {
-            Err(e) => err = err.wrap_err_with(|| format!("{} failed with {}", addr, e)),
-            Ok(_) => {
-                return Ok(addr);
+            match m
+                .connect_ssh(
+                    &s.username,
+                    s.key_path.as_ref().map(|p| p.as_path()),
+                    max_wait,
+                    addr.port(),
+                )
+                .await
+            {
+                Err(e) => {
+                    errs.push(eyre!(e));
+                    None
+                }
+                Ok(_) => Some(addr),
             }
+        }
+        .instrument(host_span)
+        .await;
+
+        if let Some(addr) = ret {
+            return Ok(addr);
         }
     }
 
-    err?
+    if errs.is_empty() {
+        eyre::bail!("no known addresses");
+    }
+
+    // we have potentially many errors, and we need to return one.
+    // not clear what to do about that.. we're just going to chain them for now.
+    let mut err = Err(errs.pop().unwrap());
+    while let Some(e) = errs.pop() {
+        // the first address will end up "outermost", which is probably fine
+        err = err.wrap_err(e);
+    }
+    err
 }
 
 /// Only one machine is supported per instance of this Launcher, further instances of `Setup`
@@ -190,7 +213,7 @@ impl super::Launcher for Machine {
 
             let addr = try_addrs(&mut setup, l.max_wait)
                 .await
-                .wrap_err("probing baremetal addresses")?;
+                .wrap_err("failed to find valid baremetal address")?;
 
             if let Setup {
                 ref username,
