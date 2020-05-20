@@ -22,7 +22,7 @@
 //! use tsunami::Tsunami;
 //! use tsunami::providers::{aws, azure};
 //! #[tokio::main]
-//! async fn main() -> Result<(), failure::Error> {
+//! async fn main() -> Result<(), color_eyre::Report> {
 //!     // Initialize AWS
 //!     let mut aws = aws::Launcher::default();
 //!     // Create an AWS machine descriptor and add it to the AWS Tsunami
@@ -33,7 +33,7 @@
 //!                 .region_with_ubuntu_ami(AWSRegion::UsWest1) // default is UsEast1
 //!                 .await
 //!                 .unwrap()
-//!                 .setup(|ssh, _| {
+//!                 .setup(|ssh| {
 //!                     // default is a no-op
 //!                     Box::pin(async move {
 //!                         ssh.command("sudo")
@@ -51,7 +51,6 @@
 //!                 }),
 //!         )],
 //!         None,
-//!         None,
 //!     )
 //!     .await?;
 //!
@@ -64,7 +63,7 @@
 //!                 String::from("azure_vm"),
 //!                 azure::Setup::default()
 //!                     .region(AzureRegion::FranceCentral) // default is EastUs
-//!                     .setup(|ssh, _| {
+//!                     .setup(|ssh| {
 //!                         // default is a no-op
 //!                         Box::pin(async move {
 //!                             ssh.command("sudo")
@@ -81,7 +80,6 @@
 //!                         })
 //!                     }),
 //!             )],
-//!             None,
 //!             None,
 //!         )
 //!         .await?;
@@ -100,6 +98,19 @@
 //!     azure.terminate_all().await?;
 //!     Ok(())
 //! }
+//! ```
+//!
+//! # Where are the logs?
+//!
+//! This crate uses [`tracing`](https://docs.rs/tracing), which does not log anything by default,
+//! since the crate allows you to [plug and
+//! play](https://docs.rs/tracing/0.1.14/tracing/#in-executables) which "consumer" you want for
+//! your trace points. If you want logging that "just works", you'll want
+//! [`tracing_subscriber::fmt`](https://docs.rs/tracing-subscriber/0.2/tracing_subscriber/fmt/index.html),
+//! which you can instantiate (after adding it to your Cargo.toml) with:
+//!
+//! ```rust,ignore
+//! tracing_subscriber::fmt::init();
 //! ```
 //!
 //! # Live-coding
@@ -121,17 +132,13 @@
 )]
 #![allow(clippy::type_complexity)]
 
-#[macro_use]
-extern crate slog;
-#[macro_use]
-extern crate failure;
-
-use failure::Error;
+use color_eyre::Report;
 pub use openssh as ssh;
 pub use ssh::Session;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use tracing::instrument;
 
 pub mod providers;
 
@@ -163,15 +170,14 @@ pub struct Machine<'tsunami> {
 
 impl<'t> Machine<'t> {
     #[cfg(any(feature = "aws", feature = "azure", feature = "baremetal"))]
+    #[instrument(level = "debug", skip(key_path, timeout))]
     async fn connect_ssh(
         &mut self,
-        log: &slog::Logger,
         username: &str,
         key_path: Option<&std::path::Path>,
         timeout: Option<std::time::Duration>,
         port: u16,
-    ) -> Result<(), failure::Error> {
-        use failure::ResultExt;
+    ) -> Result<(), Report> {
         let mut sess = ssh::SessionBuilder::default();
 
         sess.user(username.to_string()).port(port);
@@ -184,14 +190,9 @@ impl<'t> Machine<'t> {
             sess.connect_timeout(t);
         }
 
-        let sess = sess
-            .connect(&self.public_ip)
-            .await
-            .context(format!("failed to ssh to machine {}", self.public_dns))
-            .map_err(|e| {
-                slog::error!(log, "failed to ssh to {}", self.public_ip);
-                e
-            })?;
+        tracing::trace!("connecting");
+        let sess = sess.connect(&self.public_ip).await?;
+        tracing::trace!("connected");
 
         self.ssh = Some(sess);
         Ok(())
@@ -214,27 +215,22 @@ pub trait Tsunami: sealed::Sealed {
     /// SSH connections to each instance are accesssible via
     /// [`connect_all`](providers::Launcher::connect_all).
     ///
-    /// # Arguments
-    /// - `descriptors` is an iterator of machine nickname to descriptor. Duplicate nicknames will
-    /// cause an error. To add many and auto-generate nicknames, see the helper function
-    /// [`crate::make_multiple`].
-    /// - `max_wait` limits how long we should wait for instances to be available before giving up.
+    /// The argument `descriptors` is an iterator of machine nickname to descriptor. Duplicate
+    /// nicknames will cause an error. To add many and auto-generate nicknames, see the helper
+    /// function [`crate::make_multiple`].
+    ///
+    /// `max_wait` limits how long we should wait for instances to be available before giving up.
     /// Passing `None` implies no limit.
     ///
     /// # Example
     /// ```rust,no_run
     /// #[tokio::main]
-    /// async fn main() -> Result<(), failure::Error> {
+    /// async fn main() -> Result<(), color_eyre::Report> {
     ///     use tsunami::Tsunami;
     ///     // make a launcher
     ///     let mut aws: tsunami::providers::aws::Launcher<_> = Default::default();
     ///     // spawn a host into the launcher
-    ///     aws.spawn(
-    ///         vec![(String::from("my_tsunami"), Default::default())],
-    ///         None,
-    ///         None,
-    ///     )
-    ///     .await?;
+    ///     aws.spawn(vec![(String::from("my_tsunami"), Default::default())], None).await?;
     ///     // access the host via the launcher
     ///     let vms = aws.connect_all().await?;
     ///     // we're done! terminate the instance.
@@ -246,19 +242,21 @@ pub trait Tsunami: sealed::Sealed {
         &'l mut self,
         descriptors: I,
         max_wait: Option<std::time::Duration>,
-        log: Option<slog::Logger>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>>
+    ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'l>>
     where
         I: IntoIterator<Item = (String, Self::MachineDescriptor)> + Send + 'static,
+        I: std::fmt::Debug,
         I::IntoIter: Send;
 
     /// Return connections to the [`Machine`s](crate::Machine) that `spawn` spawned.
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>;
+    ) -> Pin<
+        Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Report>> + Send + 'l>,
+    >;
 
     /// Shut down all instances.
-    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>>;
 }
 
 impl<L: providers::Launcher> Tsunami for L {
@@ -266,12 +264,13 @@ impl<L: providers::Launcher> Tsunami for L {
 
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>
-    {
+    ) -> Pin<
+        Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Report>> + Send + 'l>,
+    > {
         self.connect_all()
     }
 
-    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>> {
         self.terminate_all()
     }
 
@@ -279,13 +278,13 @@ impl<L: providers::Launcher> Tsunami for L {
         &'l mut self,
         descriptors: I,
         max_wait: Option<std::time::Duration>,
-        log: Option<slog::Logger>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>>
+    ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'l>>
     where
         I: IntoIterator<Item = (String, Self::MachineDescriptor)> + Send + 'static,
+        I: std::fmt::Debug,
         I::IntoIter: Send,
     {
-        self.spawn(descriptors, max_wait, log)
+        self.spawn(descriptors, max_wait)
     }
 }
 
@@ -295,36 +294,21 @@ mod sealed {
     impl<L: crate::providers::Launcher> Sealed for L {}
 }
 
-/// Get a reasonable default logger.
-pub fn get_term_logger() -> slog::Logger {
-    use slog::Drain;
-    use std::sync::Mutex;
-
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = Mutex::new(slog_term::FullFormat::new(decorator).build()).fuse();
-    slog::Logger::root(drain, slog::o!())
-}
-
 /// Make multiple machine descriptors.
 ///
 /// The `nickname_prefix` is used to name the machines, indexed from 0 to `n`:
 /// ```rust,no_run
 /// #[tokio::main]
-/// async fn main() -> Result<(), failure::Error> {
+/// async fn main() -> Result<(), color_eyre::Report> {
 ///     use tsunami::{
-///         get_term_logger, make_multiple,
+///         make_multiple,
 ///         providers::{
 ///             aws::{self, Setup},
 ///             Launcher,
 ///         },
 ///     };
 ///     let mut aws: aws::Launcher<_> = Default::default();
-///     aws.spawn(
-///         make_multiple(3, "my_tsunami", Setup::default()),
-///         None,
-///         Some(get_term_logger()),
-///     )
-///     .await?;
+///     aws.spawn(make_multiple(3, "my_tsunami", Setup::default()), None).await?;
 ///
 ///     let vms = aws.connect_all().await?;
 ///     let my_first_vm = vms.get("my_tsunami-0").unwrap();
@@ -341,14 +325,4 @@ pub fn make_multiple<M: Clone>(n: usize, nickname_prefix: &str, m: M) -> Vec<(St
             (name, m)
         })
         .collect()
-}
-
-#[cfg(test)]
-mod test {
-    pub(crate) fn test_logger() -> slog::Logger {
-        use slog::Drain;
-        let plain = slog_term::PlainSyncDecorator::new(slog_term::TestStdoutWriter);
-        let drain = slog_term::FullFormat::new(plain).build().fuse();
-        slog::Logger::root(drain, o!())
-    }
 }

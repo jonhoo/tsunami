@@ -23,20 +23,20 @@ maintenance = { status = "passively-maintained" }
 
 [features]
 default = ["aws", "azure", "baremetal"]
-debug = ["slog/max_level_trace", "slog/release_max_level_debug"]
 aws = ["rusoto_core", "rusoto_ec2", "futures-util", "tempfile", "ubuntu-ami"]
 azure = ["serde", "serde_json", "futures-util", "tokio", "tokio/process"]
 baremetal = []
 args = ["structopt"]
 
 [dependencies]
+color-eyre = "0.3"
 educe = "0.4"
-failure = "0.1.1"
+eyre = "0.4"
 itertools = "0.8"
-rand = "0.7"
-slog = "2.1.1"
-slog-term = "2.4.0"
 openssh = "0.6"
+rand = "0.7"
+tracing = "0.1"
+tracing-futures = "0.2"
 rusoto_core = { version = "0.43.0", optional = true }
 rusoto_ec2 = {version = "0.43.0", optional = true }
 futures-util = { version = "0.3.4", optional = true }

@@ -3,12 +3,14 @@
 //! Use this to use machines that already exist.
 
 use crate::ssh;
+use color_eyre::Report;
 use educe::Educe;
-use failure::Error;
+use eyre::{eyre, WrapErr};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tracing::instrument;
 
 /// Descriptor for a single, existing machine to connect to.
 /// Therefore, the `impl MachineSetup` includes the address of the machine in `region`; i.e.,
@@ -24,9 +26,8 @@ pub struct Setup {
         Arc<
             dyn for<'r> Fn(
                     &'r mut ssh::Session,
-                    &'r slog::Logger,
                 )
-                    -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+                    -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
                 + Send
                 + Sync
                 + 'static,
@@ -43,12 +44,18 @@ impl super::MachineSetup for Setup {
 
 impl Setup {
     /// Create a new instance of Setup.
-    pub fn new(
-        addr: impl std::net::ToSocketAddrs,
+    #[instrument(debug)]
+    pub fn new<A: std::net::ToSocketAddrs + std::fmt::Debug>(
+        addr: A,
         username: Option<String>,
-    ) -> Result<Self, Error> {
-        let username: Result<String, Error> = username.map(Ok).unwrap_or_else(|| {
-            let user = String::from_utf8(std::process::Command::new("whoami").output()?.stdout)?;
+    ) -> Result<Self, Report> {
+        let username: Result<String, Report> = username.map(Ok).unwrap_or_else(|| {
+            let stdout = std::process::Command::new("whoami")
+                .output()
+                .wrap_err("whoami to determine local user")?
+                .stdout;
+            let user = String::from_utf8_lossy(&stdout);
+            tracing::trace!(username = %user, "re-using local username");
             let user = user
                 .split_whitespace()
                 .next()
@@ -86,9 +93,8 @@ impl Setup {
     ///
     /// ```rust
     /// use tsunami::providers::baremetal::Setup;
-    /// let m = Setup::new("127.0.0.1:22", None).unwrap().setup(|ssh, log| {
+    /// let m = Setup::new("127.0.0.1:22", None).unwrap().setup(|ssh| {
     ///     Box::pin(async move {
-    ///         slog::info!(log, "running setup!");
     ///         ssh.command("sudo")
     ///             .arg("apt")
     ///             .arg("update")
@@ -102,8 +108,7 @@ impl Setup {
         mut self,
         setup: impl for<'r> Fn(
                 &'r mut ssh::Session,
-                &'r slog::Logger,
-            ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+            ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
             + Send
             + Sync
             + 'static,
@@ -115,12 +120,12 @@ impl Setup {
 
 async fn try_addrs(
     s: &mut Setup,
-    log: &slog::Logger,
     max_wait: Option<std::time::Duration>,
-) -> Result<std::net::SocketAddr, Error> {
-    use failure::ResultExt;
-    let mut err = Err(format_err!("SSH failed")).context(String::from("No valid addresses found"));
+) -> Result<std::net::SocketAddr, Report> {
+    let mut err = Err(eyre!("failed to connect to baremetal instance"));
     while let Some(addr) = s.addr.pop() {
+        tracing::trace!(host = %addr, "testing address");
+
         let mut m = crate::Machine {
             nickname: Default::default(),
             public_dns: addr.ip().to_string(),
@@ -132,7 +137,6 @@ async fn try_addrs(
 
         match m
             .connect_ssh(
-                log,
                 &s.username,
                 s.key_path.as_ref().map(|p| p.as_path()),
                 max_wait,
@@ -140,10 +144,7 @@ async fn try_addrs(
             )
             .await
         {
-            Err(e) => {
-                trace!(log, "failed to ssh to addr {}", &addr; "err" => ?e);
-                err = err.context(format!("failed to ssh to address {}", addr))
-            }
+            Err(e) => err = err.wrap_err_with(|| format!("{} failed with {}", addr, e)),
             Ok(_) => {
                 return Ok(addr);
             }
@@ -160,8 +161,6 @@ async fn try_addrs(
 /// The `impl Drop` of this type is a no-op, since Tsunami can't terminate an existing machine.
 #[derive(Debug, Default)]
 pub struct Machine {
-    /// A logger.
-    pub log: Option<slog::Logger>,
     name: String,
     addr: Option<std::net::SocketAddr>,
     username: String,
@@ -171,26 +170,27 @@ pub struct Machine {
 impl super::Launcher for Machine {
     type MachineDescriptor = Setup;
 
+    #[instrument(debug, skip(self))]
     fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'l>> {
         Box::pin(async move {
-            self.log = Some(l.log);
-            let log = self.log.as_ref().expect("Baremetal machine uninitialized");
-
             let mut dscs = l.machines.into_iter();
             let (name, mut setup) = dscs
                 .next()
-                .ok_or_else(|| format_err!("Cannot initialize zero machines"))?;
+                .ok_or_else(|| eyre!("Cannot initialize zero machines"))?;
             for (discarded_name, discarded_setup) in dscs {
-                warn!(log, "Discarding duplicate connections to same machine";
-                    "name" => &discarded_name,
-                    "addr" => &discarded_setup.addr[0],
+                tracing::warn!(
+                    name = %discarded_name,
+                    addr = %discarded_setup.addr[0],
+                    "Discarding duplicate connections to same machine",
                 );
             }
 
-            let addr = try_addrs(&mut setup, &log, l.max_wait).await?;
+            let addr = try_addrs(&mut setup, l.max_wait)
+                .await
+                .wrap_err("probing baremetal addresses")?;
 
             if let Setup {
                 ref username,
@@ -209,31 +209,19 @@ impl super::Launcher for Machine {
                 };
 
                 m.connect_ssh(
-                    log,
                     &username,
                     key_path.as_ref().map(|p| p.as_path()),
                     l.max_wait,
                     addr.port(),
                 )
-                .await
-                .map_err(|e| {
-                    error!(log, "failed to ssh to {}", &addr);
-                    e.context(format!("failed to ssh to machine {}", addr))
-                })?;
+                .await?;
 
                 let mut sess = m.ssh.unwrap();
 
-                f(&mut sess, log).await.map_err(|e| {
-                    error!(
-                        log,
-                        "machine setup failed";
-                        "name" => name.clone(),
-                    );
-                    e.context(format!("setup procedure for {} machine failed", name))
-                })?;
+                f(&mut sess).await.wrap_err("setup procedure failed")?;
             }
 
-            info!(log, "finished setting up instance"; "name" => &name, "ip" => &addr);
+            tracing::info!("instance ready");
             self.name = name;
             self.addr = Some(addr);
             self.username = setup.username;
@@ -242,15 +230,14 @@ impl super::Launcher for Machine {
         })
     }
 
+    #[instrument(debug)]
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>
-    {
+    ) -> Pin<
+        Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Report>> + Send + 'l>,
+    > {
         Box::pin(async move {
-            let log = self.log.as_ref().expect("Baremetal machine uninitialized");
-            let addr = self
-                .addr
-                .ok_or_else(|| format_err!("Address uninitialized"))?;
+            let addr = self.addr.ok_or_else(|| eyre!("Address uninitialized"))?;
             let mut m = crate::Machine {
                 nickname: self.name.clone(),
                 public_dns: addr.ip().to_string(),
@@ -261,7 +248,6 @@ impl super::Launcher for Machine {
             };
 
             m.connect_ssh(
-                log,
                 &self.username,
                 self.key_path.as_ref().map(|p| p.as_path()),
                 None,
@@ -275,33 +261,30 @@ impl super::Launcher for Machine {
         })
     }
 
-    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>> {
         Box::pin(async move { Ok(()) })
     }
 }
 
 impl Drop for Machine {
     fn drop(&mut self) {
-        let log = self.log.as_ref().expect("Baremetal machine uninitialized");
-        debug!(log, "Dropping baremetal machine"; "addr" => ?self.addr);
+        tracing::trace!(addr = ?self.addr, "dropping baremetal instance");
     }
 }
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use crate::providers::Launcher;
-    use failure::Error;
 
     #[test]
     #[ignore]
-    fn localhost() -> Result<(), Error> {
+    fn localhost() -> Result<(), Report> {
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         let s = super::Setup::new("127.0.0.1:22", None)?;
         let mut m: super::Machine = Default::default();
-        m.log = Some(crate::test::test_logger());
         let desc = crate::providers::LaunchDescriptor {
             region: String::from("localhost"),
-            log: crate::test::test_logger(),
             max_wait: None,
             machines: vec![(String::from("self"), s)],
         };
