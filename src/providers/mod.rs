@@ -34,13 +34,16 @@ pub trait MachineSetup {
     fn region(&self) -> Self::Region;
 }
 
-/// Implement this trait to implement a new cloud provider for Tsunami.
-/// Tsunami will call `launch` once per unique region, as defined by `MachineSetup`.
+/// Implement this trait to implement support for a cloud provider.
+///
+/// Users should use [`crate::Tsunami`] instead of this trait.
 pub trait Launcher {
     /// A type describing a single instance to launch.
     type MachineDescriptor: MachineSetup;
 
     /// Spawn the instances.
+    ///
+    /// Implementations can assume that all the entries in `desc` are for the same region.
     ///
     /// Implementors should remember enough information to subsequently answer
     /// calls to `connect_all`, i.e., the IPs of the machines.
@@ -61,40 +64,10 @@ pub trait Launcher {
     /// Shut down all instances.
     fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>>;
 
-    /// Start up all the hosts.
+    /// Helper method to group `MachineDescriptor`s into regions and call `launch`.
     ///
-    /// This call will block until the instances are spawned into the provided launcher.
-    /// SSH connections to each instance are accesssible via
-    /// [`connect_all`](providers::Launcher::connect_all).
-    ///
-    /// # Arguments
-    /// - `descriptors` is an iterator of machine nickname to descriptor. Duplicate nicknames will
-    /// cause an error. To add many and auto-generate nicknames, see the helper function
-    /// [`crate::make_multiple`].
-    /// - `max_wait` limits how long we should wait for instances to be available before giving up.
-    /// Passing `None` implies no limit.
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), failure::Error> {
-    ///     use tsunami::providers::Launcher;
-    ///     // make a launcher
-    ///     let mut aws: tsunami::providers::aws::Launcher<_> = Default::default();
-    ///     // spawn a host into the launcher
-    ///     aws.spawn(
-    ///         vec![(String::from("my_tsunami"), Default::default())],
-    ///         None,
-    ///         None,
-    ///     )
-    ///     .await?;
-    ///     // access the host via the launcher
-    ///     let vms = aws.connect_all().await?;
-    ///     // we're done! terminate the instance.
-    ///     aws.cleanup().await?;
-    ///     Ok(())
-    /// }
-    /// ```
+    /// This implementation initializes each region serially. It may be useful for performance to
+    /// provide an implementation that initializes the regions concurrently.
     fn spawn<'l>(
         &'l mut self,
         descriptors: impl IntoIterator<Item = (String, Self::MachineDescriptor)> + 'static,
@@ -128,6 +101,8 @@ pub trait Launcher {
     }
 }
 
+// The aws and azure implementations use this helper macro, so it has to be declared before the
+// module declarations.
 #[cfg(any(feature = "aws", feature = "azure"))]
 macro_rules! collect {
     ($x: expr) => {{
@@ -141,6 +116,13 @@ macro_rules! collect {
         })
     }};
 }
+
+#[cfg(feature = "aws")]
+pub mod aws;
+#[cfg(feature = "azure")]
+pub mod azure;
+#[cfg(feature = "baremetal")]
+pub mod baremetal;
 
 #[cfg(any(feature = "aws", feature = "azure"))]
 struct Sep(&'static str);
@@ -175,13 +157,6 @@ fn rand_name_sep(prefix: &str, sep: impl Into<Sep>) -> String {
     name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
     name
 }
-
-#[cfg(feature = "aws")]
-pub mod aws;
-#[cfg(feature = "azure")]
-pub mod azure;
-#[cfg(feature = "baremetal")]
-pub mod baremetal;
 
 #[cfg(any(feature = "aws", feature = "azure"))]
 async fn setup_machine(

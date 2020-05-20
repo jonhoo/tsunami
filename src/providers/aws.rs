@@ -11,7 +11,8 @@
 //! ```rust,no_run
 //! #[tokio::main]
 //! async fn main() {
-//!     use tsunami::providers::{aws, Launcher};
+//!     use tsunami::Tsunami;
+//!     use tsunami::providers::{aws};
 //!
 //!     let mut l = aws::Launcher::default();
 //!     // make the defined-duration instances expire after 1 hour
@@ -41,7 +42,8 @@
 //! ```
 //! ```rust,no_run
 //! use rusoto_core::{credential::DefaultCredentialsProvider};
-//! use tsunami::providers::{aws::{self, Region}, Launcher};
+//! use tsunami::Tsunami;
+//! use tsunami::providers::{aws::{self, Region}};
 //! #[tokio::main]
 //! async fn main() -> Result<(), failure::Error> {
 //!     // Initialize AWS

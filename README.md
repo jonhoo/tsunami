@@ -12,7 +12,8 @@ instances.
 ```rust
 use azure::Region as AzureRegion;
 use rusoto_core::{credential::DefaultCredentialsProvider, Region as AWSRegion};
-use tsunami::providers::{aws, azure, Launcher};
+use tsunami::Tsunami;
+use tsunami::providers::{aws, azure};
 #[tokio::main]
 async fn main() -> Result<(), failure::Error> {
     // Initialize AWS

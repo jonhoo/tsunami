@@ -18,7 +18,8 @@
 //!
 //! # Example
 //! ```rust,no_run
-//! use tsunami::providers::{azure, Launcher};
+//! use tsunami::Tsunami;
+//! use tsunami::providers::{azure};
 //! #[tokio::main]
 //! async fn main() {
 //!     let mut l = azure::Launcher::default();
@@ -46,7 +47,8 @@
 //! }
 //! ```
 //! ```rust,no_run
-//! use tsunami::providers::{azure, Launcher};
+//! use tsunami::Tsunami;
+//! use tsunami::providers::{azure};
 //! #[tokio::main]
 //! async fn main() -> Result<(), failure::Error> {
 //!     // Initialize Azure

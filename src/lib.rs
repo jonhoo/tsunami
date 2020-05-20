@@ -6,7 +6,8 @@
 //! ```rust,no_run
 //! use azure::Region as AzureRegion;
 //! use rusoto_core::{credential::DefaultCredentialsProvider, Region as AWSRegion};
-//! use tsunami::providers::{aws, azure, Launcher};
+//! use tsunami::Tsunami;
+//! use tsunami::providers::{aws, azure};
 //! #[tokio::main]
 //! async fn main() -> Result<(), failure::Error> {
 //!     // Initialize AWS
@@ -108,8 +109,12 @@ extern crate slog;
 #[macro_use]
 extern crate failure;
 
+use failure::Error;
 pub use openssh as ssh;
 pub use ssh::Session;
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
 pub mod providers;
 
@@ -174,6 +179,96 @@ impl<'t> Machine<'t> {
         self.ssh = Some(sess);
         Ok(())
     }
+}
+
+/// Use this trait to launch machines into providers.
+///
+/// Important: You must call `cleanup` to shut down the instances once you are done. Otherwise, you
+/// may incur unexpected charges from the cloud provider.
+///
+/// This trait is sealed. If you want to implement support for a provider, see [`providers::Launcher`].
+pub trait Tsunami: sealed::Sealed {
+    /// A type describing a single instance to launch.
+    type MachineDescriptor: providers::MachineSetup;
+
+    /// Start up all the hosts.
+    ///
+    /// The returned future will resolve when the instances are spawned into the provided launcher.
+    /// SSH connections to each instance are accesssible via
+    /// [`connect_all`](providers::Launcher::connect_all).
+    ///
+    /// # Arguments
+    /// - `descriptors` is an iterator of machine nickname to descriptor. Duplicate nicknames will
+    /// cause an error. To add many and auto-generate nicknames, see the helper function
+    /// [`crate::make_multiple`].
+    /// - `max_wait` limits how long we should wait for instances to be available before giving up.
+    /// Passing `None` implies no limit.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), failure::Error> {
+    ///     use tsunami::Tsunami;
+    ///     // make a launcher
+    ///     let mut aws: tsunami::providers::aws::Launcher<_> = Default::default();
+    ///     // spawn a host into the launcher
+    ///     aws.spawn(
+    ///         vec![(String::from("my_tsunami"), Default::default())],
+    ///         None,
+    ///         None,
+    ///     )
+    ///     .await?;
+    ///     // access the host via the launcher
+    ///     let vms = aws.connect_all().await?;
+    ///     // we're done! terminate the instance.
+    ///     aws.cleanup().await?;
+    ///     Ok(())
+    /// }
+    /// ```
+    fn spawn<'l>(
+        &'l mut self,
+        descriptors: impl IntoIterator<Item = (String, Self::MachineDescriptor)> + 'static,
+        max_wait: Option<std::time::Duration>,
+        log: Option<slog::Logger>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>>;
+
+    /// Return connections to the [`Machine`s](crate::Machine) that `spawn` spawned.
+    fn connect_all<'l>(
+        &'l self,
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>;
+
+    /// Shut down all instances.
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>>;
+}
+
+impl<L: providers::Launcher> Tsunami for L {
+    type MachineDescriptor = L::MachineDescriptor;
+
+    fn connect_all<'l>(
+        &'l self,
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + 'l>>
+    {
+        self.connect_all()
+    }
+
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
+        self.cleanup()
+    }
+
+    fn spawn<'l>(
+        &'l mut self,
+        descriptors: impl IntoIterator<Item = (String, Self::MachineDescriptor)> + 'static,
+        max_wait: Option<std::time::Duration>,
+        log: Option<slog::Logger>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'l>> {
+        self.spawn(descriptors, max_wait, log)
+    }
+}
+
+mod sealed {
+    pub trait Sealed {}
+
+    impl<T: super::Tsunami> Sealed for T {}
 }
 
 /// Get a reasonable default logger.

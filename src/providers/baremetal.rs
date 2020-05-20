@@ -1,7 +1,6 @@
 //! Baremetal backend for tsunami.
 //!
-//! Use this to use machines that are already in existence with
-//! tsunami.
+//! Use this to use machines that already exist.
 
 use crate::ssh;
 use educe::Educe;
