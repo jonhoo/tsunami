@@ -113,6 +113,11 @@
 //! tracing_subscriber::fmt::init();
 //! ```
 //!
+//! And then run your application with, for example, `RUST_LOG=info` to get logs. If you also want
+//! automatic logging of errors, take a look at the documentation for
+//! [`color-eyre`](https://docs.rs/color_eyre/), which includes information about how to integrate
+//! with [`tracing-error`](https://docs.rs/tracing-error).
+//!
 //! # Live-coding
 //!
 //! An earlier version of this crate was written as part of a live-coding stream series intended
