@@ -1,15 +1,11 @@
-extern crate tsunami;
-
+use color_eyre::Report;
 use rusoto_core::Region;
-use slog::{info, warn};
+use tracing::instrument;
 use tsunami::providers::{aws, Launcher};
 use tsunami::Machine;
 
-async fn ping(
-    from: &Machine<'_>,
-    to: &Machine<'_>,
-    log: &slog::Logger,
-) -> Result<(), failure::Error> {
+#[instrument]
+async fn ping(from: &Machine<'_>, to: &Machine<'_>) -> Result<(), Report> {
     let to_ip = &to.public_ip;
 
     let ssh = from.ssh.as_ref().unwrap();
@@ -21,23 +17,23 @@ async fn ping(
         .output()
         .await?;
     let stdout = std::string::String::from_utf8(out.stdout)?;
-    info!(log, "ping"; "from" => &from.public_ip, "to" => to_ip, "ping" => stdout);
+    tracing::info!(ping = %stdout, "ping");
     Ok(())
 }
 
 #[tokio::main]
-async fn main() -> Result<(), failure::Error> {
+async fn main() -> Result<(), Report> {
     let ms = vec![
         (
             String::from("east"),
             aws::Setup::default()
                 .region_with_ubuntu_ami(Region::UsEast1)
                 .await?
-                .setup(|ssh, log| {
+                .setup(|ssh| {
                     Box::pin(async move {
                         if let Err(e) = ssh.command("sudo").arg("apt").arg("update").status().await
                         {
-                            warn!(&log, "apt update failed"; "err" => ?e);
+                            tracing::warn!("apt update failed: {}", e);
                         };
 
                         Ok(())
@@ -50,11 +46,11 @@ async fn main() -> Result<(), failure::Error> {
                 .region_with_ubuntu_ami(Region::ApSouth1)
                 .await?
                 .instance_type("t3.small")
-                .setup(|ssh, log| {
+                .setup(|ssh| {
                     Box::pin(async move {
                         if let Err(e) = ssh.command("sudo").arg("apt").arg("update").status().await
                         {
-                            warn!(&log, "apt update failed"; "err" => ?e);
+                            tracing::warn!("apt update failed: {}", e);
                         };
 
                         Ok(())
@@ -63,22 +59,17 @@ async fn main() -> Result<(), failure::Error> {
         ),
     ];
 
-    let log = tsunami::get_term_logger();
     let mut l: tsunami::providers::aws::Launcher<_> = Default::default();
-    l.spawn(
-        ms,
-        Some(std::time::Duration::from_secs(30)),
-        Some(log.clone()),
-    )
-    .await?;
+    l.spawn(ms, Some(std::time::Duration::from_secs(30)))
+        .await?;
 
     let vms = l.connect_all().await?;
 
     let east = vms.get("east").unwrap();
     let india = vms.get("india").unwrap();
 
-    ping(east, india, &log).await?;
-    ping(india, east, &log).await?;
+    ping(east, india).await?;
+    ping(india, east).await?;
 
     l.terminate_all().await?;
     Ok(())
