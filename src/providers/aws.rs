@@ -1302,22 +1302,39 @@ impl RegionLauncher {
             .await;
         }
 
+        use rusoto_core::RusotoError;
         if !self.security_group_id.trim().is_empty() {
-            let group_span = tracing::trace_span!("security_group", id = %self.security_group_id);
+            let group_span =
+                tracing::trace_span!("removing security group", id = %self.security_group_id);
             async {
                 tracing::trace!("removing security group.");
                 // clean up security groups and keys
+                let start = tokio::time::Instant::now();
                 loop {
+                    if start.elapsed() > tokio::time::Duration::from_secs(60) {
+                        tracing::warn!(
+                            "failed to clean up temporary security group after 60 seconds."
+                        );
+                    }
+
                     let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
                     req.group_id = Some(self.security_group_id.clone());
-                    if let Err(e) = client.delete_security_group(req).await {
-                        tracing::trace!(
-                            "failed to clean up temporary security group: {}. retrying.",
-                            e,
-                        );
-                        tokio::time::delay_for(tokio::time::Duration::from_secs(5)).await;
-                    } else {
-                        break;
+                    match client.delete_security_group(req).await {
+                        Ok(_) => break,
+                        Err(RusotoError::Unknown(r)) => {
+                            let err = r.body_as_str();
+                            if err.contains("<Code>DependencyViolation</Code>") {
+                                tracing::trace!("instances not yet shut down -- retrying");
+                                tokio::time::delay_for(tokio::time::Duration::from_secs(5)).await;
+                            } else {
+                                tracing::warn!("failed: {}", err);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed: {}", e);
+                            break;
+                        }
                     }
                 }
 
