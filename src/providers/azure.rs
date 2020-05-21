@@ -235,7 +235,7 @@ pub struct Launcher {
 impl super::Launcher for Launcher {
     type MachineDescriptor = Setup;
 
-    #[instrument(skip(self))]
+    #[instrument(level = "debug", skip(self))]
     fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
@@ -264,7 +264,7 @@ impl super::Launcher for Launcher {
         )
     }
 
-    #[instrument]
+    #[instrument(level = "debug")]
     fn connect_all<'l>(
         &'l self,
     ) -> Pin<
@@ -273,7 +273,7 @@ impl super::Launcher for Launcher {
         Box::pin(async move { collect!(self.regions) }.in_current_span())
     }
 
-    #[instrument]
+    #[instrument(level = "debug")]
     fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>> {
         Box::pin(
             async move {

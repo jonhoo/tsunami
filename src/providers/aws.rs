@@ -420,7 +420,7 @@ where
         }.in_current_span())
     }
 
-    #[instrument(skip(self, max_wait))]
+    #[instrument(level = "debug", skip(self, max_wait))]
     fn spawn<'l, I>(
         &'l mut self,
         descriptors: I,
