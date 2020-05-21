@@ -1,7 +1,5 @@
 # tsunami
 
-**Note that the new async version + Azure support is not yet on crates.io. It'll come soon!**
-
 [![Crates.io](https://img.shields.io/crates/v/tsunami.svg)](https://crates.io/crates/tsunami)
 [![Documentation](https://docs.rs/tsunami/badge.svg)](https://docs.rs/tsunami/)
 [![Build Status](https://dev.azure.com/jonhoo/jonhoo/_apis/build/status/tsunami?branchName=master)](https://dev.azure.com/jonhoo/jonhoo/_build/latest?definitionId=25&branchName=master)
