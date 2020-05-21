@@ -22,8 +22,6 @@
 //!     let my_machine = vms.get("my machine").unwrap();
 //!     let out = my_machine
 //!         .ssh
-//!         .as_ref()
-//!         .unwrap()
 //!         .command("echo")
 //!         .arg("\"Hello, EC2\"")
 //!         .output()
@@ -75,13 +73,14 @@
 //!     let vms = aws.connect_all().await?;
 //!     let my_vm = vms.get("my_vm").unwrap();
 //!     println!("public ip: {}", my_vm.public_ip);
-//!     let ssh = my_vm.ssh.as_ref().unwrap();
-//!     ssh.command("git")
+//!     my_vm.ssh
+//!         .command("git")
 //!         .arg("clone")
 //!         .arg("https://github.com/jonhoo/tsunami")
 //!         .status()
 //!         .await?;
-//!     ssh.command("bash")
+//!     my_vm.ssh
+//!         .command("bash")
 //!         .arg("-c")
 //!         .arg("\"cd tsunami && cargo build\"")
 //!         .status()
@@ -92,7 +91,6 @@
 //! ```
 
 use crate::ssh;
-use crate::Machine;
 use color_eyre::Report;
 use educe::Educe;
 use eyre::{eyre, WrapErr};
@@ -1135,12 +1133,11 @@ impl RegionLauncher {
                                 // try connecting. If can't, not ready.
                                 let tag_setup = instances.get_mut(&instance_id).unwrap();
 
-                                let mut m = crate::Machine {
+                                let m = crate::MachineDescriptor {
                                     nickname: Default::default(),
                                     public_dns: Default::default(),
                                     public_ip: public_ip.to_string(),
                                     private_ip: None,
-                                    ssh: None,
                                     _tsunami: Default::default(),
                                 };
 
@@ -1244,16 +1241,16 @@ impl RegionLauncher {
                                 private_ip,
                             }),
                     } => {
-                        let mut m = Machine {
+                        let m = crate::MachineDescriptor {
                             public_ip: public_ip.clone(),
                             public_dns: public_dns.clone(),
                             private_ip: Some(private_ip.clone()),
                             nickname: name.clone(),
-                            ssh: None,
                             _tsunami: Default::default(),
                         };
 
-                        m.connect_ssh(&username, Some(private_key_path.path()), None, 22)
+                        let m = m
+                            .connect_ssh(&username, Some(private_key_path.path()), None, 22)
                             .await?;
                         Ok((name.clone(), m))
                     }
@@ -1387,8 +1384,6 @@ mod test {
                 .ok_or_else(|| eyre!("machine not found"))?;
             my_machine
                 .ssh
-                .as_ref()
-                .unwrap()
                 .command("echo")
                 .arg("\"Hello, EC2\"")
                 .status()

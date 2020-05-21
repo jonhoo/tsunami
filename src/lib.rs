@@ -152,6 +152,16 @@ use tracing::instrument;
 
 pub mod providers;
 
+#[derive(Debug)]
+struct MachineDescriptor<'tsunami> {
+    pub(crate) nickname: String,
+    pub(crate) public_ip: String,
+    pub(crate) private_ip: Option<String>,
+    pub(crate) public_dns: String,
+
+    // tie the lifetime of the machine to the Tsunami.
+    _tsunami: std::marker::PhantomData<&'tsunami ()>,
+}
 /// A handle to an instance currently running as part of a tsunami.
 ///
 /// Run commands on the machine using the [`ssh::Session`] via the `ssh` field.
@@ -171,23 +181,23 @@ pub struct Machine<'tsunami> {
     /// equivalent to `public_ip`.
     pub public_dns: String,
 
-    /// If `Some(_)`, an established SSH session to this host.
-    pub ssh: Option<ssh::Session>,
+    /// An established SSH session to this host.
+    pub ssh: ssh::Session,
 
     // tie the lifetime of the machine to the Tsunami.
     _tsunami: std::marker::PhantomData<&'tsunami ()>,
 }
 
-impl<'t> Machine<'t> {
+impl<'t> MachineDescriptor<'t> {
     #[cfg(any(feature = "aws", feature = "azure", feature = "baremetal"))]
     #[instrument(level = "debug", skip(key_path, timeout))]
     async fn connect_ssh(
-        &mut self,
+        self,
         username: &str,
         key_path: Option<&std::path::Path>,
         timeout: Option<std::time::Duration>,
         port: u16,
-    ) -> Result<(), Report> {
+    ) -> Result<Machine<'t>, Report> {
         let mut sess = ssh::SessionBuilder::default();
 
         sess.user(username.to_string()).port(port);
@@ -204,8 +214,15 @@ impl<'t> Machine<'t> {
         let sess = sess.connect(&self.public_ip).await?;
         tracing::trace!("connected");
 
-        self.ssh = Some(sess);
-        Ok(())
+        Ok(Machine {
+            nickname: self.nickname,
+            public_ip: self.public_ip,
+            private_ip: self.private_ip,
+            public_dns: self.public_dns,
+            _tsunami: self._tsunami,
+
+            ssh: sess,
+        })
     }
 }
 

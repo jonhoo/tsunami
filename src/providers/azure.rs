@@ -28,8 +28,6 @@
 //!     let my_machine = vms.get("my machine").unwrap();
 //!     let out = my_machine
 //!         .ssh
-//!         .as_ref()
-//!         .unwrap()
 //!         .command("echo")
 //!         .arg("\"Hello, Azure\"")
 //!         .output()
@@ -75,13 +73,14 @@
 //!     let vms = azure.connect_all().await?;
 //!     let my_vm = vms.get("my_vm").unwrap();
 //!     println!("public ip: {}", my_vm.public_ip);
-//!     let ssh = my_vm.ssh.as_ref().unwrap();
-//!     ssh.command("git")
+//!     my_vm.ssh
+//!         .command("git")
 //!         .arg("clone")
 //!         .arg("https://github.com/jonhoo/tsunami")
 //!         .status()
 //!         .await?;
-//!     ssh.command("bash")
+//!     my_vm.ssh
+//!         .command("bash")
 //!         .arg("-c")
 //!         .arg("\"cd tsunami && cargo build\"")
 //!         .status()
@@ -420,17 +419,16 @@ impl super::Launcher for RegionLauncher {
                                 private_ip,
                             },
                     } = desc;
-                    let mut m = crate::Machine {
+                    let m = crate::MachineDescriptor {
                         nickname: name.clone(),
                         public_dns: public_ip.clone(),
                         public_ip: public_ip.clone(),
                         private_ip: Some(private_ip.clone()),
-                        ssh: None,
                         _tsunami: Default::default(),
                     };
 
                     async move {
-                        m.connect_ssh(username, None, None, 22).await?;
+                        let m = m.connect_ssh(username, None, None, 22).await?;
                         Ok::<_, Report>((name.clone(), m))
                     }
                     .instrument(machine_span)
@@ -764,8 +762,6 @@ mod test {
             tracing::debug!("running command");
             my_machine
                 .ssh
-                .as_ref()
-                .unwrap()
                 .command("echo")
                 .arg("\"Hello, Azure\"")
                 .status()

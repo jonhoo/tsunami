@@ -8,8 +8,8 @@ use tsunami::{Machine, Tsunami};
 async fn ping(from: &Machine<'_>, to: &Machine<'_>) -> Result<(), Report> {
     let to_ip = &to.public_ip;
 
-    let ssh = from.ssh.as_ref().unwrap();
-    let out = ssh
+    let out = from
+        .ssh
         .command("ping")
         .arg("-c")
         .arg("10")

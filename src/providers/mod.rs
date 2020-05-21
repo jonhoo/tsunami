@@ -181,20 +181,18 @@ async fn setup_machine(
           + Send
           + Sync),
 ) -> Result<(), Report> {
-    let mut m = crate::Machine {
+    let m = crate::MachineDescriptor {
         nickname: Default::default(),
         public_dns: pub_ip.to_string(),
         public_ip: pub_ip.to_string(),
         private_ip: None,
-        ssh: None,
         _tsunami: Default::default(),
     };
 
-    m.connect_ssh(username, private_key, max_wait, 22).await?;
-    let mut sess = m.ssh.unwrap();
+    let mut m = m.connect_ssh(username, private_key, max_wait, 22).await?;
 
     tracing::debug!("setting up instance");
-    f(&mut sess).await.wrap_err("setup procedure failed")?;
+    f(&mut m.ssh).await.wrap_err("setup procedure failed")?;
     tracing::info!("instance ready");
     Ok(())
 }

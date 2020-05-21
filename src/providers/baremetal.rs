@@ -130,12 +130,11 @@ async fn try_addrs(
         let ret = async {
             tracing::trace!("testing address");
 
-            let mut m = crate::Machine {
+            let m = crate::MachineDescriptor {
                 nickname: Default::default(),
                 public_dns: addr.ip().to_string(),
                 public_ip: addr.ip().to_string(),
                 private_ip: None,
-                ssh: None,
                 _tsunami: Default::default(),
             };
 
@@ -217,21 +216,19 @@ impl super::Launcher for Machine {
                 ..
             } = setup
             {
-                let mut m = crate::Machine {
+                let m = crate::MachineDescriptor {
                     nickname: Default::default(),
                     public_dns: addr.ip().to_string(),
                     public_ip: addr.ip().to_string(),
                     private_ip: None,
-                    ssh: None,
                     _tsunami: Default::default(),
                 };
 
-                m.connect_ssh(&username, key_path.as_deref(), l.max_wait, addr.port())
+                let mut m = m
+                    .connect_ssh(&username, key_path.as_deref(), l.max_wait, addr.port())
                     .await?;
 
-                let mut sess = m.ssh.unwrap();
-
-                f(&mut sess).await.wrap_err("setup procedure failed")?;
+                f(&mut m.ssh).await.wrap_err("setup procedure failed")?;
             }
 
             tracing::info!("instance ready");
@@ -251,16 +248,16 @@ impl super::Launcher for Machine {
     > {
         Box::pin(async move {
             let addr = self.addr.ok_or_else(|| eyre!("Address uninitialized"))?;
-            let mut m = crate::Machine {
+            let m = crate::MachineDescriptor {
                 nickname: self.name.clone(),
                 public_dns: addr.ip().to_string(),
                 public_ip: addr.ip().to_string(),
                 private_ip: None,
-                ssh: None,
                 _tsunami: Default::default(),
             };
 
-            m.connect_ssh(&self.username, self.key_path.as_deref(), None, addr.port())
+            let m = m
+                .connect_ssh(&self.username, self.key_path.as_deref(), None, addr.port())
                 .await?;
 
             let mut hmap: HashMap<String, crate::Machine<'l>> = Default::default();
@@ -303,8 +300,6 @@ mod test {
                 .get("self")
                 .unwrap()
                 .ssh
-                .as_ref()
-                .unwrap()
                 .command("ls")
                 .status()
                 .await
