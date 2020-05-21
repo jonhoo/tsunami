@@ -1405,6 +1405,7 @@ mod test {
     #[ignore]
     fn make_machine_and_ssh_setupfn() {
         use crate::providers::Launcher;
+        tracing_subscriber::fmt::init();
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         let mut l = super::Launcher::default();
         // make the defined-duration instances expire after 1 hour
@@ -1429,8 +1430,11 @@ mod test {
         let ec2 = RegionLauncher::connect(region, super::AvailabilityZoneSpec::Any, provider)?;
         rt.block_on(async {
             let mut ec2 = ec2.make_ssh_key().await?;
-            println!("==> key name: {}", ec2.ssh_key_name);
-            println!("==> key path: {:?}", ec2.private_key_path);
+            tracing::debug!(
+                name = %ec2.ssh_key_name,
+                path = %ec2.private_key_path.as_ref().unwrap().path().display(),
+                "made key"
+            );
             assert!(!ec2.ssh_key_name.is_empty());
             assert!(ec2.private_key_path.as_ref().unwrap().path().exists());
 

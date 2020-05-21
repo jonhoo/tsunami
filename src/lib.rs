@@ -111,7 +111,7 @@
 //! [`tracing_subscriber::fmt`](https://docs.rs/tracing-subscriber/0.2/tracing_subscriber/fmt/index.html),
 //! which you can instantiate (after adding it to your Cargo.toml) with:
 //!
-//! ```rust,ignore
+//! ```rust
 //! tracing_subscriber::fmt::init();
 //! ```
 //!
