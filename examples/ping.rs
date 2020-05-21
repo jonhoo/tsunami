@@ -1,8 +1,8 @@
 use color_eyre::Report;
 use rusoto_core::Region;
 use tracing::instrument;
-use tsunami::providers::{aws, Launcher};
-use tsunami::Machine;
+use tsunami::providers::aws;
+use tsunami::{Machine, Tsunami};
 
 #[instrument]
 async fn ping(from: &Machine<'_>, to: &Machine<'_>) -> Result<(), Report> {

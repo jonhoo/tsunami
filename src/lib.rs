@@ -311,11 +311,9 @@ mod sealed {
 /// #[tokio::main]
 /// async fn main() -> Result<(), color_eyre::Report> {
 ///     use tsunami::{
+///         Tsunami,
 ///         make_multiple,
-///         providers::{
-///             aws::{self, Setup},
-///             Launcher,
-///         },
+///         providers::aws::{self, Setup},
 ///     };
 ///     let mut aws: aws::Launcher<_> = Default::default();
 ///     aws.spawn(make_multiple(3, "my_tsunami", Setup::default()), None).await?;

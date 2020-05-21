@@ -1,7 +1,6 @@
 use color_eyre::Report;
 use structopt::StructOpt;
-use tracing::instrument;
-use tsunami::providers::Launcher;
+use tsunami::Tsunami;
 
 #[derive(Debug)]
 enum Providers {
