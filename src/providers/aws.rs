@@ -17,13 +17,7 @@
 //!     let mut l = aws::Launcher::default();
 //!     // make the defined-duration instances expire after 1 hour
 //!     l.set_max_instance_duration(1);
-//!     l.spawn(
-//!         vec![(String::from("my machine"), aws::Setup::default())],
-//!         None,
-//!         None,
-//!     )
-//!     .await
-//!     .unwrap();
+//!     l.spawn(vec![(String::from("my machine"), aws::Setup::default())], None).await.unwrap();
 //!     let vms = l.connect_all().await.unwrap();
 //!     let my_machine = vms.get("my machine").unwrap();
 //!     let out = my_machine
@@ -45,7 +39,7 @@
 //! use tsunami::Tsunami;
 //! use tsunami::providers::aws::{self, Region};
 //! #[tokio::main]
-//! async fn main() -> Result<(), failure::Error> {
+//! async fn main() -> Result<(), color_eyre::Report> {
 //!     // Initialize AWS
 //!     let mut aws = aws::Launcher::default();
 //!     // make the defined-duration instances expire after 1 hour
@@ -57,7 +51,7 @@
 //!         .region_with_ubuntu_ami(Region::UsWest1) // default is UsEast1
 //!         .await
 //!         .unwrap()
-//!         .setup(|ssh, _| {
+//!         .setup(|ssh| {
 //!             // default is a no-op
 //!             Box::pin(async move {
 //!                 ssh.command("sudo")
@@ -75,8 +69,7 @@
 //!         });
 //!
 //!     // Launch the VM
-//!     aws.spawn(vec![(String::from("my_vm"), m)], None, None)
-//!         .await?;
+//!     aws.spawn(vec![(String::from("my_vm"), m)], None).await?;
 //!
 //!     // SSH to the VM and run a command on it
 //!     let vms = aws.connect_all().await?;
@@ -100,8 +93,9 @@
 
 use crate::ssh;
 use crate::Machine;
+use color_eyre::Report;
 use educe::Educe;
-use failure::{Error, ResultExt};
+use eyre::{eyre, WrapErr};
 use itertools::Itertools;
 use rusoto_core::credential::{DefaultCredentialsProvider, ProvideAwsCredentials};
 use rusoto_core::request::HttpClient;
@@ -113,6 +107,8 @@ use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::{thread, time};
+use tracing::instrument;
+use tracing_futures::Instrument;
 
 /// Available configurations of availability zone specifiers.
 ///
@@ -132,6 +128,16 @@ pub enum AvailabilityZoneSpec {
 impl Default for AvailabilityZoneSpec {
     fn default() -> Self {
         Self::Any
+    }
+}
+
+impl std::fmt::Display for AvailabilityZoneSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            AvailabilityZoneSpec::Any => write!(f, "any"),
+            AvailabilityZoneSpec::Cluster(ref i) => write!(f, "cluster({})", i),
+            AvailabilityZoneSpec::Specify(ref s) => write!(f, "{}", s),
+        }
     }
 }
 
@@ -156,9 +162,8 @@ pub struct Setup {
         Arc<
             dyn for<'r> Fn(
                     &'r mut ssh::Session,
-                    &'r slog::Logger,
                 )
-                    -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+                    -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
                 + Send
                 + Sync
                 + 'static,
@@ -202,7 +207,7 @@ impl Setup {
     /// [`ubuntu-ami`](https://crates.io/crates/ubuntu-ami), which queries [Ubuntu's cloud image
     /// list](https://cloud-images.ubuntu.com/) to get the latest Ubuntu 18.04 LTS AMI in the
     /// selected region.
-    pub async fn region_with_ubuntu_ami(mut self, region: Region) -> Result<Self, Error> {
+    pub async fn region_with_ubuntu_ami(mut self, region: Region) -> Result<Self, Report> {
         self.region = region.clone();
         let ami: String = UbuntuAmi::new(region).await?.into();
         Ok(self.ami(ami, "ubuntu"))
@@ -250,9 +255,8 @@ impl Setup {
     /// ```rust
     /// use tsunami::providers::aws::Setup;
     ///
-    /// let m = Setup::default().setup(|ssh, log| {
+    /// let m = Setup::default().setup(|ssh| {
     ///     Box::pin(async move {
-    ///         slog::info!(log, "running setup!");
     ///         ssh.command("sudo")
     ///             .arg("apt")
     ///             .arg("update")
@@ -266,8 +270,7 @@ impl Setup {
         mut self,
         setup: impl for<'r> Fn(
                 &'r mut ssh::Session,
-                &'r slog::Logger,
-            ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+            ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
             + Send
             + Sync
             + 'static,
@@ -314,7 +317,7 @@ impl Setup {
 #[educe(Debug)]
 pub struct Launcher<P = DefaultCredentialsProvider> {
     #[educe(Debug(ignore))]
-    credential_provider: Box<dyn Fn() -> Result<P, Error> + Send + Sync>,
+    credential_provider: Box<dyn Fn() -> Result<P, Report> + Send + Sync>,
     max_instance_duration_hours: usize,
     use_open_ports: bool,
     regions: HashMap<<Setup as super::MachineSetup>::Region, RegionLauncher>,
@@ -360,7 +363,7 @@ impl<P> Launcher<P> {
     /// that gives access to the region in question.
     pub fn with_credentials<P2>(
         self,
-        f: impl Fn() -> Result<P2, Error> + Send + Sync + 'static,
+        f: impl Fn() -> Result<P2, Report> + Send + Sync + 'static,
     ) -> Launcher<P2> {
         Launcher {
             credential_provider: Box::new(f),
@@ -377,10 +380,11 @@ where
 {
     type MachineDescriptor = Setup;
 
+    #[instrument(level = "debug", skip(self))]
     fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'l>> {
         Box::pin(async move {
             let prov = (*self.credential_provider)()?;
             let Self {
@@ -391,6 +395,7 @@ where
             } = self;
 
             if !regions.contains_key(&l.region) {
+                let region_span = tracing::debug_span!("new_region", name = %l.region, az = %l.machines[0].1.availability_zone);
                 let awsregion = RegionLauncher::new(
                     &l.region.to_string(),
                     // availability_zone spec is guaranteed to be the same because it's included in
@@ -398,156 +403,168 @@ where
                     l.machines[0].1.availability_zone.clone(),
                     prov,
                     *use_open_ports,
-                    l.log,
                 )
+                .instrument(region_span)
                 .await?;
                 regions.insert(l.region.clone(), awsregion);
             }
 
+            let region_span = tracing::debug_span!("region", name = %l.region);
             regions
                 .get_mut(&l.region)
                 .unwrap()
                 .launch(*max_instance_duration_hours, l.max_wait, l.machines)
+                .instrument(region_span)
                 .await?;
             Ok(())
-        })
+        }.in_current_span())
     }
 
+    #[instrument(level = "debug", skip(self, max_wait))]
     fn spawn<'l, I>(
         &'l mut self,
         descriptors: I,
         max_wait: Option<std::time::Duration>,
-        log: Option<slog::Logger>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>>
+    ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'l>>
     where
         I: IntoIterator<Item = (String, Self::MachineDescriptor)> + Send + 'static,
+        I: std::fmt::Debug,
         I::IntoIter: Send,
     {
         use super::MachineSetup;
-        Box::pin(async move {
-            let log = log.unwrap_or_else(|| slog::Logger::root(slog::Discard, o!()));
+        Box::pin(
+            async move {
+                tracing::info!("spinning up tsunami");
 
-            info!(log, "spinning up tsunami");
-
-            // group by region
-            let names_to_setups = descriptors
-                .into_iter()
-                .map(|(name, setup)| (MachineSetup::region(&setup), (name, setup)))
-                .into_group_map();
-
-            // separate into two lists:
-            // 1. we already have a RegionLauncher
-            // 2. we don't
-            let (mut haves, have_nots): (Vec<_>, Vec<_>) = names_to_setups
-                .into_iter()
-                .partition(|(region_name, _)| self.regions.contains_key(region_name));
-
-            // check that this works before unwrap() below
-            let _prov = (*self.credential_provider)()?;
-            let use_open_ports = self.use_open_ports;
-
-            let newly_initialized: Vec<Result<_, _>> =
-                futures_util::future::join_all(have_nots.iter().map(|(region_name, s)| {
-                    let region_log = log.new(slog::o!("region" => region_name.clone().to_string()));
-                    let prov = (*self.credential_provider)().unwrap();
-                    async move {
-                        let awsregion = RegionLauncher::new(
-                            &region_name.to_string(),
-                            // availability_zone spec is guaranteed to be the same because it's included in
-                            // the region specifier.
-                            s[0].1.availability_zone.clone(),
-                            prov,
-                            use_open_ports,
-                            region_log,
-                        )
-                        .await?;
-                        Ok::<_, Error>((region_name.clone(), awsregion))
-                    }
-                }))
-                .await;
-            self.regions.extend(
-                newly_initialized
+                // group by region
+                let names_to_setups = descriptors
                     .into_iter()
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
+                    .map(|(name, setup)| (MachineSetup::region(&setup), (name, setup)))
+                    .into_group_map();
 
-            // the have-nots are now haves
-            haves.extend(have_nots);
+                // separate into two lists:
+                // 1. we already have a RegionLauncher
+                // 2. we don't
+                let (mut haves, have_nots): (Vec<_>, Vec<_>) = names_to_setups
+                    .into_iter()
+                    .partition(|(region_name, _)| self.regions.contains_key(region_name));
 
-            // Launch instances in the regions concurrently.
-            //
-            // The borrow checker can't know that each future only accesses one entry of the
-            // hashmap - for its RegionLauncher (guaranteed by the `into_group_map()` above).
-            // So, we help it by taking the appropriate RegionLauncher out of the hashmap,
-            // running `launch()`, then putting everything back later.
-            let max_wait = max_wait;
-            let max_instance_duration_hours = self.max_instance_duration_hours;
-            let regions =
-                futures_util::future::join_all(haves.into_iter().map(|(region_name, machines)| {
-                    // unwrap ok because everything is a have now
-                    let mut region_launcher = self.regions.remove(&region_name).unwrap();
-                    async move {
-                        if let Err(e) = region_launcher
-                            .launch(max_instance_duration_hours, max_wait, machines)
-                            .await
-                        {
-                            Err((region_name, region_launcher, e))
-                        } else {
-                            Ok((region_name, region_launcher))
+                // check that this works before unwrap() below
+                let _prov = (*self.credential_provider)()?;
+                let use_open_ports = self.use_open_ports;
+
+                let newly_initialized: Vec<Result<_, _>> =
+                    futures_util::future::join_all(have_nots.iter().map(|(region_name, s)| {
+                        let region_span = tracing::debug_span!("new_region", region = %region_name);
+                        let prov = (*self.credential_provider)().unwrap();
+                        async move {
+                            let awsregion = RegionLauncher::new(
+                                &region_name.to_string(),
+                                // availability_zone spec is guaranteed to be the same because it's included in
+                                // the region specifier.
+                                s[0].1.availability_zone.clone(),
+                                prov,
+                                use_open_ports,
+                            )
+                            .await?;
+                            Ok::<_, Report>((region_name.clone(), awsregion))
                         }
-                    }
-                }))
+                        .instrument(region_span)
+                    }))
+                    .await;
+                self.regions.extend(
+                    newly_initialized
+                        .into_iter()
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+
+                // the have-nots are now haves
+                haves.extend(have_nots);
+
+                // Launch instances in the regions concurrently.
+                //
+                // The borrow checker can't know that each future only accesses one entry of the
+                // hashmap - for its RegionLauncher (guaranteed by the `into_group_map()` above).
+                // So, we help it by taking the appropriate RegionLauncher out of the hashmap,
+                // running `launch()`, then putting everything back later.
+                let max_wait = max_wait;
+                let max_instance_duration_hours = self.max_instance_duration_hours;
+                let regions = futures_util::future::join_all(haves.into_iter().map(
+                    |(region_name, machines)| {
+                        // unwrap ok because everything is a have now
+                        let mut region_launcher = self.regions.remove(&region_name).unwrap();
+                        let region_span = tracing::debug_span!("region", region = %region_name);
+                        async move {
+                            if let Err(e) = region_launcher
+                                .launch(max_instance_duration_hours, max_wait, machines)
+                                .await
+                            {
+                                Err((region_name, region_launcher, e))
+                            } else {
+                                Ok((region_name, region_launcher))
+                            }
+                        }
+                        .instrument(region_span)
+                    },
+                ))
                 .await;
 
-            // Put our stuff back where we found it.
-            let (regions, res) =
-                regions
-                    .into_iter()
-                    .fold((vec![], None), |acc, r| match (acc, r) {
-                        ((mut rs, x), Ok((name, rl))) => {
-                            rs.push((name, rl));
-                            (rs, x)
-                        }
-                        ((mut rs, None), Err((name, rl, e))) => {
-                            rs.push((name, rl));
-                            (rs, Some(e))
-                        }
-                        ((mut rs, x @ Some(_)), Err((name, rl, _))) => {
-                            rs.push((name, rl));
-                            (rs, x)
-                        }
-                    });
-            self.regions.extend(regions.into_iter());
+                // Put our stuff back where we found it.
+                let (regions, res) =
+                    regions
+                        .into_iter()
+                        .fold((vec![], None), |acc, r| match (acc, r) {
+                            ((mut rs, x), Ok((name, rl))) => {
+                                rs.push((name, rl));
+                                (rs, x)
+                            }
+                            ((mut rs, None), Err((name, rl, e))) => {
+                                rs.push((name, rl));
+                                (rs, Some(e))
+                            }
+                            ((mut rs, x @ Some(_)), Err((name, rl, _))) => {
+                                rs.push((name, rl));
+                                (rs, x)
+                            }
+                        });
+                self.regions.extend(regions.into_iter());
 
-            if let Some(e) = res {
-                Err(e)
-            } else {
-                Ok(())
+                if let Some(e) = res {
+                    Err(e)
+                } else {
+                    Ok(())
+                }
             }
-        })
+            .in_current_span(),
+        )
     }
 
+    #[instrument(level = "debug")]
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>
-    {
-        Box::pin(async move { collect!(self.regions) })
+    ) -> Pin<
+        Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Report>> + Send + 'l>,
+    > {
+        Box::pin(async move { collect!(self.regions) }.in_current_span())
     }
 
-    fn terminate_all(mut self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
-        Box::pin(async move {
-            if self.regions.is_empty() {
-                return Ok(());
-            }
+    #[instrument(level = "debug")]
+    fn terminate_all(mut self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>> {
+        Box::pin(
+            async move {
+                if self.regions.is_empty() {
+                    return Ok(());
+                }
 
-            futures_util::future::join_all(
-                self.regions
-                    .drain()
-                    .map(|(_, mut rl)| async move { rl.shutdown().await }),
-            )
-            .await;
-            Ok(())
-        })
+                futures_util::future::join_all(self.regions.drain().map(|(region, mut rl)| {
+                    let region_span = tracing::debug_span!("region", %region);
+                    async move { rl.shutdown().await }.instrument(region_span)
+                }))
+                .await;
+                Ok(())
+            }
+            .in_current_span(),
+        )
     }
 }
 
@@ -593,7 +610,6 @@ pub struct RegionLauncher {
     client: Option<rusoto_ec2::Ec2Client>,
     outstanding_spot_request_ids: HashMap<String, TaggedSetup>,
     instances: HashMap<String, TaggedSetup>,
-    log: Option<slog::Logger>,
 }
 
 impl RegionLauncher {
@@ -607,32 +623,38 @@ impl RegionLauncher {
         availability_zone: AvailabilityZoneSpec,
         provider: P,
         use_open_ports: bool,
-        log: slog::Logger,
-    ) -> Result<Self, Error>
+    ) -> Result<Self, Report>
     where
         P: ProvideAwsCredentials + Send + Sync + 'static,
     {
         let region = region.parse()?;
-        let ec2 = RegionLauncher::connect(region, availability_zone, provider, log)?
+        let ec2 = RegionLauncher::connect(region, availability_zone, provider)
+            .wrap_err("failed to connect to region")?
             .make_security_group(use_open_ports)
-            .await?
+            .await
+            .wrap_err("failed to make security groups")?
             .make_ssh_key()
-            .await?;
+            .await
+            .wrap_err("failed to make ssh key")?;
 
         Ok(ec2)
     }
 
+    #[instrument(level = "debug", skip(provider))]
     fn connect<P>(
         region: rusoto_core::region::Region,
         availability_zone: AvailabilityZoneSpec,
         provider: P,
-        log: slog::Logger,
-    ) -> Result<Self, Error>
+    ) -> Result<Self, Report>
     where
         P: ProvideAwsCredentials + Send + Sync + 'static,
     {
-        debug!(log, "connecting to ec2");
-        let ec2 = rusoto_ec2::Ec2Client::new_with(HttpClient::new()?, provider, region.clone());
+        tracing::debug!("connecting to ec2");
+        let ec2 = rusoto_ec2::Ec2Client::new_with(
+            HttpClient::new().wrap_err("failed to construct new http client")?,
+            provider,
+            region.clone(),
+        );
 
         Ok(Self {
             region,
@@ -641,12 +663,11 @@ impl RegionLauncher {
             ssh_key_name: Default::default(),
             private_key_path: Some(
                 tempfile::NamedTempFile::new()
-                    .context("failed to create temporary file for keypair")?,
+                    .wrap_err("failed to create temporary file for keypair")?,
             ),
             outstanding_spot_request_ids: Default::default(),
             instances: Default::default(),
             client: Some(ec2),
-            log: Some(log),
         })
     }
 
@@ -654,46 +675,55 @@ impl RegionLauncher {
     ///
     /// Make spot instance requests, wait for the instances, and then call the
     /// instance setup functions.
-    pub async fn launch(
+    #[instrument(level = "debug", skip(self, max_instance_duration_hours, max_wait))]
+    pub async fn launch<M>(
         &mut self,
         max_instance_duration_hours: usize,
         max_wait: Option<time::Duration>,
-        machines: impl IntoIterator<Item = (String, Setup)>,
-    ) -> Result<(), Error> {
+        machines: M,
+    ) -> Result<(), Report>
+    where
+        M: IntoIterator<Item = (String, Setup)> + std::fmt::Debug,
+    {
         self.make_spot_instance_requests(
             max_instance_duration_hours * 60, // 60 mins/hr
             machines,
         )
-        .await?;
+        .await
+        .wrap_err("failed to make spot instance requests")?;
 
         let start = time::Instant::now();
-        self.wait_for_spot_instance_requests(max_wait).await?;
+        self.wait_for_spot_instance_requests(max_wait)
+            .await
+            .wrap_err("failed while waiting for spot instances fulfilment")?;
         if let Some(mut d) = max_wait {
             d -= time::Instant::now().duration_since(start);
         }
 
-        self.wait_for_instances(max_wait).await?;
+        self.wait_for_instances(max_wait)
+            .await
+            .wrap_err("failed while waiting for instances to come up")?;
         Ok(())
     }
 
-    async fn make_security_group(mut self, use_open_ports: bool) -> Result<Self, Error> {
-        let log = self.log.as_ref().expect("RegionLauncher uninitialized");
+    #[instrument(level = "trace", skip(self))]
+    async fn make_security_group(mut self, use_open_ports: bool) -> Result<Self, Report> {
         let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
 
         // set up network firewall for machines
         let group_name = super::rand_name("security");
-        trace!(log, "creating security group"; "name" => &group_name);
+        tracing::debug!(name = %group_name, "creating security group");
         let mut req = rusoto_ec2::CreateSecurityGroupRequest::default();
         req.group_name = group_name;
         req.description = "temporary access group for tsunami VMs".to_string();
         let res = ec2
             .create_security_group(req)
             .await
-            .context("failed to create security group for new machines")?;
+            .wrap_err("failed to create security group for new machines")?;
         let group_id = res
             .group_id
             .expect("aws created security group with no group id");
-        trace!(log, "created security group"; "id" => &group_id);
+        tracing::trace!(id = %group_id, "security group created");
 
         let mut req = rusoto_ec2::AuthorizeSecurityGroupIngressRequest::default();
         req.group_id = Some(group_id.clone());
@@ -703,20 +733,20 @@ impl RegionLauncher {
         req.from_port = Some(-1);
         req.to_port = Some(-1);
         req.cidr_ip = Some("0.0.0.0/0".to_string());
-        trace!(log, "adding icmp access to security group");
+        tracing::trace!("adding icmp access");
         ec2.authorize_security_group_ingress(req.clone())
             .await
-            .context("failed to fill in security group for new machines")?;
+            .wrap_err("failed to fill in security group for new machines")?;
 
         // allow SSH from anywhere
         req.ip_protocol = Some("tcp".to_string());
         req.from_port = Some(22);
         req.to_port = Some(22);
         req.cidr_ip = Some("0.0.0.0/0".to_string());
-        trace!(log, "adding ssh access to security group");
+        tracing::trace!("adding ssh access");
         ec2.authorize_security_group_ingress(req.clone())
             .await
-            .context("failed to fill in security group for new machines")?;
+            .wrap_err("failed to fill in security group for new machines")?;
 
         // The default VPC uses IPs in range 172.31.0.0/16:
         // https://docs.aws.amazon.com/vpc/latest/userguide/default-vpc.html
@@ -730,10 +760,10 @@ impl RegionLauncher {
             req.cidr_ip = Some("172.31.0.0/16".to_string());
         }
 
-        trace!(log, "adding internal VM access to security group");
+        tracing::trace!("adding internal VM access");
         ec2.authorize_security_group_ingress(req.clone())
             .await
-            .context("failed to fill in security group for new machines")?;
+            .wrap_err("failed to fill in security group for new machines")?;
 
         req.ip_protocol = Some("udp".to_string());
         req.from_port = Some(0);
@@ -744,17 +774,17 @@ impl RegionLauncher {
             req.cidr_ip = Some("172.31.0.0/16".to_string());
         }
 
-        trace!(log, "adding internal VM access to security group");
+        tracing::trace!("adding internal VM access");
         ec2.authorize_security_group_ingress(req)
             .await
-            .context("failed to fill in security group for new machines")?;
+            .wrap_err("failed to fill in security group for new machines")?;
 
         self.security_group_id = group_id;
         Ok(self)
     }
 
-    async fn make_ssh_key(mut self) -> Result<Self, Error> {
-        let log = self.log.as_ref().expect("RegionLauncher uninitialized");
+    #[instrument(level = "trace", skip(self))]
+    async fn make_ssh_key(mut self) -> Result<Self, Report> {
         let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
         let private_key_path = self
             .private_key_path
@@ -762,7 +792,7 @@ impl RegionLauncher {
             .expect("RegionLauncher unconnected");
 
         // construct keypair for ssh access
-        trace!(log, "creating keypair");
+        tracing::debug!("creating keypair");
         let mut req = rusoto_ec2::CreateKeyPairRequest::default();
         let key_name = super::rand_name("key");
         req.key_name = key_name.clone();
@@ -770,7 +800,7 @@ impl RegionLauncher {
             .create_key_pair(req)
             .await
             .context("failed to generate new key pair")?;
-        trace!(log, "created keypair"; "fingerprint" => res.key_fingerprint);
+        tracing::trace!(fingerprint = ?res.key_fingerprint, "created keypair");
 
         // write keypair to disk
         let private_key = res
@@ -779,7 +809,10 @@ impl RegionLauncher {
         private_key_path
             .write_all(private_key.as_bytes())
             .context("could not write private key to file")?;
-        debug!(log, "wrote keypair to file"; "filename" => private_key_path.path().display());
+        tracing::debug!(
+            filename = %private_key_path.path().display(),
+            "wrote keypair to file"
+        );
 
         self.ssh_key_name = key_name;
         Ok(self)
@@ -795,15 +828,20 @@ impl RegionLauncher {
     ///
     /// Will *not* wait for the spot instance requests to complete. To wait, call
     /// [`wait_for_spot_instance_requests`](RegionLauncher::wait_for_spot_instance_requests).
-    async fn make_spot_instance_requests(
+    #[instrument(level = "trace", skip(self, max_duration))]
+    async fn make_spot_instance_requests<M>(
         &mut self,
         max_duration: usize,
-        machines: impl IntoIterator<Item = (String, Setup)>,
-    ) -> Result<(), Error> {
-        let log = self.log.as_ref().expect("RegionLauncher uninitialized");
+        machines: M,
+    ) -> Result<(), Report>
+    where
+        M: IntoIterator<Item = (String, Setup)>,
+        M: std::fmt::Debug,
+    {
+        tracing::info!("launching spot requests");
 
         // minimize the number of spot requests:
-        for (_, reqs) in machines
+        for (group, reqs) in machines
             .into_iter()
             .map(|(name, m)| {
                 // attach labels (ami name, instance type):
@@ -813,97 +851,103 @@ impl RegionLauncher {
             .into_group_map()
         // group by the labels
         {
-            // and issue one spot request per group
-            let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
-            launch.image_id = Some(reqs[0].1.ami.clone());
-            launch.instance_type = Some(reqs[0].1.instance_type.clone());
-            launch.placement = {
-                if let AvailabilityZoneSpec::Any = self.availability_zone {
-                    None
-                } else {
-                    let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
-                    trace!(log, "creating placement group");
-                    let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
-                    let placement_name = super::rand_name("placement");
-                    req.group_name = Some(placement_name.clone());
-                    req.strategy = Some(String::from("cluster"));
-                    ec2.create_placement_group(req)
-                        .await
-                        .context("failed to create new placement group")?;
-                    trace!(log, "created placement group");
-                    let mut placement = rusoto_ec2::SpotPlacement::default();
-                    placement.group_name = Some(placement_name);
-                    match self.availability_zone {
-                        AvailabilityZoneSpec::Cluster(_) => {
-                            placement.availability_zone = None;
+            let spot_span = tracing::debug_span!("spot_request", params = ?group);
+            async {
+                // and issue one spot request per group
+                let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
+                launch.image_id = Some(reqs[0].1.ami.clone());
+                launch.instance_type = Some(reqs[0].1.instance_type.clone());
+                launch.placement = {
+                    if let AvailabilityZoneSpec::Any = self.availability_zone {
+                        None
+                    } else {
+                        let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
+                        tracing::trace!("creating placement group");
+                        let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
+                        let placement_name = super::rand_name("placement");
+                        req.group_name = Some(placement_name.clone());
+                        req.strategy = Some(String::from("cluster"));
+                        ec2.create_placement_group(req)
+                            .in_current_span()
+                            .await
+                            .wrap_err("failed to create new placement group")?;
+                        tracing::trace!("created placement group");
+                        let mut placement = rusoto_ec2::SpotPlacement::default();
+                        placement.group_name = Some(placement_name);
+                        match self.availability_zone {
+                            AvailabilityZoneSpec::Cluster(_) => {
+                                placement.availability_zone = None;
+                            }
+                            AvailabilityZoneSpec::Specify(ref av) => {
+                                placement.availability_zone = Some(av.clone());
+                            }
+                            _ => unreachable!(),
                         }
-                        AvailabilityZoneSpec::Specify(ref av) => {
-                            placement.availability_zone = Some(av.clone());
-                        }
-                        _ => unreachable!(),
+
+                        Some(placement)
                     }
+                };
 
-                    Some(placement)
-                }
-            };
+                launch.security_group_ids = Some(vec![self.security_group_id.clone()]);
+                launch.key_name = Some(self.ssh_key_name.clone());
 
-            launch.security_group_ids = Some(vec![self.security_group_id.clone()]);
-            launch.key_name = Some(self.ssh_key_name.clone());
+                // TODO: VPC
 
-            // TODO: VPC
+                let req = rusoto_ec2::RequestSpotInstancesRequest {
+                    instance_count: Some(reqs.len() as i64),
+                    block_duration_minutes: Some(max_duration as i64),
+                    launch_specification: Some(launch),
+                    // one-time spot instances are only fulfilled once and therefore do not need to be
+                    // cancelled.
+                    type_: Some("one-time".into()),
+                    ..Default::default()
+                };
 
-            let req = rusoto_ec2::RequestSpotInstancesRequest {
-                instance_count: Some(reqs.len() as i64),
-                block_duration_minutes: Some(max_duration as i64),
-                launch_specification: Some(launch),
-                // one-time spot instances are only fulfilled once and therefore do not need to be
-                // cancelled.
-                type_: Some("one-time".into()),
-                ..Default::default()
-            };
+                tracing::trace!("issuing spot request");
+                let res = self
+                    .client
+                    .as_mut()
+                    .unwrap()
+                    .request_spot_instances(req)
+                    .in_current_span()
+                    .await
+                    .wrap_err("failed to request spot instance")?;
 
-            trace!(log, "issuing spot request");
-            let res = self
-                .client
-                .as_mut()
-                .unwrap()
-                .request_spot_instances(req)
-                .await
-                .context("failed to request spot instance")?;
-            let l = log.clone();
+                // collect for length check below
+                let spot_instance_requests: Vec<String> = res
+                    .spot_instance_requests
+                    .expect("request_spot_instances should always return spot instance requests")
+                    .into_iter()
+                    .filter_map(|sir| sir.spot_instance_request_id)
+                    .map(|sir| {
+                        tracing::trace!(id = %sir, "activated spot request");
+                        sir
+                    })
+                    .collect();
 
-            // collect for length check below
-            let spot_instance_requests: Vec<String> = res
-                .spot_instance_requests
-                .expect("request_spot_instances should always return spot instance requests")
-                .into_iter()
-                .filter_map(|sir| sir.spot_instance_request_id)
-                .map(|sir| {
-                    // TODO: add more info if in parallel
-                    trace!(l, "activated spot request"; "id" => &sir);
-                    sir
-                })
-                .collect();
-
-            // zip_eq will panic if lengths not equal, so check beforehand
-            if spot_instance_requests.len() != reqs.len() {
-                bail!(
+                // zip_eq will panic if lengths not equal, so check beforehand
+                eyre::ensure!(
+                    spot_instance_requests.len() == reqs.len(),
                     "Got {} spot instance requests but expected {}",
                     spot_instance_requests.len(),
-                    reqs.len()
-                )
-            }
-
-            for (sir, req) in spot_instance_requests.into_iter().zip_eq(reqs.into_iter()) {
-                self.outstanding_spot_request_ids.insert(
-                    sir,
-                    TaggedSetup {
-                        name: req.0,
-                        setup: req.1,
-                        ip_info: None,
-                    },
+                    reqs.len(),
                 );
+
+                for (sir, req) in spot_instance_requests.into_iter().zip_eq(reqs.into_iter()) {
+                    self.outstanding_spot_request_ids.insert(
+                        sir,
+                        TaggedSetup {
+                            name: req.0,
+                            setup: req.1,
+                            ip_info: None,
+                        },
+                    );
+                }
+
+                Ok(())
             }
+            .instrument(spot_span)
+            .await?;
         }
 
         Ok(())
@@ -917,36 +961,31 @@ impl RegionLauncher {
     ///
     /// To wait for the instances to be ready, call
     /// [`wait_for_instances`](RegionLauncher::wait_for_instances).
+    #[instrument(level = "trace", skip(self, max_wait))]
     async fn wait_for_spot_instance_requests(
         &mut self,
         max_wait: Option<time::Duration>,
-    ) -> Result<(), Error> {
-        let log = {
-            self.log
-                .as_ref()
-                .expect("RegionLauncher uninitialized")
-                .clone()
-        };
+    ) -> Result<(), Report> {
+        tracing::info!("waiting for instances to spawn");
+
         let start = time::Instant::now();
         let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
         req.spot_instance_request_ids =
             Some(self.outstanding_spot_request_ids.keys().cloned().collect());
-        debug!(log, "waiting for instances to spawn");
         let client = self.client.as_ref().unwrap();
 
         loop {
-            trace!(log, "checking spot request status");
+            tracing::trace!("checking spot request status");
 
             let res = client.describe_spot_instance_requests(req.clone()).await;
-            if let Err(e) = res {
-                let msg = format!("{}", e);
+            if let Err(ref e) = res {
+                let msg = e.to_string();
                 if msg.contains("The spot instance request ID") && msg.contains("does not exist") {
-                    trace!(log, "spot instance requests not yet ready");
+                    tracing::trace!("spot instance requests not yet ready");
                     continue;
                 } else {
-                    return Err(e)
-                        .context("failed to describe spot instances")
-                        .map_err(|e| e.into());
+                    res.wrap_err("failed to describe spot instances")?;
+                    unreachable!();
                 }
             }
             let res = res.expect("Err checked above");
@@ -968,7 +1007,7 @@ impl RegionLauncher {
                     if state == "open" || (state == "active" && sir.instance_id.is_none()) {
                         true
                     } else {
-                        trace!(log, "spot request ready"; "state" => state, "id" => &sir.spot_instance_request_id);
+                        tracing::trace!(%state, id = %sir.spot_instance_request_id.as_ref().unwrap(), "spot request ready");
                         false
                     }
                 });
@@ -980,20 +1019,21 @@ impl RegionLauncher {
                     .unwrap()
                     .into_iter()
                     .filter_map(|sir| {
-                        if sir.state.as_ref().unwrap() == "active" {
+                        let state = sir.state.as_ref().unwrap();
+                        if state == "active" {
                             // unwrap ok because active implies instance_id.is_some()
                             // because !any_pending
                             let instance_id = sir.instance_id.unwrap();
-                            trace!(log, "spot request satisfied"; "iid" => &instance_id);
+                            tracing::trace!(instance = %instance_id, "spot request satisfied");
 
                             Some((
                                 instance_id,
                                 self.outstanding_spot_request_ids
                                     .remove(&sir.spot_instance_request_id.unwrap())
-                                    .unwrap()
+                                    .unwrap(),
                             ))
                         } else {
-                            error!(log, "spot request failed: {:?}", &sir.status; "state" => &sir.state.unwrap());
+                            tracing::error!(%state, "spot request failed: {:?}", &sir.status);
                             None
                         }
                     })
@@ -1008,7 +1048,7 @@ impl RegionLauncher {
                     continue;
                 }
 
-                warn!(log, "wait time exceeded -- cancelling run");
+                tracing::warn!("wait time exceeded -- cancelling run");
                 let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
                 cancel.spot_instance_request_ids = req
                     .spot_instance_request_ids
@@ -1017,43 +1057,38 @@ impl RegionLauncher {
                 client
                     .cancel_spot_instance_requests(cancel)
                     .await
-                    .context("failed to cancel spot instances")
-                    .map_err(|e| {
-                        warn!(log, "failed to cancel spot instance request: {:?}", e);
-                        e
-                    })?;
+                    .wrap_err("failed to cancel spot instances")?;
 
-                trace!(
-                    log,
-                    "spot instances cancelled -- gathering remaining instances"
-                );
+                tracing::trace!("spot instances cancelled -- gathering remaining instances");
                 // wait for a little while for the cancelled spot requests to settle
                 // and any that were *just* made active to be associated with their instances
                 thread::sleep(time::Duration::from_secs(1));
 
                 let sirs = client
                     .describe_spot_instance_requests(req)
-                    .await?
+                    .await
+                    .wrap_err("failed to inspect canceled spot requests")?
                     .spot_instance_requests
                     .unwrap_or_else(Vec::new);
                 for sir in sirs {
+                    let req_id = sir.spot_instance_request_id.unwrap();
                     match sir.instance_id {
                         Some(instance_id) => {
-                            trace!(log, "spot request cancelled";
-                                "req_id" => sir.spot_instance_request_id,
-                                "iid" => &instance_id,
+                            tracing::trace!(
+                                %req_id,
+                                iid = %instance_id,
+                                "spot request cancelled"
                             );
                         }
                         _ => {
-                            error!(
-                                log,
-                                "spot request failed: {:?}", &sir.status;
-                                "req_id" => sir.spot_instance_request_id,
+                            tracing::error!(
+                                %req_id,
+                                "spot request failed: {:?}", &sir.status,
                             );
                         }
                     }
                 }
-                bail!("wait limit reached");
+                eyre::bail!("wait limit reached");
             }
         }
 
@@ -1061,11 +1096,11 @@ impl RegionLauncher {
     }
 
     /// Poll AWS until `max_wait` (if not `None`) or the instances are ready to SSH to.
-    async fn wait_for_instances(&mut self, max_wait: Option<time::Duration>) -> Result<(), Error> {
+    #[instrument(level = "trace", skip(self, max_wait))]
+    async fn wait_for_instances(&mut self, max_wait: Option<time::Duration>) -> Result<(), Report> {
         let start = time::Instant::now();
         let mut desc_req = rusoto_ec2::DescribeInstancesRequest::default();
         let client = self.client.as_ref().unwrap();
-        let log = self.log.as_ref().unwrap();
         let private_key_path = self.private_key_path.as_ref().unwrap();
         let mut all_ready = self.instances.is_empty();
         desc_req.instance_ids = Some(self.instances.keys().cloned().collect());
@@ -1075,7 +1110,7 @@ impl RegionLauncher {
             for reservation in client
                 .describe_instances(desc_req.clone())
                 .await
-                .context("Could not query AWS for instance state")?
+                .wrap_err("could not query AWS for instance state")?
                 .reservations
                 .unwrap_or_else(Vec::new)
             {
@@ -1091,47 +1126,48 @@ impl RegionLauncher {
                             private_ip_address: Some(private_ip),
                             ..
                         } => {
-                            trace!(log, "instance running";
-                                "instance_id" => instance_id.clone(),
-                                "ip" => &public_ip,
-                            );
+                            let instance_span =
+                                tracing::debug_span!("instance", %instance_id, ip = %public_ip);
+                            let instances = &mut self.instances;
+                            async {
+                                tracing::trace!("instance running");
 
-                            // try connecting. If can't, not ready.
-                            let tag_setup = self.instances.get_mut(&instance_id).unwrap();
+                                // try connecting. If can't, not ready.
+                                let tag_setup = instances.get_mut(&instance_id).unwrap();
 
-                            let mut m = crate::Machine {
-                                nickname: Default::default(),
-                                public_dns: Default::default(),
-                                public_ip: public_ip.to_string(),
-                                private_ip: None,
-                                ssh: None,
-                                _tsunami: Default::default(),
-                            };
+                                let mut m = crate::Machine {
+                                    nickname: Default::default(),
+                                    public_dns: Default::default(),
+                                    public_ip: public_ip.to_string(),
+                                    private_ip: None,
+                                    ssh: None,
+                                    _tsunami: Default::default(),
+                                };
 
-                            if let Err(e) = m
-                                .connect_ssh(
-                                    log,
-                                    &tag_setup.setup.username,
-                                    Some(private_key_path.path()),
-                                    max_wait,
-                                    22,
-                                )
-                                .await
-                            {
-                                trace!(log, "ssh failed"; "instance_id" => instance_id.clone(), "ip" => &public_ip, "err" => ?e);
-                                all_ready = false;
-                            } else {
-                                debug!(log, "instance ready";
-                                    "instance_id" => instance_id.clone(),
-                                    "ip" => &public_ip,
-                                );
+                                if let Err(e) = m
+                                    .connect_ssh(
+                                        &tag_setup.setup.username,
+                                        Some(private_key_path.path()),
+                                        max_wait,
+                                        22,
+                                    )
+                                    .in_current_span()
+                                    .await
+                                {
+                                    tracing::trace!("ssh failed: {}", e);
+                                    all_ready = false;
+                                } else {
+                                    tracing::debug!("instance ready");
 
-                                tag_setup.ip_info = Some(IpInfo {
-                                    public_ip: public_ip.clone(),
-                                    public_dns: public_dns.clone(),
-                                    private_ip: private_ip.clone(),
-                                });
+                                    tag_setup.ip_info = Some(IpInfo {
+                                        public_ip: public_ip.clone(),
+                                        public_dns: public_dns.clone(),
+                                        private_ip: private_ip.clone(),
+                                    });
+                                }
                             }
+                            .instrument(instance_span)
+                            .await
                         }
                         _ => {
                             all_ready = false;
@@ -1142,22 +1178,23 @@ impl RegionLauncher {
 
             if let Some(to) = max_wait {
                 if time::Instant::now().duration_since(start) > to {
-                    bail!("timed out");
+                    eyre::bail!("timed out");
                 }
             }
         }
 
         futures_util::future::join_all(self.instances.iter().map(
             |(
-                _instance_id,
+                instance_id,
                 TaggedSetup {
                     ip_info,
                     name,
                     setup,
                 },
             )| {
+                let IpInfo { public_ip, .. } = ip_info.as_ref().unwrap();
+                let instance_span = tracing::debug_span!("instance", %instance_id, ip = %public_ip);
                 async move {
-                    let IpInfo { public_ip, .. } = ip_info.as_ref().unwrap();
                     if let Setup {
                         username,
                         setup_fn: Some(f),
@@ -1165,7 +1202,6 @@ impl RegionLauncher {
                     } = setup
                     {
                         super::setup_machine(
-                            log,
                             &name,
                             &public_ip,
                             &username,
@@ -1178,6 +1214,7 @@ impl RegionLauncher {
 
                     Ok(())
                 }
+                .instrument(instance_span)
             },
         ))
         .await
@@ -1187,36 +1224,40 @@ impl RegionLauncher {
 
     /// Establish SSH connections to the machines. The `Ok` value is a `HashMap` associating the
     /// friendly name for each `Setup` with the corresponding SSH connection.
-    pub async fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Error> {
-        let log = self.log.as_ref().unwrap();
+    #[instrument(level = "debug")]
+    pub async fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Report> {
         let private_key_path = self.private_key_path.as_ref().unwrap();
-        futures_util::future::join_all(self.instances.values().map(|info| async move {
-            match info {
-                TaggedSetup {
-                    name,
-                    setup: Setup { username, .. },
-                    ip_info:
-                        Some(IpInfo {
-                            public_dns,
-                            public_ip,
-                            private_ip,
-                        }),
-                } => {
-                    let mut m = Machine {
-                        public_ip: public_ip.clone(),
-                        public_dns: public_dns.clone(),
-                        private_ip: Some(private_ip.clone()),
-                        nickname: name.clone(),
-                        ssh: None,
-                        _tsunami: Default::default(),
-                    };
+        futures_util::future::join_all(self.instances.values().map(|info| {
+            let instance_span = tracing::trace_span!("instance", name = %info.name);
+            async move {
+                match info {
+                    TaggedSetup {
+                        name,
+                        setup: Setup { username, .. },
+                        ip_info:
+                            Some(IpInfo {
+                                public_dns,
+                                public_ip,
+                                private_ip,
+                            }),
+                    } => {
+                        let mut m = Machine {
+                            public_ip: public_ip.clone(),
+                            public_dns: public_dns.clone(),
+                            private_ip: Some(private_ip.clone()),
+                            nickname: name.clone(),
+                            ssh: None,
+                            _tsunami: Default::default(),
+                        };
 
-                    m.connect_ssh(log, &username, Some(private_key_path.path()), None, 22)
-                        .await?;
-                    Ok((name.clone(), m))
+                        m.connect_ssh(&username, Some(private_key_path.path()), None, 22)
+                            .await?;
+                        Ok((name.clone(), m))
+                    }
+                    _ => eyre::bail!("machine has no ip information"),
                 }
-                _ => bail!("Machines not initialized"),
             }
+            .instrument(instance_span)
         }))
         .await
         .into_iter()
@@ -1227,54 +1268,58 @@ impl RegionLauncher {
     ///
     /// Additionally deletes ephemeral keys and security groups. Note: it is a known issue that
     /// security groups often will not be deleted, due to timing quirks in the AWS api.
+    #[instrument(level = "debug")]
     pub async fn shutdown(&mut self) {
         let client = self.client.as_ref().unwrap();
-        let log = self.log.as_ref().expect("RegionLauncher uninitialized");
         // terminate instances
         if !self.instances.is_empty() {
-            info!(log, "terminating instances");
+            tracing::info!("terminating instances");
             let instances = self.instances.keys().cloned().collect();
             self.instances.clear();
             let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
             termination_req.instance_ids = instances;
             while let Err(e) = client.terminate_instances(termination_req.clone()).await {
-                let msg = format!("{}", e);
+                let msg = e.to_string();
                 if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
-                    trace!(log, "retrying instance termination");
+                    tracing::trace!("retrying instance termination");
                     continue;
                 } else {
-                    warn!(log, "failed to terminate tsunami instances: {:?}", e);
+                    tracing::warn!("failed to terminate tsunami instances: {}", e);
                     break;
                 }
             }
         }
 
-        debug!(log, "cleaning up temporary resources");
+        tracing::debug!("cleaning up temporary resources");
         if !self.security_group_id.trim().is_empty() {
-            trace!(log, "cleaning up temporary security group"; "name" => self.security_group_id.clone());
-            // clean up security groups and keys
-            // TODO need a retry loop for the security group. Currently, this fails
-            // because AWS takes some time to allow the security group to be deleted.
-            let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
-            req.group_id = Some(self.security_group_id.clone());
-            if let Err(e) = client.delete_security_group(req).await {
-                warn!(log, "failed to clean up temporary security group";
-                    "group_id" => &self.security_group_id,
-                    "error" => ?e,
-                )
+            let group_span = tracing::trace_span!("security_group", id = %self.security_group_id);
+            async {
+                tracing::trace!("removing security group");
+                // clean up security groups and keys
+                // TODO need a retry loop for the security group. Currently, this fails
+                // because AWS takes some time to allow the security group to be deleted.
+                let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
+                req.group_id = Some(self.security_group_id.clone());
+                if let Err(e) = client.delete_security_group(req).in_current_span().await {
+                    tracing::warn!("failed to clean up temporary security group: {}", e);
+                }
             }
+            .instrument(group_span)
+            .await;
         }
 
         if !self.ssh_key_name.trim().is_empty() {
-            trace!(log, "cleaning up temporary keypair"; "name" => self.ssh_key_name.clone());
-            let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
-            req.key_name = self.ssh_key_name.clone();
-            if let Err(e) = client.delete_key_pair(req).await {
-                warn!(log, "failed to clean up temporary SSH key";
-                    "key_name" => &self.ssh_key_name,
-                    "error" => ?e,
-                )
+            let key_span = tracing::trace_span!("key", name = %self.ssh_key_name);
+            async {
+                tracing::trace!("removing keypair");
+                let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
+                req.key_name = self.ssh_key_name.clone();
+                if let Err(e) = client.delete_key_pair(req).in_current_span().await {
+                    tracing::warn!("failed to clean up temporary SSH key: {}", e);
+                }
             }
+            .instrument(key_span)
+            .await;
         }
     }
 }
@@ -1282,7 +1327,7 @@ impl RegionLauncher {
 struct UbuntuAmi(String);
 
 impl UbuntuAmi {
-    async fn new(r: Region) -> Result<Self, Error> {
+    async fn new(r: Region) -> Result<Self, Report> {
         Ok(UbuntuAmi(
             ubuntu_ami::get_latest(
                 &r.name(),
@@ -1292,7 +1337,7 @@ impl UbuntuAmi {
                 Some("amd64"),
             )
             .await
-            .map_err(Error::from_boxed_compat)?,
+            .map_err(|e| eyre!(e))?,
         ))
     }
 }
@@ -1306,8 +1351,7 @@ impl Into<String> for UbuntuAmi {
 #[cfg(test)]
 mod test {
     use super::RegionLauncher;
-    use crate::test::test_logger;
-    use failure::{Error, ResultExt};
+    use super::*;
     use rusoto_core::credential::DefaultCredentialsProvider;
     use rusoto_core::region::Region;
     use rusoto_ec2::Ec2;
@@ -1315,30 +1359,29 @@ mod test {
 
     fn do_make_machine_and_ssh_setupfn<'l>(
         l: &'l mut super::Launcher,
-    ) -> impl Future<Output = Result<(), Error>> + 'l {
+    ) -> impl Future<Output = Result<(), Report>> + 'l {
         use crate::providers::Launcher;
         async move {
             l.spawn(
                 vec![(
                     String::from("my machine"),
-                    super::Setup::default().setup(|ssh, _| {
+                    super::Setup::default().setup(|ssh| {
                         Box::pin(async move {
                             if ssh.command("whoami").status().await?.success() {
                                 Ok(())
                             } else {
-                                Err(failure::format_err!("failed"))
+                                Err(eyre!("failed"))
                             }
                         })
                     }),
                 )],
-                None,
                 None,
             )
             .await?;
             let vms = l.connect_all().await?;
             let my_machine = vms
                 .get("my machine")
-                .ok_or_else(|| failure::format_err!("machine not found"))?;
+                .ok_or_else(|| eyre!("machine not found"))?;
             my_machine
                 .ssh
                 .as_ref()
@@ -1373,16 +1416,11 @@ mod test {
 
     #[test]
     #[ignore]
-    fn make_key() -> Result<(), Error> {
+    fn make_key() -> Result<(), Report> {
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         let region = Region::UsEast1;
         let provider = DefaultCredentialsProvider::new()?;
-        let ec2 = RegionLauncher::connect(
-            region,
-            super::AvailabilityZoneSpec::Any,
-            provider,
-            test_logger(),
-        )?;
+        let ec2 = RegionLauncher::connect(region, super::AvailabilityZoneSpec::Any, provider)?;
         rt.block_on(async {
             let mut ec2 = ec2.make_ssh_key().await?;
             println!("==> key name: {}", ec2.ssh_key_name);
@@ -1408,19 +1446,16 @@ mod test {
 
     fn do_multi_instance_spot_request<'l>(
         ec2: &'l mut super::RegionLauncher,
-        logger: slog::Logger,
-    ) -> impl Future<Output = Result<(), Error>> + 'l {
+    ) -> impl Future<Output = Result<(), Report>> + 'l {
         async move {
-            use super::Setup;
-
             let names = (1..).map(|x| format!("{}", x));
             let setup = Setup::default();
             let ms: Vec<(String, Setup)> = names.zip(itertools::repeat_n(setup, 5)).collect();
 
-            debug!(&logger, "make spot instance requests"; "num" => ms.len());
+            tracing::debug!(num = %ms.len(), "make spot instance requests");
             ec2.make_spot_instance_requests(60 as _, ms).await?;
             assert_eq!(ec2.outstanding_spot_request_ids.len(), 5);
-            debug!(&logger, "wait for spot instance requests");
+            tracing::debug!("wait for spot instance requests");
             ec2.wait_for_spot_instance_requests(None).await?;
 
             Ok(())
@@ -1429,23 +1464,17 @@ mod test {
 
     #[test]
     #[ignore]
-    fn multi_instance_spot_request() -> Result<(), Error> {
+    fn multi_instance_spot_request() -> Result<(), Report> {
         let region = "us-east-1";
         let provider = DefaultCredentialsProvider::new()?;
-        let logger = test_logger();
 
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let mut ec2 = RegionLauncher::new(
-                region,
-                super::AvailabilityZoneSpec::Any,
-                provider,
-                false,
-                logger.clone(),
-            )
-            .await?;
+            let mut ec2 =
+                RegionLauncher::new(region, super::AvailabilityZoneSpec::Any, provider, false)
+                    .await?;
 
-            if let Err(e) = do_multi_instance_spot_request(&mut ec2, logger).await {
+            if let Err(e) = do_multi_instance_spot_request(&mut ec2).await {
                 ec2.shutdown().await;
                 panic!(e);
             } else {

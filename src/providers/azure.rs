@@ -23,13 +23,7 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     let mut l = azure::Launcher::default();
-//!     l.spawn(
-//!         vec![(String::from("my machine"), azure::Setup::default())],
-//!         None,
-//!         None,
-//!     )
-//!     .await
-//!     .unwrap();
+//!     l.spawn(vec![(String::from("my machine"), azure::Setup::default())], None).await.unwrap();
 //!     let vms = l.connect_all().await.unwrap();
 //!     let my_machine = vms.get("my machine").unwrap();
 //!     let out = my_machine
@@ -50,14 +44,14 @@
 //! use tsunami::providers::azure;
 //! use tsunami::Tsunami;
 //! #[tokio::main]
-//! async fn main() -> Result<(), failure::Error> {
+//! async fn main() -> Result<(), color_eyre::Report> {
 //!     // Initialize Azure
 //!     let mut azure = azure::Launcher::default();
 //!
 //!     // Create a machine descriptor and add it to the Tsunami
 //!     let m = azure::Setup::default()
 //!         .region(azure::Region::FranceCentral) // default is EastUs
-//!         .setup(|ssh, _| {
+//!         .setup(|ssh| {
 //!             // default is a no-op
 //!             Box::pin(async move {
 //!                 ssh.command("sudo")
@@ -75,9 +69,7 @@
 //!         });
 //!
 //!     // Launch the VM
-//!     azure
-//!         .spawn(vec![(String::from("my_vm"), m)], None, None)
-//!         .await?;
+//!     azure.spawn(vec![(String::from("my_vm"), m)], None).await?;
 //!
 //!     // SSH to the VM and run a command on it
 //!     let vms = azure.connect_all().await?;
@@ -100,12 +92,15 @@
 //! ```
 
 use crate::ssh;
+use color_eyre::{Help, Report};
 use educe::Educe;
-use failure::{bail, Error};
+use eyre::{eyre, WrapErr};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tracing::instrument;
+use tracing_futures::Instrument;
 
 /// A descriptor for a single Azure VM type.
 ///
@@ -122,9 +117,8 @@ pub struct Setup {
         Arc<
             dyn for<'r> Fn(
                     &'r mut ssh::Session,
-                    &'r slog::Logger,
                 )
-                    -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+                    -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
                 + Send
                 + Sync
                 + 'static,
@@ -196,9 +190,8 @@ impl Setup {
     /// ```rust
     /// use tsunami::providers::azure::Setup;
     ///
-    /// let m = Setup::default().setup(|ssh, log| {
+    /// let m = Setup::default().setup(|ssh| {
     ///     Box::pin(async move {
-    ///         slog::info!(log, "running setup!");
     ///         ssh.command("sudo")
     ///             .arg("apt")
     ///             .arg("update")
@@ -212,8 +205,7 @@ impl Setup {
         mut self,
         setup: impl for<'r> Fn(
                 &'r mut ssh::Session,
-                &'r slog::Logger,
-            ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+            ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
             + Send
             + Sync
             + 'static,
@@ -243,37 +235,57 @@ pub struct Launcher {
 impl super::Launcher for Launcher {
     type MachineDescriptor = Setup;
 
+    #[instrument(level = "debug", skip(self))]
     fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>> {
-        Box::pin(async move {
-            azcmd::check_az().await?;
-            if !self.regions.contains_key(&l.region) {
-                let az_region = RegionLauncher::new(l.region, l.log.clone()).await?;
-                self.regions.insert(l.region, az_region);
-            }
+    ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'l>> {
+        Box::pin(
+            async move {
+                azcmd::check_az().await?;
+                if !self.regions.contains_key(&l.region) {
+                    let region_span = tracing::debug_span!("new_region", region = %l.region);
+                    let az_region = RegionLauncher::new(l.region)
+                        .instrument(region_span)
+                        .await?;
+                    self.regions.insert(l.region, az_region);
+                }
 
-            self.regions.get_mut(&l.region).unwrap().launch(l).await?;
-            Ok(())
-        })
+                let region_span = tracing::debug_span!("region", region = %l.region);
+                self.regions
+                    .get_mut(&l.region)
+                    .unwrap()
+                    .launch(l)
+                    .instrument(region_span)
+                    .await?;
+                Ok(())
+            }
+            .in_current_span(),
+        )
     }
 
+    #[instrument(level = "debug")]
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>
-    {
-        Box::pin(async move { collect!(self.regions) })
+    ) -> Pin<
+        Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Report>> + Send + 'l>,
+    > {
+        Box::pin(async move { collect!(self.regions) }.in_current_span())
     }
 
-    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
-        Box::pin(async move {
-            for (_, r) in self.regions {
-                r.terminate_all().await?;
-            }
+    #[instrument(level = "debug")]
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>> {
+        Box::pin(
+            async move {
+                for (region, r) in self.regions {
+                    let region_span = tracing::debug_span!("region", %region);
+                    r.terminate_all().instrument(region_span).await?;
+                }
 
-            Ok(())
-        })
+                Ok(())
+            }
+            .in_current_span(),
+        )
     }
 }
 
@@ -302,8 +314,6 @@ struct Descriptor {
 /// authenticate to the machine. This file won't automatically be deleted if Azure created it.
 #[derive(Debug, Default)]
 pub struct RegionLauncher {
-    /// A logger.
-    pub log: Option<slog::Logger>,
     /// The region this [`RegionLauncher`] is connected to.
     pub region: Region,
     resource_group_name: String,
@@ -312,13 +322,12 @@ pub struct RegionLauncher {
 
 impl RegionLauncher {
     /// Create a new instance of RegionLauncher.
-    pub async fn new(region: Region, log: slog::Logger) -> Result<Self, Error> {
+    pub async fn new(region: Region) -> Result<Self, Report> {
         let rg_name = super::rand_name("resourcegroup");
 
         azcmd::create_resource_group(region, &rg_name).await?;
 
         Ok(Self {
-            log: Some(log),
             region,
             resource_group_name: rg_name,
             machines: vec![],
@@ -329,107 +338,120 @@ impl RegionLauncher {
 impl super::Launcher for RegionLauncher {
     type MachineDescriptor = Setup;
 
+    #[instrument(level = "debug", skip(self))]
     fn launch<'l>(
         &'l mut self,
         l: super::LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>> {
-        Box::pin(async move {
-            self.log = Some(l.log);
-            let log = self.log.as_ref().unwrap();
-            let max_wait = l.max_wait;
-            self.machines = futures_util::future::join_all(l.machines.into_iter().map(
-                |(nickname, desc)| async {
-                    let vm_name = super::rand_name_sep("vm", "-");
-                    debug!(log, "setting up azure instance";
-                        "nickname" => &nickname,
-                        "vm_name" => &vm_name,
-                    );
-                    let ipinfo = azcmd::create_vm(
-                        &self.resource_group_name,
-                        &vm_name,
-                        &desc.instance_type,
-                        &desc.image,
-                        &desc.username,
-                    )
-                    .await?;
-                    azcmd::open_ports(&self.resource_group_name, &vm_name).await?;
+    ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'l>> {
+        Box::pin(
+            async move {
+                let max_wait = l.max_wait;
+                self.machines = futures_util::future::join_all(l.machines.into_iter().map(
+                    |(nickname, desc)| {
+                        let machine_span = tracing::debug_span!("machine", %nickname, ?desc);
+                        async {
+                            let vm_name = super::rand_name_sep("vm", "-");
+                            tracing::debug!(%vm_name, "setting up instance");
 
-                    if let Setup {
-                        ref username,
-                        setup_fn: Some(ref f),
-                        ..
-                    } = desc
-                    {
-                        super::setup_machine(
-                            log,
-                            &nickname,
-                            &ipinfo.public_ip,
-                            &username,
-                            max_wait,
-                            None,
-                            f.as_ref(),
-                        )
-                        .await?;
-                    }
+                            let ipinfo = azcmd::create_vm(
+                                &self.resource_group_name,
+                                &vm_name,
+                                &desc.instance_type,
+                                &desc.image,
+                                &desc.username,
+                            )
+                            .await?;
+                            azcmd::open_ports(&self.resource_group_name, &vm_name).await?;
 
-                    Ok::<_, Error>(Descriptor {
-                        name: nickname,
-                        username: desc.username,
-                        ip: ipinfo,
-                    })
-                },
-            ))
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, Error>>()?;
+                            if let Setup {
+                                ref username,
+                                setup_fn: Some(ref f),
+                                ..
+                            } = desc
+                            {
+                                super::setup_machine(
+                                    &nickname,
+                                    &ipinfo.public_ip,
+                                    &username,
+                                    max_wait,
+                                    None,
+                                    f.as_ref(),
+                                )
+                                .await?;
+                            }
 
-            Ok(())
-        })
+                            Ok::<_, Report>(Descriptor {
+                                name: nickname,
+                                username: desc.username,
+                                ip: ipinfo,
+                            })
+                        }
+                        .instrument(machine_span)
+                    },
+                ))
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, Report>>()?;
+
+                Ok(())
+            }
+            .in_current_span(),
+        )
     }
 
+    #[instrument(level = "debug")]
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>
-    {
-        Box::pin(async move {
-            let log = self.log.as_ref().expect("RegionLauncher uninitialized");
-            futures_util::future::join_all(self.machines.iter().map(|desc| {
-                let Descriptor {
-                    name,
-                    username,
-                    ip:
-                        IpInfo {
-                            public_ip,
-                            private_ip,
-                        },
-                } = desc;
-                let mut m = crate::Machine {
-                    nickname: name.clone(),
-                    public_dns: public_ip.clone(),
-                    public_ip: public_ip.clone(),
-                    private_ip: Some(private_ip.clone()),
-                    ssh: None,
-                    _tsunami: Default::default(),
-                };
+    ) -> Pin<
+        Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Report>> + Send + 'l>,
+    > {
+        Box::pin(
+            async move {
+                futures_util::future::join_all(self.machines.iter().map(|desc| {
+                    let machine_span = tracing::debug_span!("machine", name = %desc.name, ?desc);
 
-                async move {
-                    m.connect_ssh(log, username, None, None, 22).await?;
-                    Ok::<_, Error>((name.clone(), m))
-                }
-            }))
-            .await
-            .into_iter()
-            .collect::<Result<HashMap<_, _>, Error>>()
-        })
+                    let Descriptor {
+                        name,
+                        username,
+                        ip:
+                            IpInfo {
+                                public_ip,
+                                private_ip,
+                            },
+                    } = desc;
+                    let mut m = crate::Machine {
+                        nickname: name.clone(),
+                        public_dns: public_ip.clone(),
+                        public_ip: public_ip.clone(),
+                        private_ip: Some(private_ip.clone()),
+                        ssh: None,
+                        _tsunami: Default::default(),
+                    };
+
+                    async move {
+                        m.connect_ssh(username, None, None, 22).await?;
+                        Ok::<_, Report>((name.clone(), m))
+                    }
+                    .instrument(machine_span)
+                }))
+                .await
+                .into_iter()
+                .collect::<Result<HashMap<_, _>, Report>>()
+            }
+            .in_current_span(),
+        )
     }
 
-    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
-        debug!(self.log.as_ref().unwrap(), "Cleaning up resource group");
+    #[instrument(level = "debug")]
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>> {
         let name = self.resource_group_name.clone();
-        Box::pin(async move {
-            azcmd::delete_resource_group(&name).await?;
-            Ok(())
-        })
+        Box::pin(
+            async move {
+                azcmd::delete_resource_group(&name).await?;
+                Ok(())
+            }
+            .in_current_span(),
+        )
     }
 }
 
@@ -523,7 +545,7 @@ impl std::fmt::Display for Region {
 }
 
 impl std::str::FromStr for Region {
-    type Err = Error;
+    type Err = Report;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             r if r == Region::EastUs.as_ref() => Region::EastUs,
@@ -557,28 +579,28 @@ impl std::str::FromStr for Region {
             r if r == Region::SouthAfricaNorth.as_ref() => Region::SouthAfricaNorth,
             r if r == Region::UaeNorth.as_ref() => Region::UaeNorth,
             r if r == Region::GermanyWestCentral.as_ref() => Region::GermanyWestCentral,
-            u => bail!("Unknown azure region {}. Valid regions: eastus, eastus2, westus, centralus, northcentralus, southcentralus, northeurope, westeurope, eastasia, southeastasia, japaneast, japanwest, australiaeast, australiasoutheast, australiacentral, brazilsouth, southindia, centralindia, westindia, canadacentral, canadaeast, westus2, westcentralus, uksouth, ukwest, koreacentral, koreasouth, francecentral, southafricanorth, uaenorth, germanywestcentral", u),
+            r => return Err(eyre!(r.to_string())).wrap_err("unknown azure region").suggestion("Valid regions: eastus, eastus2, westus, centralus, northcentralus, southcentralus, northeurope, westeurope, eastasia, southeastasia, japaneast, japanwest, australiaeast, australiasoutheast, australiacentral, brazilsouth, southindia, centralindia, westindia, canadacentral, canadaeast, westus2, westcentralus, uksouth, ukwest, koreacentral, koreasouth, francecentral, southafricanorth, uaenorth, germanywestcentral"),
         })
     }
 }
 
 mod azcmd {
-    use super::Error;
     use super::IpInfo;
     use super::Region;
-    use failure::ResultExt;
+    use super::*;
     use serde::{Deserialize, Serialize};
     use tokio::process::Command;
 
-    pub(crate) async fn check_az() -> Result<(), Error> {
-        ensure!(
-            Command::new("az").arg("account").arg("show").status().await?.success(), 
+    pub(crate) async fn check_az() -> Result<(), Report> {
+        eyre::ensure!(
+            Command::new("az").arg("account").arg("show").status().await.wrap_err("az account show")?.success(), 
             "Azure CLI not found. See https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest for installation, then run `az login`.",
         );
         Ok(())
     }
 
-    pub(crate) async fn create_resource_group(r: Region, name: &str) -> Result<(), Error> {
+    #[instrument(level = "trace")]
+    pub(crate) async fn create_resource_group(r: Region, name: &str) -> Result<(), Report> {
         let out = Command::new("az")
             .args(&[
                 "group",
@@ -589,22 +611,21 @@ mod azcmd {
                 &r.to_string(),
             ])
             .status()
-            .await?;
+            .await
+            .context("az group create")?;
 
-        if !out.success() {
-            bail!("Failed to create resource group {} in region {:?}", name, r)
-        }
-
+        eyre::ensure!(out.success(), "failed to create resource group");
         Ok(())
     }
 
+    #[instrument(level = "trace")]
     pub(crate) async fn create_vm(
         rg: &str,
         name: &str,
         size: &str,
         image: &str,
         username: &str,
-    ) -> Result<IpInfo, Error> {
+    ) -> Result<IpInfo, Report> {
         #[allow(non_snake_case)]
         #[derive(Debug, Deserialize, Serialize)]
         struct VmCreateOut {
@@ -631,23 +652,26 @@ mod azcmd {
                 "--generate-ssh-keys",
             ])
             .output()
-            .await?;
+            .await
+            .wrap_err("az vm create")?;
 
-        if !out.status.success() {
-            return Err(format_err!("Failed to create vm {}", name))
-                .context(String::from_utf8(out.stderr).unwrap())?;
-        }
+        eyre::ensure!(
+            out.status.success(),
+            "failed to create vm: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         let vm: VmCreateOut = serde_json::from_slice(&out.stdout)?;
-        ensure!(vm.powerState == "VM running", "VM power state incorrect");
-        ensure!(vm.resourceGroup == rg, "VM resource group incorrect");
+        eyre::ensure!(vm.powerState == "VM running", "VM power state incorrect");
+        eyre::ensure!(vm.resourceGroup == rg, "VM resource group incorrect");
         Ok(IpInfo {
             public_ip: vm.publicIpAddress,
             private_ip: vm.privateIpAddress,
         })
     }
 
-    pub(crate) async fn open_ports(rg: &str, vm_name: &str) -> Result<(), Error> {
+    #[instrument(level = "trace")]
+    pub(crate) async fn open_ports(rg: &str, vm_name: &str) -> Result<(), Report> {
         let out = Command::new("az")
             .args(&[
                 "vm",
@@ -660,23 +684,27 @@ mod azcmd {
                 vm_name,
             ])
             .output()
-            .await?;
-        if !out.status.success() {
-            return Err(format_err!("Failed to open ports for {}", vm_name))
-                .context(String::from_utf8(out.stderr).unwrap())?;
-        }
+            .await
+            .wrap_err("az vm open-port")?;
+
+        eyre::ensure!(
+            out.status.success(),
+            "failed to open ports: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         Ok(())
     }
 
-    pub(crate) async fn delete_resource_group(rg: &str) -> Result<(), Error> {
+    #[instrument(level = "trace")]
+    pub(crate) async fn delete_resource_group(rg: &str) -> Result<(), Report> {
         let out = Command::new("az")
             .args(&["group", "delete", "--name", rg, "--yes"])
             .status()
-            .await?;
-        if !out.success() {
-            bail!("Failed to delete resource group {}", rg)
-        }
+            .await
+            .wrap_err("az group delete")?;
+
+        eyre::ensure!(out.success(), "failed to delete resource group");
 
         Ok(())
     }
@@ -684,8 +712,7 @@ mod azcmd {
 
 #[cfg(test)]
 mod test {
-    use super::{azcmd, Region, Setup};
-    use failure::Error;
+    use super::*;
     use std::future::Future;
 
     #[test]
@@ -706,36 +733,34 @@ mod test {
 
     fn do_make_machine_and_ssh_setupfn<'l>(
         l: &'l mut super::Launcher,
-        logger: slog::Logger,
-    ) -> impl Future<Output = Result<(), Error>> + 'l {
+    ) -> impl Future<Output = Result<(), Report>> + 'l {
         use crate::providers::{LaunchDescriptor, Launcher};
-        let m = Setup::default().setup(|ssh, _| {
+        let m = Setup::default().setup(|ssh| {
             Box::pin(async move {
                 if ssh.command("whoami").status().await?.success() {
                     Ok(())
                 } else {
-                    Err(failure::format_err!("failed"))
+                    Err(eyre!("failed"))
                 }
             })
         });
 
         let ld = LaunchDescriptor {
             region: m.region,
-            log: logger.clone(),
             max_wait: None,
             machines: vec![("foo".to_owned(), m)],
         };
 
         async move {
-            debug!(&logger, "launching");
+            tracing::debug!("launching");
             l.launch(ld).await?;
-            debug!(&logger, "connecting");
+            tracing::debug!("connecting");
             let vms = l.connect_all().await?;
-            debug!(&logger, "get machine");
+            tracing::debug!("get machine");
             let my_machine = vms
                 .get("foo")
-                .ok_or_else(|| failure::format_err!("machine not found"))?;
-            debug!(&logger, "running command");
+                .ok_or_else(|| eyre::format_err!("machine not found"))?;
+            tracing::debug!("running command");
             my_machine
                 .ssh
                 .as_ref()
@@ -754,10 +779,9 @@ mod test {
     fn azure_launch_with_setupfn() {
         use crate::providers::Launcher;
         let mut rt = tokio::runtime::Runtime::new().unwrap();
-        let l = crate::test::test_logger();
         let mut azure = super::Launcher::default();
         rt.block_on(async move {
-            if let Err(e) = do_make_machine_and_ssh_setupfn(&mut azure, l).await {
+            if let Err(e) = do_make_machine_and_ssh_setupfn(&mut azure).await {
                 azure.terminate_all().await.unwrap();
                 panic!(e);
             } else {

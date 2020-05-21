@@ -1,10 +1,13 @@
 //! Implements backend functionality to spawn machines.
 
-use failure::Error;
+use color_eyre::Report;
+use eyre::WrapErr;
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use tracing::instrument;
+use tracing_futures::Instrument;
 
 /// A description of a set of machines to launch.
 ///
@@ -13,8 +16,6 @@ use std::pin::Pin;
 pub struct LaunchDescriptor<M: MachineSetup + Send> {
     /// The region to launch into.
     pub region: M::Region,
-    /// A logger.
-    pub log: slog::Logger,
     /// An optional timeout.
     ///
     /// If specified and the LaunchDescriptor is not launched in the given time,
@@ -29,7 +30,7 @@ pub struct LaunchDescriptor<M: MachineSetup + Send> {
 /// connection to each region.
 pub trait MachineSetup {
     /// Grouping type.
-    type Region: Eq + std::hash::Hash + Clone + ToString + Send;
+    type Region: Eq + std::hash::Hash + Clone + std::fmt::Display + Send;
     /// Get the region.
     fn region(&self) -> Self::Region;
 }
@@ -54,54 +55,58 @@ pub trait Launcher: Send {
     fn launch<'l>(
         &'l mut self,
         desc: LaunchDescriptor<Self::MachineDescriptor>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'l>>;
 
     /// Return connections to the [`Machine`s](crate::Machine) that `launch` spawned.
     fn connect_all<'l>(
         &'l self,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Error>> + Send + 'l>>;
+    ) -> Pin<
+        Box<dyn Future<Output = Result<HashMap<String, crate::Machine<'l>>, Report>> + Send + 'l>,
+    >;
 
     /// Shut down all instances.
-    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
+    fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>>;
 
     /// Helper method to group `MachineDescriptor`s into regions and call `launch`.
     ///
     /// This implementation initializes each region serially. It may be useful for performance to
     /// provide an implementation that initializes the regions concurrently.
+    #[instrument(skip(self, max_wait))]
     fn spawn<'l, I>(
         &'l mut self,
         descriptors: I,
         max_wait: Option<std::time::Duration>,
-        log: Option<slog::Logger>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'l>>
+    ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'l>>
     where
         I: IntoIterator<Item = (String, Self::MachineDescriptor)> + Send + 'static,
+        I: std::fmt::Debug,
         I::IntoIter: Send,
     {
-        Box::pin(async move {
-            let max_wait = max_wait;
-            let log = log.unwrap_or_else(|| slog::Logger::root(slog::Discard, o!()));
+        Box::pin(
+            async move {
+                let max_wait = max_wait;
 
-            info!(log, "spinning up tsunami");
+                tracing::info!("spinning up tsunami");
 
-            for (region_name, setups) in descriptors
-                .into_iter()
-                .map(|(name, setup)| (setup.region(), (name, setup)))
-                .into_group_map()
-            {
-                let region_log = log.new(slog::o!("region" => region_name.clone().to_string()));
-                let dsc = LaunchDescriptor {
-                    region: region_name.clone(),
-                    log: region_log,
-                    max_wait,
-                    machines: setups,
-                };
+                for (region_name, setups) in descriptors
+                    .into_iter()
+                    .map(|(name, setup)| (setup.region(), (name, setup)))
+                    .into_group_map()
+                {
+                    let region_span = tracing::debug_span!("region", region = %region_name);
+                    let dsc = LaunchDescriptor {
+                        region: region_name.clone(),
+                        max_wait,
+                        machines: setups,
+                    };
 
-                self.launch(dsc).await?;
+                    self.launch(dsc).instrument(region_span).await?;
+                }
+
+                Ok(())
             }
-
-            Ok(())
-        })
+            .in_current_span(),
+        )
     }
 }
 
@@ -114,7 +119,7 @@ macro_rules! collect {
             let mps = futures_util::future::join_all($x.values().map(|r| r.connect_all()))
                 .await
                 .into_iter()
-                .collect::<Result<Vec<_>, Error>>()?;
+                .collect::<Result<Vec<_>, Report>>()?;
 
             mps.into_iter().flat_map(|x| x.into_iter()).collect()
         })
@@ -163,8 +168,8 @@ fn rand_name_sep(prefix: &str, sep: impl Into<Sep>) -> String {
 }
 
 #[cfg(any(feature = "aws", feature = "azure"))]
+#[instrument(skip(max_wait, private_key, f))]
 async fn setup_machine(
-    log: &slog::Logger,
     nickname: &str,
     pub_ip: &str,
     username: &str,
@@ -172,13 +177,10 @@ async fn setup_machine(
     private_key: Option<&std::path::Path>,
     f: &(dyn for<'r> Fn(
         &'r mut crate::ssh::Session,
-        &'r slog::Logger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'r>>
+    ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
           + Send
           + Sync),
-) -> Result<(), Error> {
-    use failure::ResultExt;
-
+) -> Result<(), Report> {
     let mut m = crate::Machine {
         nickname: Default::default(),
         public_dns: pub_ip.to_string(),
@@ -188,23 +190,11 @@ async fn setup_machine(
         _tsunami: Default::default(),
     };
 
-    m.connect_ssh(log, username, private_key, max_wait, 22)
-        .await?;
+    m.connect_ssh(username, private_key, max_wait, 22).await?;
     let mut sess = m.ssh.unwrap();
 
-    debug!(log, "setting up instance"; "ip" => &pub_ip);
-    f(&mut sess, log)
-        .await
-        .context(format!("setup procedure for {} machine failed", &nickname))
-        .map_err(|e| {
-            error!(
-            log,
-            "machine setup failed";
-            "name" => &nickname,
-            "ssh" => format!("ssh ubuntu@{}", &pub_ip),
-            );
-            e
-        })?;
-    info!(log, "finished setting up instance"; "name" => &nickname, "ip" => &pub_ip);
+    tracing::debug!("setting up instance");
+    f(&mut sess).await.wrap_err("setup procedure failed")?;
+    tracing::info!("instance ready");
     Ok(())
 }
