@@ -106,7 +106,7 @@ use std::future::Future;
 use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::{thread, time};
+use std::time;
 use tracing::instrument;
 use tracing_futures::Instrument;
 
@@ -1040,7 +1040,7 @@ impl RegionLauncher {
                     .collect();
                 break;
             } else {
-                thread::sleep(time::Duration::from_secs(1));
+                tokio::time::delay_for(time::Duration::from_secs(1)).await;
             }
 
             if let Some(wait_limit) = max_wait {
@@ -1062,7 +1062,7 @@ impl RegionLauncher {
                 tracing::trace!("spot instances cancelled -- gathering remaining instances");
                 // wait for a little while for the cancelled spot requests to settle
                 // and any that were *just* made active to be associated with their instances
-                thread::sleep(time::Duration::from_secs(1));
+                tokio::time::delay_for(time::Duration::from_secs(1)).await;
 
                 let sirs = client
                     .describe_spot_instance_requests(req)
@@ -1181,6 +1181,9 @@ impl RegionLauncher {
                     eyre::bail!("timed out");
                 }
             }
+
+            // let's not hammer the API
+            tokio::time::delay_for(time::Duration::from_secs(1)).await;
         }
 
         futures_util::future::join_all(self.instances.iter().map(
