@@ -556,7 +556,7 @@ where
 
                 futures_util::future::join_all(self.regions.drain().map(|(region, mut rl)| {
                     let region_span = tracing::debug_span!("region", %region);
-                    async move { rl.shutdown().await }.instrument(region_span)
+                    async move { rl.terminate_all().await }.instrument(region_span)
                 }))
                 .await;
                 Ok(())
@@ -1269,7 +1269,7 @@ impl RegionLauncher {
     /// Additionally deletes ephemeral keys and security groups. Note: it is a known issue that
     /// security groups often will not be deleted, due to timing quirks in the AWS api.
     #[instrument(level = "debug")]
-    pub async fn shutdown(&mut self) {
+    pub async fn terminate_all(&mut self) {
         let client = self.client.as_ref().unwrap();
         // terminate instances
         if !self.instances.is_empty() {
@@ -1473,10 +1473,10 @@ mod test {
                     .await?;
 
             if let Err(e) = do_multi_instance_spot_request(&mut ec2).await {
-                ec2.shutdown().await;
+                ec2.terminate_all().await;
                 panic!(e);
             } else {
-                ec2.shutdown().await;
+                ec2.terminate_all().await;
             }
 
             Ok(())
