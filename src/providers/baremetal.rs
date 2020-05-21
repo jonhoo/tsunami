@@ -140,12 +140,7 @@ async fn try_addrs(
             };
 
             match m
-                .connect_ssh(
-                    &s.username,
-                    s.key_path.as_ref().map(|p| p.as_path()),
-                    max_wait,
-                    addr.port(),
-                )
+                .connect_ssh(&s.username, s.key_path.as_deref(), max_wait, addr.port())
                 .await
             {
                 Err(e) => {
@@ -231,13 +226,8 @@ impl super::Launcher for Machine {
                     _tsunami: Default::default(),
                 };
 
-                m.connect_ssh(
-                    &username,
-                    key_path.as_ref().map(|p| p.as_path()),
-                    l.max_wait,
-                    addr.port(),
-                )
-                .await?;
+                m.connect_ssh(&username, key_path.as_deref(), l.max_wait, addr.port())
+                    .await?;
 
                 let mut sess = m.ssh.unwrap();
 
@@ -270,13 +260,8 @@ impl super::Launcher for Machine {
                 _tsunami: Default::default(),
             };
 
-            m.connect_ssh(
-                &self.username,
-                self.key_path.as_ref().map(|p| p.as_path()),
-                None,
-                addr.port(),
-            )
-            .await?;
+            m.connect_ssh(&self.username, self.key_path.as_deref(), None, addr.port())
+                .await?;
 
             let mut hmap: HashMap<String, crate::Machine<'l>> = Default::default();
             hmap.insert(self.name.clone(), m);

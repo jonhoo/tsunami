@@ -243,21 +243,22 @@ impl super::Launcher for Launcher {
         Box::pin(
             async move {
                 azcmd::check_az().await?;
-                if !self.regions.contains_key(&l.region) {
-                    let region_span = tracing::debug_span!("new_region", region = %l.region);
-                    let az_region = RegionLauncher::new(l.region)
-                        .instrument(region_span)
-                        .await?;
-                    self.regions.insert(l.region, az_region);
-                }
+
+                use std::collections::hash_map::Entry;
+                let mut region = self.regions.entry(l.region);
+                let region = match region {
+                    Entry::Occupied(ref mut o) => o.get_mut(),
+                    Entry::Vacant(v) => {
+                        let region_span = tracing::debug_span!("new_region", region = %l.region);
+                        let az_region = RegionLauncher::new(l.region)
+                            .instrument(region_span)
+                            .await?;
+                        v.insert(az_region)
+                    }
+                };
 
                 let region_span = tracing::debug_span!("region", region = %l.region);
-                self.regions
-                    .get_mut(&l.region)
-                    .unwrap()
-                    .launch(l)
-                    .instrument(region_span)
-                    .await?;
+                region.launch(l).instrument(region_span).await?;
                 Ok(())
             }
             .in_current_span(),
@@ -444,7 +445,7 @@ impl super::Launcher for RegionLauncher {
 
     #[instrument(level = "debug")]
     fn terminate_all(self) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send>> {
-        let name = self.resource_group_name.clone();
+        let name = self.resource_group_name;
         Box::pin(
             async move {
                 azcmd::delete_resource_group(&name).await?;
