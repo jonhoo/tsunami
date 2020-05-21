@@ -4,7 +4,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/tsunami.svg)](https://crates.io/crates/tsunami)
 [![Documentation](https://docs.rs/tsunami/badge.svg)](https://docs.rs/tsunami/)
-[![Build Status](https://travis-ci.org/jonhoo/tsunami.svg?branch=master)](https://travis-ci.org/jonhoo/tsunami)
+[![Build Status](https://dev.azure.com/jonhoo/jonhoo/_apis/build/status/tsunami?branchName=master)](https://dev.azure.com/jonhoo/jonhoo/_build/latest?definitionId=25&branchName=master)
 
 `tsunami` provides an interface for running one-off jobs on cloud instances.
 
@@ -114,3 +114,20 @@ An earlier version of this crate was written as part of a live-coding stream ser
 for users who are already somewhat familiar with Rust, and who want to see something larger and
 more involved be built. You can find the recordings of past sessions [on
 YouTube](https://www.youtube.com/playlist?list=PLqbS7AVVErFgY2faCIYjJZv_RluGkTlKt).
+
+## License
+
+Licensed under either of
+
+ * Apache License, Version 2.0
+   ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+ * MIT license
+   ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+at your option.
+
+## Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.

@@ -1,24 +1,20 @@
 [package]
 name = "tsunami"
 version = "0.11.0-beta.3"
-edition = "2018"
-
-description = "Toolkit for running short-lived jobs on cloud VMs"
-readme = "README.md"
-
 authors = ["Jon Gjengset <jon@thesquareplanet.com>", "Akshay Narayan <akshayn@mit.edu>"]
+edition = "2018"
+license = "MIT OR Apache-2.0"
 
-documentation = "https://docs.rs/tsunami"
-homepage = "https://github.com/jonhoo/tsunami"
+readme = "README.md"
+description = "Toolkit for running short-lived jobs on cloud VMs"
 repository = "https://github.com/jonhoo/tsunami.git"
 
 keywords = ["ec2", "aws", "azure", "vm", "spot-instances", "distributed", "benchmark"]
-categories = []
+categories = ["api-bindings", "development-tools"]
 
-license = "MIT OR Apache-2.0"
 
 [badges]
-travis-ci = { repository = "jonhoo/tsunami" }
+azure-devops = { project = "jonhoo/jonhoo", pipeline = "tsunami", build = "25" }
 maintenance = { status = "passively-maintained" }
 
 [features]
@@ -51,9 +47,10 @@ ubuntu-ami = { version = "0.1", optional = true }
 rusoto_sts = "0.43.0"
 tokio = { version = "0.2.0", features = ["rt-core", "macros"] }
 
-[profile.release]
-debug = true
-
 [[example]]
 name = "launch"
+required-features = ["args"]
+
+[[example]]
+name = "ping"
 required-features = ["args"]

@@ -1,0 +1,59 @@
+jobs:
+ - job: style
+   displayName: Style linting
+   pool:
+     vmImage: ubuntu-latest
+   continueOnError: true
+   steps:
+     - template: install-rust.yml@templates
+       parameters:
+         rust: nightly
+         components:
+           - rustfmt
+           - clippy
+     - script: cargo fmt --all -- --check
+       displayName: cargo fmt --check
+     - script: cargo clippy --all
+       displayName: cargo clippy -- -D warnings
+ - job: main
+   displayName: Compile and test
+   dependsOn: []
+   strategy:
+     matrix:
+       Linux:
+         vmImage: ubuntu-latest
+         rust: nightly
+       MacOS:
+         vmImage: macOS-10.15
+         rust: nightly
+       Windows:
+         vmImage: windows-2019
+         rust: nightly
+   pool:
+     vmImage: $(vmImage)
+   continueOnError: true
+   steps:
+     - template: install-rust.yml@templates
+       parameters:
+         rust: $(rust)
+     - script: cargo check
+       displayName: cargo check
+     - script: cargo check --no-default-features
+       displayName: cargo check --no-default-features
+     - script: cargo check --all-features
+       displayName: cargo check --all-features
+     - script: cargo test --no-default-features --features std
+       displayName: cargo test (no specialization)
+     - script: cargo test --all-features
+       displayName: cargo test
+     - script: cargo doc --no-deps
+       displayName: cargo doc
+ # TODO: MSRV (once not nightly-only)
+
+resources:
+  repositories:
+    - repository: templates
+      type: github
+      name: crate-ci/azure-pipelines
+      ref: refs/heads/v0.4
+      endpoint: jonhoo

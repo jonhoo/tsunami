@@ -1,5 +1,7 @@
 //! `tsunami` provides an interface for running one-off jobs on cloud instances.
 //!
+//! **This crate requires nightly Rust.**
+//!
 //! Imagine you need to run an experiment that involves four machines of different types on AWS. Or
 //! on Azure. And each one needs to be set up in a particular way. Maybe one is a server, two are
 //! load generating clients, and one is a monitor of some sort. You want to spin them all up with a
