@@ -866,7 +866,6 @@ impl RegionLauncher {
                         req.group_name = Some(placement_name.clone());
                         req.strategy = Some(String::from("cluster"));
                         ec2.create_placement_group(req)
-                            .in_current_span()
                             .await
                             .wrap_err("failed to create new placement group")?;
                         tracing::trace!("created placement group");
@@ -907,7 +906,6 @@ impl RegionLauncher {
                     .as_mut()
                     .unwrap()
                     .request_spot_instances(req)
-                    .in_current_span()
                     .await
                     .wrap_err("failed to request spot instance")?;
 
@@ -1148,7 +1146,6 @@ impl RegionLauncher {
                                         max_wait,
                                         22,
                                     )
-                                    .in_current_span()
                                     .await
                                 {
                                     tracing::trace!("ssh failed: {}", e);
@@ -1297,7 +1294,7 @@ impl RegionLauncher {
                 tracing::trace!("removing keypair");
                 let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
                 req.key_name = self.ssh_key_name.clone();
-                if let Err(e) = client.delete_key_pair(req).in_current_span().await {
+                if let Err(e) = client.delete_key_pair(req).await {
                     tracing::warn!("failed to clean up temporary SSH key: {}", e);
                 }
             }
@@ -1313,7 +1310,7 @@ impl RegionLauncher {
                 loop {
                     let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
                     req.group_id = Some(self.security_group_id.clone());
-                    if let Err(e) = client.delete_security_group(req).in_current_span().await {
+                    if let Err(e) = client.delete_security_group(req).await {
                         tracing::trace!(
                             "failed to clean up temporary security group: {}. retrying.",
                             e,
