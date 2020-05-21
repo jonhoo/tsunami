@@ -1291,23 +1291,6 @@ impl RegionLauncher {
         }
 
         tracing::debug!("cleaning up temporary resources");
-        if !self.security_group_id.trim().is_empty() {
-            let group_span = tracing::trace_span!("security_group", id = %self.security_group_id);
-            async {
-                tracing::trace!("removing security group");
-                // clean up security groups and keys
-                // TODO need a retry loop for the security group. Currently, this fails
-                // because AWS takes some time to allow the security group to be deleted.
-                let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
-                req.group_id = Some(self.security_group_id.clone());
-                if let Err(e) = client.delete_security_group(req).in_current_span().await {
-                    tracing::warn!("failed to clean up temporary security group: {}", e);
-                }
-            }
-            .instrument(group_span)
-            .await;
-        }
-
         if !self.ssh_key_name.trim().is_empty() {
             let key_span = tracing::trace_span!("key", name = %self.ssh_key_name);
             async {
@@ -1319,6 +1302,31 @@ impl RegionLauncher {
                 }
             }
             .instrument(key_span)
+            .await;
+        }
+
+        if !self.security_group_id.trim().is_empty() {
+            let group_span = tracing::trace_span!("security_group", id = %self.security_group_id);
+            async {
+                tracing::trace!("removing security group.");
+                // clean up security groups and keys
+                loop {
+                    let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
+                    req.group_id = Some(self.security_group_id.clone());
+                    if let Err(e) = client.delete_security_group(req).in_current_span().await {
+                        tracing::trace!(
+                            "failed to clean up temporary security group: {}. retrying.",
+                            e,
+                        );
+                        tokio::time::delay_for(tokio::time::Duration::from_secs(5)).await;
+                    } else {
+                        break;
+                    }
+                }
+
+                tracing::trace!("cleaned up temporary security group");
+            }
+            .instrument(group_span)
             .await;
         }
     }
