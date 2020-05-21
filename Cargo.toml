@@ -9,9 +9,8 @@ readme = "README.md"
 description = "Toolkit for running short-lived jobs on cloud VMs"
 repository = "https://github.com/jonhoo/tsunami.git"
 
-keywords = ["ec2", "aws", "azure", "vm", "spot-instances", "distributed", "benchmark"]
+keywords = ["orchestration", "cloud", "vm", "ec2", "azure"]
 categories = ["api-bindings", "development-tools"]
-
 
 [badges]
 azure-devops = { project = "jonhoo/jonhoo", pipeline = "tsunami", build = "25" }
