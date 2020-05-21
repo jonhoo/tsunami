@@ -554,14 +554,19 @@ where
                     return Ok(());
                 }
 
-                futures_util::future::join_all(self.regions.drain().map(|(region, mut rl)| {
-                    let region_span = tracing::debug_span!("region", %region);
-                    // this throws away a possible error from terminate_all,
-                    // but that is ok.
-                    async move { rl.terminate_all().await }.instrument(region_span)
-                }))
-                .await;
-                Ok(())
+                let res =
+                    futures_util::future::join_all(self.regions.drain().map(|(region, mut rl)| {
+                        let region_span = tracing::debug_span!("region", %region);
+                        async move { rl.terminate_all().await }.instrument(region_span)
+                    }))
+                    .await;
+                res.into_iter().fold(Ok(()), |acc, x| match acc {
+                    Ok(_) => x,
+                    Err(a) => match x {
+                        Ok(_) => Err(a),
+                        Err(e) => Err(a.wrap_err(e)),
+                    },
+                })
             }
             .in_current_span(),
         )
@@ -1331,10 +1336,6 @@ impl RegionLauncher {
                 let start = tokio::time::Instant::now();
                 loop {
                     if start.elapsed() > tokio::time::Duration::from_secs(60) {
-                        tracing::warn!(
-                            "failed to clean up temporary security group after 60 seconds."
-                        );
-
                         Err(Report::msg(
                             "failed to clean up temporary security group after 60 seconds.",
                         ))?;
@@ -1351,13 +1352,12 @@ impl RegionLauncher {
                                 tracing::trace!("instances not yet shut down -- retrying");
                                 tokio::time::delay_for(tokio::time::Duration::from_secs(5)).await;
                             } else {
-                                Err(Report::msg(err.to_string())
-                                    .wrap_err("failed to clean up temporary security group"))?;
+                                Err(eyre!(err.to_string()))
+                                    .wrap_err("failed to clean up temporary security group")?;
                                 unreachable!();
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("failed: {}", e);
                             Err(Report::new(e)
                                 .wrap_err("failed to clean up temporary security group"))?;
                             unreachable!();
