@@ -556,6 +556,8 @@ where
 
                 futures_util::future::join_all(self.regions.drain().map(|(region, mut rl)| {
                     let region_span = tracing::debug_span!("region", %region);
+                    // this throws away a possible error from terminate_all,
+                    // but that is ok.
                     async move { rl.terminate_all().await }.instrument(region_span)
                 }))
                 .await;
@@ -1266,7 +1268,8 @@ impl RegionLauncher {
     /// Additionally deletes ephemeral keys and security groups. Note: it is a known issue that
     /// security groups often will not be deleted, due to timing quirks in the AWS api.
     #[instrument(level = "debug")]
-    pub async fn terminate_all(&mut self) {
+    pub async fn terminate_all(&mut self) -> Result<(), Report> {
+        let mut res = Ok(());
         let client = self.client.as_ref().unwrap();
         // terminate instances
         if !self.instances.is_empty() {
@@ -1282,6 +1285,11 @@ impl RegionLauncher {
                     continue;
                 } else {
                     tracing::warn!("failed to terminate tsunami instances: {}", e);
+                    let e = Err(e).context("failed to terminate tsunami instances");
+                    res = match res {
+                        Ok(_) => e,
+                        Err(r) => Err(r.wrap_err(e.unwrap_err())),
+                    };
                     break;
                 }
             }
@@ -1290,23 +1298,34 @@ impl RegionLauncher {
         tracing::debug!("cleaning up temporary resources");
         if !self.ssh_key_name.trim().is_empty() {
             let key_span = tracing::trace_span!("key", name = %self.ssh_key_name);
-            async {
+            let r = async {
                 tracing::trace!("removing keypair");
                 let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
                 req.key_name = self.ssh_key_name.clone();
                 if let Err(e) = client.delete_key_pair(req).await {
                     tracing::warn!("failed to clean up temporary SSH key: {}", e);
+                    Err(e).context("failed to clean up temporary SSH key")?;
+                    unreachable!();
                 }
+
+                Ok(())
             }
             .instrument(key_span)
             .await;
+
+            if r.is_err() {
+                res = match res {
+                    Ok(_) => r,
+                    Err(e) => Err(e.wrap_err(r.unwrap_err())),
+                };
+            }
         }
 
         use rusoto_core::RusotoError;
         if !self.security_group_id.trim().is_empty() {
             let group_span =
                 tracing::trace_span!("removing security group", id = %self.security_group_id);
-            async {
+            let r = async {
                 tracing::trace!("removing security group.");
                 // clean up security groups and keys
                 let start = tokio::time::Instant::now();
@@ -1315,6 +1334,11 @@ impl RegionLauncher {
                         tracing::warn!(
                             "failed to clean up temporary security group after 60 seconds."
                         );
+
+                        Err(Report::msg(
+                            "failed to clean up temporary security group after 60 seconds.",
+                        ))?;
+                        unreachable!();
                     }
 
                     let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
@@ -1327,22 +1351,35 @@ impl RegionLauncher {
                                 tracing::trace!("instances not yet shut down -- retrying");
                                 tokio::time::delay_for(tokio::time::Duration::from_secs(5)).await;
                             } else {
-                                tracing::warn!("failed: {}", err);
-                                break;
+                                Err(Report::msg(err.to_string())
+                                    .wrap_err("failed to clean up temporary security group"))?;
+                                unreachable!();
                             }
                         }
                         Err(e) => {
                             tracing::warn!("failed: {}", e);
-                            break;
+                            Err(Report::new(e)
+                                .wrap_err("failed to clean up temporary security group"))?;
+                            unreachable!();
                         }
                     }
                 }
 
                 tracing::trace!("cleaned up temporary security group");
+                Ok::<_, Report>(())
             }
             .instrument(group_span)
             .await;
+
+            if r.is_err() {
+                res = match res {
+                    Ok(_) => r,
+                    Err(e) => Err(e.wrap_err(r.unwrap_err())),
+                };
+            }
         }
+
+        res
     }
 }
 
@@ -1499,10 +1536,10 @@ mod test {
                     .await?;
 
             if let Err(e) = do_multi_instance_spot_request(&mut ec2).await {
-                ec2.terminate_all().await;
+                ec2.terminate_all().await.unwrap();
                 panic!(e);
             } else {
-                ec2.terminate_all().await;
+                ec2.terminate_all().await.unwrap();
             }
 
             Ok(())
