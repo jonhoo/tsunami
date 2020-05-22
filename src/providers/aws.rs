@@ -1345,8 +1345,10 @@ impl RegionLauncher {
                                 tracing::trace!("instances not yet shut down -- retrying");
                                 tokio::time::delay_for(tokio::time::Duration::from_secs(5)).await;
                             } else {
-                                Err(eyre!(err.to_string()))
-                                    .wrap_err("failed to clean up temporary security group")?;
+                                Err(Report::new(RusotoError::<
+                                    rusoto_ec2::DeleteSecurityGroupError,
+                                >::Unknown(r)))
+                                .wrap_err("failed to clean up temporary security group")?;
                                 unreachable!();
                             }
                         }
