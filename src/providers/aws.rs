@@ -1313,7 +1313,7 @@ impl RegionLauncher {
                     //    block will get skipped, so sg will get cleaned up below.
                     // 2. there were instances, but we couldn't terminate them. Then, the sg will
                     //    still be attached to them, so there's no point trying to delete it.
-                    Err(e).context("failed to terminate tsunami instances")?;
+                    Err(e).wrap_err("failed to terminate tsunami instances")?;
                     unreachable!();
                 }
             }
@@ -1323,7 +1323,7 @@ impl RegionLauncher {
         if !self.security_group_id.trim().is_empty() {
             let group_span =
                 tracing::trace_span!("removing security group", id = %self.security_group_id);
-            let r = async {
+            async {
                 tracing::trace!("removing security group.");
                 // clean up security groups and keys
                 let start = tokio::time::Instant::now();
@@ -1362,9 +1362,7 @@ impl RegionLauncher {
                 Ok::<_, Report>(())
             }
             .instrument(group_span)
-            .await;
-
-            r?;
+            .await?;
         }
 
         Ok(())
