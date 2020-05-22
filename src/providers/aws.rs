@@ -554,12 +554,19 @@ where
                     return Ok(());
                 }
 
-                futures_util::future::join_all(self.regions.drain().map(|(region, mut rl)| {
-                    let region_span = tracing::debug_span!("region", %region);
-                    async move { rl.shutdown().await }.instrument(region_span)
-                }))
-                .await;
-                Ok(())
+                let res =
+                    futures_util::future::join_all(self.regions.drain().map(|(region, mut rl)| {
+                        let region_span = tracing::debug_span!("region", %region);
+                        async move { rl.terminate_all().await }.instrument(region_span)
+                    }))
+                    .await;
+                res.into_iter().fold(Ok(()), |acc, x| match acc {
+                    Ok(_) => x,
+                    Err(a) => match x {
+                        Ok(_) => Err(a),
+                        Err(e) => Err(a.wrap_err(e)),
+                    },
+                })
             }
             .in_current_span(),
         )
@@ -1263,47 +1270,16 @@ impl RegionLauncher {
 
     /// Terminate all running instances.
     ///
-    /// Additionally deletes ephemeral keys and security groups. Note: it is a known issue that
-    /// security groups often will not be deleted, due to timing quirks in the AWS api.
+    /// Additionally deletes ephemeral keys and security groups. Sometimes, this deletion can fail
+    /// for various reasons. This method deletes things in this order:
+    /// 1. Try to delete the key pair, but emit a log message and continue if it fails.
+    /// 2. Try to terminate the instances, and short-circuits to return the error if it fails.
+    /// 3. Try to delete the security group. This can fail as the security groups are still
+    ///    "attached" to the instances we just terminated in step 2. So, we retry for 60
+    ///    seconds before giving up and returning an error.
     #[instrument(level = "debug")]
-    pub async fn shutdown(&mut self) {
+    pub async fn terminate_all(&mut self) -> Result<(), Report> {
         let client = self.client.as_ref().unwrap();
-        // terminate instances
-        if !self.instances.is_empty() {
-            tracing::info!("terminating instances");
-            let instances = self.instances.keys().cloned().collect();
-            self.instances.clear();
-            let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
-            termination_req.instance_ids = instances;
-            while let Err(e) = client.terminate_instances(termination_req.clone()).await {
-                let msg = e.to_string();
-                if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
-                    tracing::trace!("retrying instance termination");
-                    continue;
-                } else {
-                    tracing::warn!("failed to terminate tsunami instances: {}", e);
-                    break;
-                }
-            }
-        }
-
-        tracing::debug!("cleaning up temporary resources");
-        if !self.security_group_id.trim().is_empty() {
-            let group_span = tracing::trace_span!("security_group", id = %self.security_group_id);
-            async {
-                tracing::trace!("removing security group");
-                // clean up security groups and keys
-                // TODO need a retry loop for the security group. Currently, this fails
-                // because AWS takes some time to allow the security group to be deleted.
-                let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
-                req.group_id = Some(self.security_group_id.clone());
-                if let Err(e) = client.delete_security_group(req).await {
-                    tracing::warn!("failed to clean up temporary security group: {}", e);
-                }
-            }
-            .instrument(group_span)
-            .await;
-        }
 
         if !self.ssh_key_name.trim().is_empty() {
             let key_span = tracing::trace_span!("key", name = %self.ssh_key_name);
@@ -1318,6 +1294,80 @@ impl RegionLauncher {
             .instrument(key_span)
             .await;
         }
+
+        // terminate instances
+        if !self.instances.is_empty() {
+            tracing::info!("terminating instances");
+            let instances = self.instances.keys().cloned().collect();
+            self.instances.clear();
+            let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
+            termination_req.instance_ids = instances;
+            while let Err(e) = client.terminate_instances(termination_req.clone()).await {
+                let msg = e.to_string();
+                if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
+                    tracing::trace!("retrying instance termination");
+                    continue;
+                } else {
+                    // Why is `?` here ok? either:
+                    // 1. there was no spot capacity. So self.instances will be empty, and this
+                    //    block will get skipped, so sg will get cleaned up below.
+                    // 2. there were instances, but we couldn't terminate them. Then, the sg will
+                    //    still be attached to them, so there's no point trying to delete it.
+                    Err(e).wrap_err("failed to terminate tsunami instances")?;
+                    unreachable!();
+                }
+            }
+        }
+
+        use rusoto_core::RusotoError;
+        if !self.security_group_id.trim().is_empty() {
+            let group_span =
+                tracing::trace_span!("removing security group", id = %self.security_group_id);
+            async {
+                tracing::trace!("removing security group.");
+                // clean up security groups and keys
+                let start = tokio::time::Instant::now();
+                loop {
+                    if start.elapsed() > tokio::time::Duration::from_secs(60) {
+                        Err(Report::msg(
+                            "failed to clean up temporary security group after 60 seconds.",
+                        ))?;
+                        unreachable!();
+                    }
+
+                    let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
+                    req.group_id = Some(self.security_group_id.clone());
+                    match client.delete_security_group(req).await {
+                        Ok(_) => break,
+                        Err(RusotoError::Unknown(r)) => {
+                            let err = r.body_as_str();
+                            if err.contains("<Code>DependencyViolation</Code>") {
+                                tracing::trace!("instances not yet shut down -- retrying");
+                                tokio::time::delay_for(tokio::time::Duration::from_secs(5)).await;
+                            } else {
+                                Err(Report::new(RusotoError::<
+                                    rusoto_ec2::DeleteSecurityGroupError,
+                                >::Unknown(r)))
+                                .wrap_err("failed to clean up temporary security group")?;
+                                unreachable!();
+                            }
+                        }
+                        Err(e) => {
+                            Err(Report::new(e)
+                                .wrap_err("failed to clean up temporary security group"))?;
+                            unreachable!();
+                        }
+                    }
+                }
+
+                tracing::trace!("cleaned up temporary security group");
+                Ok::<_, Report>(())
+            }
+            .instrument(group_span)
+            .await?;
+        }
+
+        Ok(())
     }
 }
 
@@ -1394,6 +1444,7 @@ mod test {
     #[ignore]
     fn make_machine_and_ssh_setupfn() {
         use crate::providers::Launcher;
+        tracing_subscriber::fmt::init();
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         let mut l = super::Launcher::default();
         // make the defined-duration instances expire after 1 hour
@@ -1418,8 +1469,11 @@ mod test {
         let ec2 = RegionLauncher::connect(region, super::AvailabilityZoneSpec::Any, provider)?;
         rt.block_on(async {
             let mut ec2 = ec2.make_ssh_key().await?;
-            println!("==> key name: {}", ec2.ssh_key_name);
-            println!("==> key path: {:?}", ec2.private_key_path);
+            tracing::debug!(
+                name = %ec2.ssh_key_name,
+                path = %ec2.private_key_path.as_ref().unwrap().path().display(),
+                "made key"
+            );
             assert!(!ec2.ssh_key_name.is_empty());
             assert!(ec2.private_key_path.as_ref().unwrap().path().exists());
 
@@ -1470,10 +1524,10 @@ mod test {
                     .await?;
 
             if let Err(e) = do_multi_instance_spot_request(&mut ec2).await {
-                ec2.shutdown().await;
+                ec2.terminate_all().await.unwrap();
                 panic!(e);
             } else {
-                ec2.shutdown().await;
+                ec2.terminate_all().await.unwrap();
             }
 
             Ok(())
