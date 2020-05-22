@@ -1270,12 +1270,31 @@ impl RegionLauncher {
 
     /// Terminate all running instances.
     ///
-    /// Additionally deletes ephemeral keys and security groups. Note: it is a known issue that
-    /// security groups often will not be deleted, due to timing quirks in the AWS api.
+    /// Additionally deletes ephemeral keys and security groups. Sometimes, this deletion can fail
+    /// for various reasons. This method deletes things in this order:
+    /// 1. Try to delete the key pair, but emit a log message and continue if it fails.
+    /// 2. Try to terminate the instances, and short-circuits to return the error if it fails.
+    /// 3. Try to delete the security group. This can fail as the security groups are still
+    ///    "attached" to the instances we just terminated in step 2. So, we retry for 60
+    ///    seconds before giving up and returning an error.
     #[instrument(level = "debug")]
     pub async fn terminate_all(&mut self) -> Result<(), Report> {
-        let mut res = Ok(());
         let client = self.client.as_ref().unwrap();
+
+        if !self.ssh_key_name.trim().is_empty() {
+            let key_span = tracing::trace_span!("key", name = %self.ssh_key_name);
+            async {
+                tracing::trace!("removing keypair");
+                let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
+                req.key_name = self.ssh_key_name.clone();
+                if let Err(e) = client.delete_key_pair(req).await {
+                    tracing::warn!("failed to clean up temporary SSH key: {}", e);
+                }
+            }
+            .instrument(key_span)
+            .await;
+        }
+
         // terminate instances
         if !self.instances.is_empty() {
             tracing::info!("terminating instances");
@@ -1289,40 +1308,14 @@ impl RegionLauncher {
                     tracing::trace!("retrying instance termination");
                     continue;
                 } else {
-                    tracing::warn!("failed to terminate tsunami instances: {}", e);
-                    let e = Err(e).context("failed to terminate tsunami instances");
-                    res = match res {
-                        Ok(_) => e,
-                        Err(r) => Err(r.wrap_err(e.unwrap_err())),
-                    };
-                    break;
-                }
-            }
-        }
-
-        tracing::debug!("cleaning up temporary resources");
-        if !self.ssh_key_name.trim().is_empty() {
-            let key_span = tracing::trace_span!("key", name = %self.ssh_key_name);
-            let r = async {
-                tracing::trace!("removing keypair");
-                let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
-                req.key_name = self.ssh_key_name.clone();
-                if let Err(e) = client.delete_key_pair(req).await {
-                    tracing::warn!("failed to clean up temporary SSH key: {}", e);
-                    Err(e).context("failed to clean up temporary SSH key")?;
+                    // Why is `?` here ok? either:
+                    // 1. there was no spot capacity. So self.instances will be empty, and this
+                    //    block will get skipped, so sg will get cleaned up below.
+                    // 2. there were instances, but we couldn't terminate them. Then, the sg will
+                    //    still be attached to them, so there's no point trying to delete it.
+                    Err(e).context("failed to terminate tsunami instances")?;
                     unreachable!();
                 }
-
-                Ok(())
-            }
-            .instrument(key_span)
-            .await;
-
-            if r.is_err() {
-                res = match res {
-                    Ok(_) => r,
-                    Err(e) => Err(e.wrap_err(r.unwrap_err())),
-                };
             }
         }
 
@@ -1371,15 +1364,10 @@ impl RegionLauncher {
             .instrument(group_span)
             .await;
 
-            if r.is_err() {
-                res = match res {
-                    Ok(_) => r,
-                    Err(e) => Err(e.wrap_err(r.unwrap_err())),
-                };
-            }
+            r?;
         }
 
-        res
+        Ok(())
     }
 }
 
