@@ -765,7 +765,7 @@ impl RegionLauncher {
             req.cidr_ip = Some("172.31.0.0/16".to_string());
         }
 
-        tracing::trace!("adding internal VM access");
+        tracing::trace!("adding intra-vm tcp access");
         ec2.authorize_security_group_ingress(req.clone())
             .await
             .wrap_err("failed to fill in security group for new machines")?;
@@ -779,7 +779,7 @@ impl RegionLauncher {
             req.cidr_ip = Some("172.31.0.0/16".to_string());
         }
 
-        tracing::trace!("adding internal VM access");
+        tracing::trace!("adding intra-vm udp access");
         ec2.authorize_security_group_ingress(req)
             .await
             .wrap_err("failed to fill in security group for new machines")?;
