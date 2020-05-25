@@ -1275,8 +1275,8 @@ impl RegionLauncher {
     /// 1. Try to delete the key pair, but emit a log message and continue if it fails.
     /// 2. Try to terminate the instances, and short-circuits to return the error if it fails.
     /// 3. Try to delete the security group. This can fail as the security groups are still
-    ///    "attached" to the instances we just terminated in step 2. So, we retry for 60
-    ///    seconds before giving up and returning an error.
+    ///    "attached" to the instances we just terminated in step 2. So, we retry for 2 minutes
+    ///    before giving up and returning an error.
     #[instrument(level = "debug")]
     pub async fn terminate_all(&mut self) -> Result<(), Report> {
         let client = self.client.as_ref().unwrap();
@@ -1328,9 +1328,9 @@ impl RegionLauncher {
                 // clean up security groups and keys
                 let start = tokio::time::Instant::now();
                 loop {
-                    if start.elapsed() > tokio::time::Duration::from_secs(60) {
+                    if start.elapsed() > tokio::time::Duration::from_secs(2 * 60) {
                         Err(Report::msg(
-                            "failed to clean up temporary security group after 60 seconds.",
+                            "failed to clean up temporary security group after 120 seconds.",
                         ))?;
                         unreachable!();
                     }
