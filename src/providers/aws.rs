@@ -395,9 +395,9 @@ where
             if !regions.contains_key(&l.region) {
                 let region_span = tracing::debug_span!("new_region", name = %l.region, az = %l.machines[0].1.availability_zone);
                 let awsregion = RegionLauncher::new(
-                    &l.region.to_string(),
-                    // availability_zone spec is guaranteed to be the same because it's included in
-                    // the region specifier.
+                    // region name and availability_zone spec are guaranteed to be the same because
+                    // they are included in the region specifier.
+                    l.machines[0].1.region.name(),
                     l.machines[0].1.availability_zone.clone(),
                     prov,
                     *use_open_ports,
@@ -457,9 +457,9 @@ where
                         let prov = (*self.credential_provider)().unwrap();
                         async move {
                             let awsregion = RegionLauncher::new(
-                                &region_name.to_string(),
-                                // availability_zone spec is guaranteed to be the same because it's included in
-                                // the region specifier.
+                                // region name and availability_zone spec are guaranteed to be the
+                                // same because they are included in the region specifier.
+                                s[0].1.region.name(),
                                 s[0].1.availability_zone.clone(),
                                 prov,
                                 use_open_ports,
