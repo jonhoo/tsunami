@@ -613,7 +613,7 @@ pub struct RegionLauncher {
     private_key_path: Option<tempfile::NamedTempFile>,
     #[educe(Debug(ignore))]
     client: Option<rusoto_ec2::Ec2Client>,
-    outstanding_spot_request_ids: HashMap<String, TaggedSetup>,
+    spot_requests: HashMap<String, TaggedSetup>,
     instances: HashMap<String, TaggedSetup>,
 }
 
@@ -670,7 +670,7 @@ impl RegionLauncher {
                 tempfile::NamedTempFile::new()
                     .wrap_err("failed to create temporary file for keypair")?,
             ),
-            outstanding_spot_request_ids: Default::default(),
+            spot_requests: Default::default(),
             instances: Default::default(),
             client: Some(ec2),
         })
@@ -846,7 +846,7 @@ impl RegionLauncher {
         tracing::info!("launching spot requests");
 
         // minimize the number of spot requests:
-        for (group, reqs) in machines
+        for ((ami, instance_type), reqs) in machines
             .into_iter()
             .map(|(name, m)| {
                 // attach labels (ami name, instance type):
@@ -856,12 +856,12 @@ impl RegionLauncher {
             .into_group_map()
         // group by the labels
         {
-            let spot_span = tracing::debug_span!("spot_request", params = ?group);
+            let spot_span = tracing::debug_span!("spot_request", ?ami, ?instance_type);
             async {
                 // and issue one spot request per group
                 let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
-                launch.image_id = Some(reqs[0].1.ami.clone());
-                launch.instance_type = Some(reqs[0].1.instance_type.clone());
+                launch.image_id = Some(ami);
+                launch.instance_type = Some(instance_type);
                 launch.placement = {
                     if let AvailabilityZoneSpec::Any = self.availability_zone {
                         None
@@ -922,9 +922,8 @@ impl RegionLauncher {
                     .expect("request_spot_instances should always return spot instance requests")
                     .into_iter()
                     .filter_map(|sir| sir.spot_instance_request_id)
-                    .map(|sir| {
-                        tracing::trace!(id = %sir, "activated spot request");
-                        sir
+                    .inspect(|request_id| {
+                        tracing::trace!(id = %request_id, "activated spot request");
                     })
                     .collect();
 
@@ -936,12 +935,14 @@ impl RegionLauncher {
                     reqs.len(),
                 );
 
-                for (sir, req) in spot_instance_requests.into_iter().zip_eq(reqs.into_iter()) {
-                    self.outstanding_spot_request_ids.insert(
-                        sir,
+                for (request_id, (name, setup)) in
+                    spot_instance_requests.into_iter().zip_eq(reqs.into_iter())
+                {
+                    self.spot_requests.insert(
+                        request_id,
                         TaggedSetup {
-                            name: req.0,
-                            setup: req.1,
+                            name,
+                            setup,
                             ip_info: None,
                         },
                     );
@@ -972,127 +973,44 @@ impl RegionLauncher {
         tracing::info!("waiting for instances to spawn");
 
         let start = time::Instant::now();
-        let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
-        req.spot_instance_request_ids =
-            Some(self.outstanding_spot_request_ids.keys().cloned().collect());
-        let client = self.client.as_ref().unwrap();
+        let request_ids = self.spot_requests.keys().cloned().collect();
 
         loop {
             tracing::trace!("checking spot request status");
+            let instances = self.describe_spot_instance_requests(&request_ids).await?;
 
-            let res = client.describe_spot_instance_requests(req.clone()).await;
-            if let Err(ref e) = res {
-                let msg = e.to_string();
-                if msg.contains("The spot instance request ID") && msg.contains("does not exist") {
-                    tracing::trace!("spot instance requests not yet ready");
-                    continue;
+            let all_active = instances.iter().all(|(request_id, state, instance_id)| {
+                if state == "active" && instance_id.is_some() {
+                    tracing::trace!(%request_id, %state, ?instance_id, "spot instance request ready");
+                    true
                 } else {
-                    res.wrap_err("failed to describe spot instances")?;
-                    unreachable!();
+                    false
                 }
-            }
-            let res = res.expect("Err checked above");
+            });
 
-            let any_pending = res
-                .spot_instance_requests
-                .as_ref()
-                .expect("describe always returns at least one spot instance")
-                .iter()
-                .map(|sir| {
-                    (
-                        sir,
-                        sir.state
-                            .as_ref()
-                            .expect("spot request did not have state specified"),
-                    )
-                })
-                .any(|(sir, state)| {
-                    if state == "open" || (state == "active" && sir.instance_id.is_none()) {
-                        true
-                    } else {
-                        tracing::trace!(%state, id = %sir.spot_instance_request_id.as_ref().unwrap(), "spot request ready");
-                        false
-                    }
-                });
-
-            if !any_pending {
+            if all_active {
                 // unwraps okay because they are the same as expects above
-                self.instances = res
-                    .spot_instance_requests
-                    .unwrap()
+                self.instances = instances
                     .into_iter()
-                    .filter_map(|sir| {
-                        let state = sir.state.as_ref().unwrap();
-                        if state == "active" {
-                            // unwrap ok because active implies instance_id.is_some()
-                            // because !any_pending
-                            let instance_id = sir.instance_id.unwrap();
-                            tracing::trace!(instance = %instance_id, "spot request satisfied");
-
-                            Some((
-                                instance_id,
-                                self.outstanding_spot_request_ids
-                                    .remove(&sir.spot_instance_request_id.unwrap())
-                                    .unwrap(),
-                            ))
-                        } else {
-                            tracing::error!(%state, "spot request failed: {:?}", &sir.status);
-                            None
-                        }
+                    .map(|(request_id, state, instance_id)| {
+                        assert_eq!(state, "active");
+                        let instance_id = instance_id.unwrap();
+                        let setup = self.spot_requests.get(&request_id).cloned().unwrap();
+                        (instance_id, setup)
                     })
                     .collect();
                 break;
-            } else {
-                tokio::time::delay_for(time::Duration::from_secs(1)).await;
             }
 
             if let Some(wait_limit) = max_wait {
                 if start.elapsed() <= wait_limit {
                     continue;
                 }
-
-                tracing::warn!("wait time exceeded -- cancelling run");
-                let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
-                cancel.spot_instance_request_ids = req
-                    .spot_instance_request_ids
-                    .clone()
-                    .expect("we set this to Some above");
-                client
-                    .cancel_spot_instance_requests(cancel)
-                    .await
-                    .wrap_err("failed to cancel spot instances")?;
-
-                tracing::trace!("spot instances cancelled -- gathering remaining instances");
-                // wait for a little while for the cancelled spot requests to settle
-                // and any that were *just* made active to be associated with their instances
-                tokio::time::delay_for(time::Duration::from_secs(1)).await;
-
-                let sirs = client
-                    .describe_spot_instance_requests(req)
-                    .await
-                    .wrap_err("failed to inspect canceled spot requests")?
-                    .spot_instance_requests
-                    .unwrap_or_else(Vec::new);
-                for sir in sirs {
-                    let req_id = sir.spot_instance_request_id.unwrap();
-                    match sir.instance_id {
-                        Some(instance_id) => {
-                            tracing::trace!(
-                                %req_id,
-                                iid = %instance_id,
-                                "spot request cancelled"
-                            );
-                        }
-                        _ => {
-                            tracing::error!(
-                                %req_id,
-                                "spot request failed: {:?}", &sir.status,
-                            );
-                        }
-                    }
-                }
-                eyre::bail!("wait limit reached");
+                self.cancel_spot_instance_requests(&request_ids).await?;
             }
+
+            // let's not hammer the API
+            tokio::time::delay_for(time::Duration::from_secs(1)).await;
         }
 
         Ok(())
@@ -1177,10 +1095,12 @@ impl RegionLauncher {
                 }
             }
 
-            if let Some(to) = max_wait {
-                if time::Instant::now().duration_since(start) > to {
-                    eyre::bail!("timed out");
+            if let Some(wait_limit) = max_wait {
+                if start.elapsed() <= wait_limit {
+                    continue;
                 }
+                let request_ids = self.spot_requests.keys().cloned().collect();
+                self.cancel_spot_instance_requests(&request_ids).await?;
             }
 
             // let's not hammer the API
@@ -1298,25 +1218,9 @@ impl RegionLauncher {
         // terminate instances
         if !self.instances.is_empty() {
             tracing::info!("terminating instances");
-            let instances = self.instances.keys().cloned().collect();
+            let instance_ids = self.instances.keys().cloned().collect();
             self.instances.clear();
-            let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
-            termination_req.instance_ids = instances;
-            while let Err(e) = client.terminate_instances(termination_req.clone()).await {
-                let msg = e.to_string();
-                if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
-                    tracing::trace!("retrying instance termination");
-                    continue;
-                } else {
-                    // Why is `?` here ok? either:
-                    // 1. there was no spot capacity. So self.instances will be empty, and this
-                    //    block will get skipped, so sg will get cleaned up below.
-                    // 2. there were instances, but we couldn't terminate them. Then, the sg will
-                    //    still be attached to them, so there's no point trying to delete it.
-                    Err(e).wrap_err("failed to terminate tsunami instances")?;
-                    unreachable!();
-                }
-            }
+            self.terminate_instances(instance_ids).await?;
         }
 
         use rusoto_core::RusotoError;
@@ -1367,6 +1271,118 @@ impl RegionLauncher {
             .await?;
         }
 
+        Ok(())
+    }
+
+    #[instrument(level = "debug")]
+    async fn describe_spot_instance_requests(
+        &self,
+        request_ids: &Vec<String>,
+    ) -> Result<Vec<(String, String, Option<String>)>, Report> {
+        let client = self.client.as_ref().unwrap();
+        loop {
+            let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
+            req.spot_instance_request_ids = Some(request_ids.clone());
+
+            let res = client.describe_spot_instance_requests(req).await;
+            if let Err(ref e) = res {
+                let msg = e.to_string();
+                if msg.contains("The spot instance request ID") && msg.contains("does not exist") {
+                    tracing::trace!("spot instance requests not yet ready");
+                    continue;
+                } else {
+                    res.wrap_err("failed to describe spot instances")?;
+                    unreachable!();
+                }
+            }
+
+            let res = res.expect("Err checked above");
+            let instances = res
+                .spot_instance_requests
+                .expect("describe always returns at least one spot instance")
+                .into_iter()
+                .map(|sir| {
+                    let request_id = sir
+                        .spot_instance_request_id
+                        .expect("spot request did not have id specified");
+                    let state = sir
+                        .state
+                        .expect("spot request did not have state specified");
+                    let instance_id = sir.instance_id;
+                    (request_id, state, instance_id)
+                })
+                .collect();
+            break Ok(instances);
+        }
+    }
+
+    #[instrument(level = "debug")]
+    async fn cancel_spot_instance_requests(&self, request_ids: &Vec<String>) -> Result<(), Report> {
+        tracing::warn!("wait time exceeded -- cancelling run");
+        let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
+        cancel.spot_instance_request_ids = request_ids.clone();
+        self.client
+            .as_ref()
+            .unwrap()
+            .cancel_spot_instance_requests(cancel)
+            .await
+            .wrap_err("failed to cancel spot instances")?;
+
+        tracing::trace!("spot instances cancelled -- waiting for cancellation");
+        loop {
+            tracing::trace!("checking spot request status");
+            let instances = self.describe_spot_instance_requests(&request_ids).await?;
+
+            let all_cancelled = instances.iter().all(|(request_id, state, instance_id)| {
+                if state == "closed" || state == "cancelled" || state == "completed" {
+                    tracing::trace!(%request_id, %state, ?instance_id, "spot instance request cancelled");
+                    true
+                } else {
+                    false
+                }
+            });
+
+            if all_cancelled {
+                tracing::trace!("deleting spot instances");
+                // find instances with an id assigned and terminate them
+                let instance_ids = instances
+                    .into_iter()
+                    .filter_map(|(_, _, instance_id)| instance_id)
+                    .collect();
+                self.terminate_instances(instance_ids).await?;
+                break;
+            } else {
+                // let's not hammer the API
+                tokio::time::delay_for(time::Duration::from_secs(1)).await;
+            }
+        }
+
+        eyre::bail!("wait limit reached");
+    }
+
+    #[instrument(level = "debug")]
+    async fn terminate_instances(&self, instance_ids: Vec<String>) -> Result<(), Report> {
+        if instance_ids.is_empty() {
+            return Ok(());
+        }
+        let client = self.client.as_ref().unwrap();
+        let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
+        termination_req.instance_ids = instance_ids;
+        while let Err(e) = client.terminate_instances(termination_req.clone()).await {
+            let msg = e.to_string();
+            if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
+                tracing::trace!("retrying instance termination");
+                continue;
+            } else {
+                // Why is `?` here ok? either:
+                // 1. there was no spot capacity. So self.instances will be empty, and this
+                //    block will get skipped, so sg will get cleaned up below.
+                // 2. there were instances, but we couldn't terminate them. Then, the sg will
+                //    still be attached to them, so there's no point trying to delete it.
+                Err(e).wrap_err("failed to terminate tsunami instances")?;
+                unreachable!();
+            }
+        }
         Ok(())
     }
 }
@@ -1503,7 +1519,7 @@ mod test {
 
             tracing::debug!(num = %ms.len(), "make spot instance requests");
             ec2.make_spot_instance_requests(60 as _, ms).await?;
-            assert_eq!(ec2.outstanding_spot_request_ids.len(), 5);
+            assert_eq!(ec2.spot_requests.len(), 5);
             tracing::debug!("wait for spot instance requests");
             ec2.wait_for_spot_instance_requests(None).await?;
 
