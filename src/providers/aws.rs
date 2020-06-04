@@ -1286,7 +1286,7 @@ impl RegionLauncher {
             async {
                 tracing::trace!("removing keypair");
                 let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
-                req.key_name = self.ssh_key_name.clone();
+                req.key_name = Some(self.ssh_key_name.clone());
                 if let Err(e) = client.delete_key_pair(req).await {
                     tracing::warn!("failed to clean up temporary SSH key: {}", e);
                 }
@@ -1478,7 +1478,7 @@ mod test {
             assert!(ec2.private_key_path.as_ref().unwrap().path().exists());
 
             let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
-            req.key_name = ec2.ssh_key_name.clone();
+            req.key_name = Some(ec2.ssh_key_name.clone());
             ec2.client
                 .as_mut()
                 .unwrap()
