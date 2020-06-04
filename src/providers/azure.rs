@@ -112,6 +112,8 @@ pub struct Setup {
     image: String,
     username: String,
     #[educe(Debug(ignore))]
+    ssh_setup_fn: Option<Arc<dyn Fn(&mut ssh::SessionBuilder) + Send + Sync>>,
+    #[educe(Debug(ignore))]
     setup_fn: Option<
         Arc<
             dyn for<'r> Fn(
@@ -120,7 +122,6 @@ pub struct Setup {
                     -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
                 + Send
                 + Sync
-                + 'static,
         >,
     >,
 }
@@ -132,6 +133,7 @@ impl Default for Setup {
             instance_type: "Standard_B1s".to_string(),
             image: "UbuntuLTS".to_string(),
             username: "ubuntu".to_string(),
+            ssh_setup_fn: None,
             setup_fn: None,
         }
     }
@@ -177,6 +179,14 @@ impl Setup {
     /// Set the username.
     pub fn username(mut self, username: String) -> Self {
         self.username = username;
+        self
+    }
+
+    pub fn ssh_setup(
+        mut self,
+        ssh_setup: impl Fn(&mut ssh::SessionBuilder) + Send + Sync + 'static,
+    ) -> Self {
+        self.ssh_setup_fn = Some(Arc::new(ssh_setup));
         self
     }
 
@@ -298,7 +308,7 @@ pub(crate) struct IpInfo {
 #[derive(Debug, Clone)]
 struct Descriptor {
     name: String,
-    username: String,
+    setup: Setup,
     ip: IpInfo,
 }
 
@@ -347,8 +357,8 @@ impl super::Launcher for RegionLauncher {
             async move {
                 let max_wait = l.max_wait;
                 self.machines = futures_util::future::join_all(l.machines.into_iter().map(
-                    |(nickname, desc)| {
-                        let machine_span = tracing::debug_span!("machine", %nickname, ?desc);
+                    |(nickname, setup)| {
+                        let machine_span = tracing::debug_span!("machine", %nickname, ?setup);
                         async {
                             let vm_name = super::rand_name_sep("vm", "-");
                             tracing::debug!(%vm_name, "setting up instance");
@@ -356,33 +366,35 @@ impl super::Launcher for RegionLauncher {
                             let ipinfo = azcmd::create_vm(
                                 &self.resource_group_name,
                                 &vm_name,
-                                &desc.instance_type,
-                                &desc.image,
-                                &desc.username,
+                                &setup.instance_type,
+                                &setup.image,
+                                &setup.username,
                             )
                             .await?;
                             azcmd::open_ports(&self.resource_group_name, &vm_name).await?;
 
                             if let Setup {
                                 ref username,
-                                setup_fn: Some(ref f),
+                                ref ssh_setup_fn,
+                                setup_fn: Some(ref setup_fn),
                                 ..
-                            } = desc
+                            } = setup
                             {
                                 super::setup_machine(
                                     &nickname,
                                     &ipinfo.public_ip,
-                                    &username,
+                                    username,
                                     max_wait,
                                     None,
-                                    f.as_ref(),
+                                    ssh_setup_fn,
+                                    setup_fn,
                                 )
                                 .await?;
                             }
 
                             Ok::<_, Report>(Descriptor {
                                 name: nickname,
-                                username: desc.username,
+                                setup,
                                 ip: ipinfo,
                             })
                         }
@@ -412,7 +424,7 @@ impl super::Launcher for RegionLauncher {
 
                     let Descriptor {
                         name,
-                        username,
+                        setup,
                         ip:
                             IpInfo {
                                 public_ip,
@@ -428,7 +440,9 @@ impl super::Launcher for RegionLauncher {
                     };
 
                     async move {
-                        let m = m.connect_ssh(username, None, None, 22).await?;
+                        let m = m
+                            .connect_ssh(&setup.username, None, None, 22, &setup.ssh_setup_fn)
+                            .await?;
                         Ok::<_, Report>((name.clone(), m))
                     }
                     .instrument(machine_span)

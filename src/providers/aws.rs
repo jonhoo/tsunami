@@ -156,6 +156,8 @@ pub struct Setup {
     ami: String,
     username: String,
     #[educe(Debug(ignore))]
+    ssh_setup_fn: Option<Arc<dyn Fn(&mut ssh::SessionBuilder) + Send + Sync>>,
+    #[educe(Debug(ignore))]
     setup_fn: Option<
         Arc<
             dyn for<'r> Fn(
@@ -163,8 +165,7 @@ pub struct Setup {
                 )
                     -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
                 + Send
-                + Sync
-                + 'static,
+                + Sync,
         >,
     >,
 }
@@ -189,6 +190,7 @@ impl Default for Setup {
             instance_type: "t3.small".into(),
             ami: String::from("ami-085925f297f89fce1"),
             username: "ubuntu".into(),
+            ssh_setup_fn: None,
             setup_fn: None,
         }
     }
@@ -238,6 +240,14 @@ impl Setup {
     /// Instance types](https://aws.amazon.com/ec2/spot/pricing/) are allowed.
     pub fn instance_type(mut self, typ: impl ToString) -> Self {
         self.instance_type = typ.to_string();
+        self
+    }
+
+    pub fn ssh_setup(
+        mut self,
+        ssh_setup: impl Fn(&mut ssh::SessionBuilder) + Send + Sync + 'static,
+    ) -> Self {
+        self.ssh_setup_fn = Some(Arc::new(ssh_setup));
         self
     }
 
@@ -1070,6 +1080,7 @@ impl RegionLauncher {
                                         Some(private_key_path.path()),
                                         max_wait,
                                         22,
+                                        &tag_setup.setup.ssh_setup_fn,
                                     )
                                     .await
                                 {
@@ -1121,17 +1132,19 @@ impl RegionLauncher {
                 async move {
                     if let Setup {
                         username,
-                        setup_fn: Some(f),
+                        ssh_setup_fn,
+                        setup_fn: Some(ref setup_fn),
                         ..
                     } = setup
                     {
                         super::setup_machine(
-                            &name,
-                            &public_ip,
-                            &username,
+                            name,
+                            public_ip,
+                            username,
                             max_wait,
                             Some(private_key_path.path()),
-                            f.as_ref(),
+                            ssh_setup_fn,
+                            setup_fn,
                         )
                         .await?;
                     }
@@ -1157,7 +1170,7 @@ impl RegionLauncher {
                 match info {
                     TaggedSetup {
                         name,
-                        setup: Setup { username, .. },
+                        setup,
                         ip_info:
                             Some(IpInfo {
                                 public_dns,
@@ -1174,7 +1187,13 @@ impl RegionLauncher {
                         };
 
                         let m = m
-                            .connect_ssh(&username, Some(private_key_path.path()), None, 22)
+                            .connect_ssh(
+                                &setup.username,
+                                Some(private_key_path.path()),
+                                None,
+                                22,
+                                &setup.ssh_setup_fn,
+                            )
                             .await?;
                         Ok((name.clone(), m))
                     }

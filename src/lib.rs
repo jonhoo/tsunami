@@ -148,6 +148,7 @@ pub use ssh::Session;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use tracing::instrument;
 
 pub mod providers;
@@ -190,13 +191,14 @@ pub struct Machine<'tsunami> {
 
 impl<'t> MachineDescriptor<'t> {
     #[cfg(any(feature = "aws", feature = "azure", feature = "baremetal"))]
-    #[instrument(level = "debug", skip(key_path, timeout))]
+    #[instrument(level = "debug", skip(key_path, timeout, ssh_setup_fn))]
     async fn connect_ssh(
         self,
         username: &str,
         key_path: Option<&std::path::Path>,
         timeout: Option<std::time::Duration>,
         port: u16,
+        ssh_setup_fn: &Option<Arc<dyn Fn(&mut ssh::SessionBuilder) + Send + Sync>>,
     ) -> Result<Machine<'t>, Report> {
         let mut sess = ssh::SessionBuilder::default();
 
@@ -208,6 +210,10 @@ impl<'t> MachineDescriptor<'t> {
 
         if let Some(t) = timeout {
             sess.connect_timeout(t);
+        }
+
+        if let Some(ref setup) = ssh_setup_fn {
+            setup(&mut sess);
         }
 
         tracing::trace!("connecting");

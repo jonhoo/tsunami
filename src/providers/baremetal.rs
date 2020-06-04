@@ -23,6 +23,8 @@ pub struct Setup {
     username: String,
     key_path: Option<std::path::PathBuf>,
     #[educe(Debug(ignore))]
+    ssh_setup_fn: Option<Arc<dyn Fn(&mut ssh::SessionBuilder) + Send + Sync>>,
+    #[educe(Debug(ignore))]
     setup_fn: Option<
         Arc<
             dyn for<'r> Fn(
@@ -30,8 +32,7 @@ pub struct Setup {
                 )
                     -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
                 + Send
-                + Sync
-                + 'static,
+                + Sync,
         >,
     >,
 }
@@ -71,6 +72,7 @@ impl Setup {
             username,
             addr,
             key_path: None,
+            ssh_setup_fn: None,
             setup_fn: None,
         })
     }
@@ -81,6 +83,14 @@ impl Setup {
             key_path: Some(p.as_ref().to_path_buf()),
             ..self
         }
+    }
+
+    pub fn ssh_setup(
+        mut self,
+        ssh_setup: impl Fn(&mut ssh::SessionBuilder) + Send + Sync + 'static,
+    ) -> Self {
+        self.ssh_setup_fn = Some(Arc::new(ssh_setup));
+        self
     }
 
     /// Specify instance setup.
@@ -119,13 +129,13 @@ impl Setup {
     }
 }
 
-#[instrument(level = "trace", skip(s, max_wait))]
+#[instrument(level = "trace", skip(setup, max_wait))]
 async fn try_addrs(
-    s: &mut Setup,
+    setup: &mut Setup,
     max_wait: Option<std::time::Duration>,
 ) -> Result<std::net::SocketAddr, Report> {
     let mut errs = Vec::new();
-    while let Some(addr) = s.addr.pop() {
+    while let Some(addr) = setup.addr.pop() {
         let host_span = tracing::debug_span!("host", host = %addr);
         let ret = async {
             tracing::trace!("testing address");
@@ -139,7 +149,13 @@ async fn try_addrs(
             };
 
             match m
-                .connect_ssh(&s.username, s.key_path.as_deref(), max_wait, addr.port())
+                .connect_ssh(
+                    &setup.username,
+                    setup.key_path.as_deref(),
+                    max_wait,
+                    addr.port(),
+                    &setup.ssh_setup_fn,
+                )
                 .await
             {
                 Err(e) => {
@@ -176,12 +192,15 @@ async fn try_addrs(
 /// be ignored, since it doesn't make sense to connect to the same machine twice.
 ///
 /// The `impl Drop` of this type is a no-op, since Tsunami can't terminate an existing machine.
-#[derive(Debug, Default)]
+#[derive(Default, Educe)]
+#[educe(Debug)]
 pub struct Machine {
     name: String,
     addr: Option<std::net::SocketAddr>,
     username: String,
     key_path: Option<std::path::PathBuf>,
+    #[educe(Debug(ignore))]
+    ssh_setup_fn: Option<Arc<dyn Fn(&mut ssh::SessionBuilder) + Send + Sync>>,
 }
 
 impl super::Launcher for Machine {
@@ -212,6 +231,7 @@ impl super::Launcher for Machine {
             if let Setup {
                 ref username,
                 ref key_path,
+                ref ssh_setup_fn,
                 setup_fn: Some(ref f),
                 ..
             } = setup
@@ -225,7 +245,13 @@ impl super::Launcher for Machine {
                 };
 
                 let mut m = m
-                    .connect_ssh(&username, key_path.as_deref(), l.max_wait, addr.port())
+                    .connect_ssh(
+                        &username,
+                        key_path.as_deref(),
+                        l.max_wait,
+                        addr.port(),
+                        ssh_setup_fn,
+                    )
                     .await?;
 
                 f(&mut m.ssh).await.wrap_err("setup procedure failed")?;
@@ -236,6 +262,7 @@ impl super::Launcher for Machine {
             self.addr = Some(addr);
             self.username = setup.username;
             self.key_path = setup.key_path;
+            self.ssh_setup_fn = setup.ssh_setup_fn;
             Ok(())
         })
     }
@@ -257,7 +284,13 @@ impl super::Launcher for Machine {
             };
 
             let m = m
-                .connect_ssh(&self.username, self.key_path.as_deref(), None, addr.port())
+                .connect_ssh(
+                    &self.username,
+                    self.key_path.as_deref(),
+                    None,
+                    addr.port(),
+                    &self.ssh_setup_fn,
+                )
                 .await?;
 
             let mut hmap: HashMap<String, crate::Machine<'l>> = Default::default();

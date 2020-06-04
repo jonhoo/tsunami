@@ -1,11 +1,13 @@
 //! Implements backend functionality to spawn machines.
 
+use crate::ssh;
 use color_eyre::Report;
 use eyre::WrapErr;
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use tracing::instrument;
 use tracing_futures::Instrument;
 
@@ -168,18 +170,21 @@ fn rand_name_sep(prefix: &str, sep: impl Into<Sep>) -> String {
 }
 
 #[cfg(any(feature = "aws", feature = "azure"))]
-#[instrument(skip(max_wait, private_key, f))]
+#[instrument(skip(max_wait, private_key, ssh_setup_fn, setup_fn))]
 async fn setup_machine(
     nickname: &str,
     pub_ip: &str,
     username: &str,
     max_wait: Option<std::time::Duration>,
     private_key: Option<&std::path::Path>,
-    f: &(dyn for<'r> Fn(
-        &'r mut crate::ssh::Session,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
-          + Send
-          + Sync),
+    ssh_setup_fn: &Option<Arc<dyn Fn(&mut ssh::SessionBuilder) + Send + Sync>>,
+    setup_fn: &Arc<
+        dyn for<'r> Fn(
+                &'r mut ssh::Session,
+            ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
+            + Send
+            + Sync,
+    >,
 ) -> Result<(), Report> {
     let m = crate::MachineDescriptor {
         nickname: Default::default(),
@@ -189,10 +194,14 @@ async fn setup_machine(
         _tsunami: Default::default(),
     };
 
-    let mut m = m.connect_ssh(username, private_key, max_wait, 22).await?;
+    let mut m = m
+        .connect_ssh(username, private_key, max_wait, 22, ssh_setup_fn)
+        .await?;
 
     tracing::debug!("setting up instance");
-    f(&mut m.ssh).await.wrap_err("setup procedure failed")?;
+    setup_fn(&mut m.ssh)
+        .await
+        .wrap_err("setup procedure failed")?;
     tracing::info!("instance ready");
     Ok(())
 }
