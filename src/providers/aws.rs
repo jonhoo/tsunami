@@ -973,11 +973,10 @@ impl RegionLauncher {
         tracing::info!("waiting for {} instances to spawn", self.region.name());
 
         let start = time::Instant::now();
-        let request_ids = self.spot_requests.keys().cloned().collect();
 
         loop {
             tracing::trace!("checking spot request status");
-            let instances = self.describe_spot_instance_requests(&request_ids).await?;
+            let instances = self.describe_spot_instance_requests().await?;
 
             let all_active = instances.iter().all(|(request_id, state, instance_id)| {
                 if state == "active" && instance_id.is_some() {
@@ -1009,7 +1008,7 @@ impl RegionLauncher {
                 if start.elapsed() <= wait_limit {
                     continue;
                 }
-                self.cancel_spot_instance_requests(&request_ids).await?;
+                self.cancel_spot_instance_requests().await?;
                 eyre::bail!("wait limit reached");
             }
         }
@@ -1103,8 +1102,7 @@ impl RegionLauncher {
                 if start.elapsed() <= wait_limit {
                     continue;
                 }
-                let request_ids = self.spot_requests.keys().cloned().collect();
-                self.cancel_spot_instance_requests(&request_ids).await?;
+                self.cancel_spot_instance_requests().await?;
                 eyre::bail!("wait limit reached");
             }
         }
@@ -1222,6 +1220,11 @@ impl RegionLauncher {
             tracing::info!("terminating {} instances", self.region.name());
             let instance_ids = self.instances.keys().cloned().collect();
             self.instances.clear();
+            // Why is `?` here ok? either:
+            // 1. there was no spot capacity. So self.instances will be empty, and this
+            //    block will get skipped, so sg will get cleaned up below.
+            // 2. there were instances, but we couldn't terminate them. Then, the sg will
+            //    still be attached to them, so there's no point trying to delete it.
             self.terminate_instances(instance_ids).await?;
         }
 
@@ -1279,14 +1282,13 @@ impl RegionLauncher {
     #[instrument(level = "debug")]
     async fn describe_spot_instance_requests(
         &self,
-        request_ids: &[String],
     ) -> Result<Vec<(String, String, Option<String>)>, Report> {
         let client = self.client.as_ref().unwrap();
+        let request_ids = self.spot_requests.keys().cloned().collect();
+        let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
+        req.spot_instance_request_ids = Some(request_ids);
         loop {
-            let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
-            req.spot_instance_request_ids = Some(request_ids.clone());
-
-            let res = client.describe_spot_instance_requests(req).await;
+            let res = client.describe_spot_instance_requests(req.clone()).await;
             if let Err(ref e) = res {
                 let msg = e.to_string();
                 if msg.contains("The spot instance request ID") && msg.contains("does not exist") {
@@ -1319,13 +1321,14 @@ impl RegionLauncher {
     }
 
     #[instrument(level = "debug")]
-    async fn cancel_spot_instance_requests(&self, request_ids: &Vec<String>) -> Result<(), Report> {
+    async fn cancel_spot_instance_requests(&self) -> Result<(), Report> {
         tracing::warn!(
             "wait time exceeded for {} -- cancelling run",
             self.region.name()
         );
+        let request_ids = self.spot_requests.keys().cloned().collect();
         let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
-        cancel.spot_instance_request_ids = request_ids.clone();
+        cancel.spot_instance_request_ids = request_ids;
         self.client
             .as_ref()
             .unwrap()
@@ -1336,7 +1339,7 @@ impl RegionLauncher {
         tracing::trace!("spot instances cancelled -- waiting for cancellation");
         loop {
             tracing::trace!("checking spot request status");
-            let instances = self.describe_spot_instance_requests(&request_ids).await?;
+            let instances = self.describe_spot_instance_requests().await?;
 
             let all_cancelled = instances.iter().all(|(request_id, state, instance_id)| {
                 if state == "closed" || state == "cancelled" || state == "completed" {
@@ -1378,11 +1381,6 @@ impl RegionLauncher {
                 tracing::trace!("retrying instance termination");
                 continue;
             } else {
-                // Why is `?` here ok? either:
-                // 1. there was no spot capacity. So self.instances will be empty, and this
-                //    block will get skipped, so sg will get cleaned up below.
-                // 2. there were instances, but we couldn't terminate them. Then, the sg will
-                //    still be attached to them, so there's no point trying to delete it.
                 Err(e).wrap_err("failed to terminate tsunami instances")?;
                 unreachable!();
             }
