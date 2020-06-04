@@ -995,7 +995,7 @@ impl RegionLauncher {
                     .map(|(request_id, state, instance_id)| {
                         assert_eq!(state, "active");
                         let instance_id = instance_id.unwrap();
-                        let setup = self.spot_requests.get(&request_id).cloned().unwrap();
+                        let setup = self.spot_requests[&request_id].clone();
                         (instance_id, setup)
                     })
                     .collect();
@@ -1279,7 +1279,7 @@ impl RegionLauncher {
     #[instrument(level = "debug")]
     async fn describe_spot_instance_requests(
         &self,
-        request_ids: &Vec<String>,
+        request_ids: &[String],
     ) -> Result<Vec<(String, String, Option<String>)>, Report> {
         let client = self.client.as_ref().unwrap();
         loop {
