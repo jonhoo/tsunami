@@ -970,7 +970,7 @@ impl RegionLauncher {
         &mut self,
         max_wait: Option<time::Duration>,
     ) -> Result<(), Report> {
-        tracing::info!("waiting for instances to spawn");
+        tracing::info!("waiting for {} instances to spawn", self.region.name());
 
         let start = time::Instant::now();
         let request_ids = self.spot_requests.keys().cloned().collect();
@@ -1219,7 +1219,7 @@ impl RegionLauncher {
 
         // terminate instances
         if !self.instances.is_empty() {
-            tracing::info!("terminating instances");
+            tracing::info!("terminating {} instances", self.region.name());
             let instance_ids = self.instances.keys().cloned().collect();
             self.instances.clear();
             self.terminate_instances(instance_ids).await?;
@@ -1320,7 +1320,10 @@ impl RegionLauncher {
 
     #[instrument(level = "debug")]
     async fn cancel_spot_instance_requests(&self, request_ids: &Vec<String>) -> Result<(), Report> {
-        tracing::warn!("wait time exceeded -- cancelling run");
+        tracing::warn!(
+            "wait time exceeded for {} -- cancelling run",
+            self.region.name()
+        );
         let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
         cancel.spot_instance_request_ids = request_ids.clone();
         self.client
