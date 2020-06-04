@@ -1007,6 +1007,7 @@ impl RegionLauncher {
                     continue;
                 }
                 self.cancel_spot_instance_requests(&request_ids).await?;
+                eyre::bail!("wait limit reached");
             }
 
             // let's not hammer the API
@@ -1101,6 +1102,7 @@ impl RegionLauncher {
                 }
                 let request_ids = self.spot_requests.keys().cloned().collect();
                 self.cancel_spot_instance_requests(&request_ids).await?;
+                eyre::bail!("wait limit reached");
             }
 
             // let's not hammer the API
@@ -1351,13 +1353,12 @@ impl RegionLauncher {
                     .collect();
                 self.terminate_instances(instance_ids).await?;
                 break;
-            } else {
-                // let's not hammer the API
-                tokio::time::delay_for(time::Duration::from_secs(1)).await;
             }
-        }
 
-        eyre::bail!("wait limit reached");
+            // let's not hammer the API
+            tokio::time::delay_for(time::Duration::from_secs(1)).await;
+        }
+        Ok(())
     }
 
     #[instrument(level = "debug")]
