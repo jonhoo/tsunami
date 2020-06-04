@@ -1237,9 +1237,9 @@ impl RegionLauncher {
                 // clean up security groups and keys
                 let start = tokio::time::Instant::now();
                 loop {
-                    if start.elapsed() > tokio::time::Duration::from_secs(2 * 60) {
+                    if start.elapsed() > tokio::time::Duration::from_secs(5 * 60) {
                         Err(Report::msg(
-                            "failed to clean up temporary security group after 120 seconds.",
+                            "failed to clean up temporary security group after 5 minutes.",
                         ))?;
                         unreachable!();
                     }
@@ -1293,6 +1293,9 @@ impl RegionLauncher {
                 let msg = e.to_string();
                 if msg.contains("The spot instance request ID") && msg.contains("does not exist") {
                     tracing::trace!("spot instance requests not yet ready");
+
+                    // let's not hammer the API
+                    tokio::time::delay_for(time::Duration::from_secs(1)).await;
                     continue;
                 } else {
                     res.wrap_err("failed to describe spot instances")?;
