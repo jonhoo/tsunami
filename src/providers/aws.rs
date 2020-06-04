@@ -970,7 +970,7 @@ impl RegionLauncher {
         &mut self,
         max_wait: Option<time::Duration>,
     ) -> Result<(), Report> {
-        tracing::info!("waiting for {} instances to spawn", self.region.name());
+        tracing::info!("waiting for instances to spawn");
 
         let start = time::Instant::now();
 
@@ -1217,7 +1217,7 @@ impl RegionLauncher {
 
         // terminate instances
         if !self.instances.is_empty() {
-            tracing::info!("terminating {} instances", self.region.name());
+            tracing::info!("terminating instances");
             let instance_ids = self.instances.keys().cloned().collect();
             self.instances.clear();
             // Why is `?` here ok? either:
@@ -1322,10 +1322,7 @@ impl RegionLauncher {
 
     #[instrument(level = "debug")]
     async fn cancel_spot_instance_requests(&self) -> Result<(), Report> {
-        tracing::warn!(
-            "wait time exceeded for {} -- cancelling run",
-            self.region.name()
-        );
+        tracing::warn!("wait time exceeded for -- cancelling run");
         let request_ids = self.spot_requests.keys().cloned().collect();
         let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
         cancel.spot_instance_request_ids = request_ids;
