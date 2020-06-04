@@ -1002,6 +1002,9 @@ impl RegionLauncher {
                 break;
             }
 
+            // let's not hammer the API
+            tokio::time::delay_for(time::Duration::from_secs(1)).await;
+
             if let Some(wait_limit) = max_wait {
                 if start.elapsed() <= wait_limit {
                     continue;
@@ -1009,9 +1012,6 @@ impl RegionLauncher {
                 self.cancel_spot_instance_requests(&request_ids).await?;
                 eyre::bail!("wait limit reached");
             }
-
-            // let's not hammer the API
-            tokio::time::delay_for(time::Duration::from_secs(1)).await;
         }
 
         Ok(())
@@ -1096,6 +1096,9 @@ impl RegionLauncher {
                 }
             }
 
+            // let's not hammer the API
+            tokio::time::delay_for(time::Duration::from_secs(1)).await;
+
             if let Some(wait_limit) = max_wait {
                 if start.elapsed() <= wait_limit {
                     continue;
@@ -1104,9 +1107,6 @@ impl RegionLauncher {
                 self.cancel_spot_instance_requests(&request_ids).await?;
                 eyre::bail!("wait limit reached");
             }
-
-            // let's not hammer the API
-            tokio::time::delay_for(time::Duration::from_secs(1)).await;
         }
 
         futures_util::future::join_all(self.instances.iter().map(
