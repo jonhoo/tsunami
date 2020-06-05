@@ -101,10 +101,10 @@ pub use rusoto_core::Region;
 use rusoto_ec2::Ec2;
 use std::collections::HashMap;
 use std::future::Future;
-use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time;
+use tokio::io::AsyncWriteExt;
 use tracing::instrument;
 use tracing_futures::Instrument;
 
@@ -610,7 +610,7 @@ pub struct RegionLauncher {
     availability_zone: AvailabilityZoneSpec,
     security_group_id: String,
     ssh_key_name: String,
-    private_key_path: Option<tempfile::NamedTempFile>,
+    private_key_path: std::path::PathBuf,
     #[educe(Debug(ignore))]
     client: Option<rusoto_ec2::Ec2Client>,
     spot_requests: HashMap<String, TaggedSetup>,
@@ -660,16 +660,15 @@ impl RegionLauncher {
             provider,
             region.clone(),
         );
+        let private_key_path =
+            std::path::Path::new(&format!("{}.key", region.name())).to_path_buf();
 
         Ok(Self {
             region,
             availability_zone,
             security_group_id: Default::default(),
             ssh_key_name: Default::default(),
-            private_key_path: Some(
-                tempfile::NamedTempFile::new()
-                    .wrap_err("failed to create temporary file for keypair")?,
-            ),
+            private_key_path,
             spot_requests: Default::default(),
             instances: Default::default(),
             client: Some(ec2),
@@ -791,10 +790,6 @@ impl RegionLauncher {
     #[instrument(level = "trace", skip(self))]
     async fn make_ssh_key(mut self) -> Result<Self, Report> {
         let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
-        let private_key_path = self
-            .private_key_path
-            .as_mut()
-            .expect("RegionLauncher unconnected");
 
         // construct keypair for ssh access
         tracing::debug!("creating keypair");
@@ -811,11 +806,14 @@ impl RegionLauncher {
         let private_key = res
             .key_material
             .expect("aws did not generate key material for new key");
-        private_key_path
+
+        tokio::fs::File::create(&self.private_key_path)
+            .await?
             .write_all(private_key.as_bytes())
+            .await
             .context("could not write private key to file")?;
         tracing::debug!(
-            filename = %private_key_path.path().display(),
+            filename = %self.private_key_path.display(),
             "wrote keypair to file"
         );
 
@@ -1022,7 +1020,7 @@ impl RegionLauncher {
         let start = time::Instant::now();
         let mut desc_req = rusoto_ec2::DescribeInstancesRequest::default();
         let client = self.client.as_ref().unwrap();
-        let private_key_path = self.private_key_path.as_ref().unwrap();
+        let private_key_path = self.private_key_path.as_ref();
         let mut all_ready = self.instances.is_empty();
         desc_req.instance_ids = Some(self.instances.keys().cloned().collect());
         while !all_ready {
@@ -1067,7 +1065,7 @@ impl RegionLauncher {
                                 if let Err(e) = m
                                     .connect_ssh(
                                         &tag_setup.setup.username,
-                                        Some(private_key_path.path()),
+                                        Some(private_key_path),
                                         max_wait,
                                         22,
                                     )
@@ -1130,7 +1128,7 @@ impl RegionLauncher {
                             &public_ip,
                             &username,
                             max_wait,
-                            Some(private_key_path.path()),
+                            Some(private_key_path),
                             f.as_ref(),
                         )
                         .await?;
@@ -1150,7 +1148,7 @@ impl RegionLauncher {
     /// friendly name for each `Setup` with the corresponding SSH connection.
     #[instrument(level = "debug")]
     pub async fn connect_all<'l>(&'l self) -> Result<HashMap<String, crate::Machine<'l>>, Report> {
-        let private_key_path = self.private_key_path.as_ref().unwrap();
+        let private_key_path = self.private_key_path.as_ref();
         futures_util::future::join_all(self.instances.values().map(|info| {
             let instance_span = tracing::trace_span!("instance", name = %info.name);
             async move {
@@ -1174,7 +1172,7 @@ impl RegionLauncher {
                         };
 
                         let m = m
-                            .connect_ssh(&username, Some(private_key_path.path()), None, 22)
+                            .connect_ssh(&username, Some(private_key_path), None, 22)
                             .await?;
                         Ok((name.clone(), m))
                     }
@@ -1489,11 +1487,11 @@ mod test {
             let mut ec2 = ec2.make_ssh_key().await?;
             tracing::debug!(
                 name = %ec2.ssh_key_name,
-                path = %ec2.private_key_path.as_ref().unwrap().path().display(),
+                path = %ec2.private_key_path.display(),
                 "made key"
             );
             assert!(!ec2.ssh_key_name.is_empty());
-            assert!(ec2.private_key_path.as_ref().unwrap().path().exists());
+            assert!(ec2.private_key_path.exists());
 
             let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
             req.key_name = Some(ec2.ssh_key_name.clone());
