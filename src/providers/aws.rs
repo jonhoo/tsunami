@@ -978,20 +978,29 @@ impl RegionLauncher {
             tracing::trace!("checking spot request status");
             let instances = self.describe_spot_instance_requests().await?;
 
-            let all_active = instances.iter().all(|(request_id, state, instance_id)| {
-                if state == "active" && instance_id.is_some() {
-                    tracing::trace!(%request_id, %state, ?instance_id, "spot instance request ready");
-                    true
-                } else {
-                    false
+            let mut any_pending = false;
+            for (request_id, state, status, instance_id) in &instances {
+                match &**state {
+                    "active" if instance_id.is_some() => {
+                        tracing::trace!(%request_id, %state, ?instance_id, "spot instance request ready");
+                    }
+                    "active" | "open" => {
+                        any_pending = true;
+                    }
+                    s => {
+                        // closed | failed | cancelled
+                        let _ = self.cancel_spot_instance_requests().await;
+                        eyre::bail!("spot request unexpectedly {}: {}", s, status);
+                    }
                 }
-            });
+            }
+            let all_active = !any_pending;
 
             if all_active {
                 // unwraps okay because they are the same as expects above
                 self.instances = instances
                     .into_iter()
-                    .map(|(request_id, state, instance_id)| {
+                    .map(|(request_id, state, _, instance_id)| {
                         assert_eq!(state, "active");
                         let instance_id = instance_id.unwrap();
                         let setup = self.spot_requests[&request_id].clone();
@@ -1282,7 +1291,7 @@ impl RegionLauncher {
     #[instrument(level = "debug")]
     async fn describe_spot_instance_requests(
         &self,
-    ) -> Result<Vec<(String, String, Option<String>)>, Report> {
+    ) -> Result<Vec<(String, String, String, Option<String>)>, Report> {
         let client = self.client.as_ref().unwrap();
         let request_ids = self.spot_requests.keys().cloned().collect();
         let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
@@ -1315,8 +1324,13 @@ impl RegionLauncher {
                     let state = sir
                         .state
                         .expect("spot request did not have state specified");
+                    let status = sir
+                        .status
+                        .expect("spot request did not have status specified")
+                        .code
+                        .expect("spot request status did not have status code");
                     let instance_id = sir.instance_id;
-                    (request_id, state, instance_id)
+                    (request_id, state, status, instance_id)
                 })
                 .collect();
             break Ok(instances);
@@ -1341,9 +1355,13 @@ impl RegionLauncher {
             tracing::trace!("checking spot request status");
             let instances = self.describe_spot_instance_requests().await?;
 
-            let all_cancelled = instances.iter().all(|(request_id, state, instance_id)| {
-                if state == "closed" || state == "cancelled" || state == "completed" {
-                    tracing::trace!(%request_id, %state, ?instance_id, "spot instance request cancelled");
+            let all_cancelled = instances.iter().all(|(request_id, state, _, instance_id)| {
+                if state == "closed"
+                    || state == "cancelled"
+                    || state == "failed"
+                    || state == "completed"
+                {
+                    tracing::trace!(%request_id, ?instance_id, "spot instance request {}", state);
                     true
                 } else {
                     false
@@ -1355,7 +1373,7 @@ impl RegionLauncher {
                 // find instances with an id assigned and terminate them
                 let instance_ids = instances
                     .into_iter()
-                    .filter_map(|(_, _, instance_id)| instance_id)
+                    .filter_map(|(_, _, _, instance_id)| instance_id)
                     .collect();
                 self.terminate_instances(instance_ids).await?;
                 break;
