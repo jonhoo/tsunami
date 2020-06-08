@@ -393,7 +393,7 @@ where
             } = self;
 
             if !regions.contains_key(&l.region) {
-                let region_span = tracing::debug_span!("new_region", name = %l.region, az = %l.machines[0].1.availability_zone);
+                let region_span = tracing::debug_span!("new_region", region = %l.region, az = %l.machines[0].1.availability_zone);
                 let awsregion = RegionLauncher::new(
                     // region name and availability_zone spec are guaranteed to be the same because
                     // they are included in the region specifier.
@@ -407,7 +407,7 @@ where
                 regions.insert(l.region.clone(), awsregion);
             }
 
-            let region_span = tracing::debug_span!("region", name = %l.region);
+            let region_span = tracing::info_span!("region", region = %l.region);
             regions
                 .get_mut(&l.region)
                 .unwrap()
@@ -491,7 +491,7 @@ where
                     |(region_name, machines)| {
                         // unwrap ok because everything is a have now
                         let mut region_launcher = self.regions.remove(&region_name).unwrap();
-                        let region_span = tracing::debug_span!("region", region = %region_name);
+                        let region_span = tracing::info_span!("region", region = %region_name);
                         async move {
                             if let Err(e) = region_launcher
                                 .launch(max_instance_duration_hours, max_wait, machines)
@@ -556,7 +556,7 @@ where
 
                 let res =
                     futures_util::future::join_all(self.regions.drain().map(|(region, mut rl)| {
-                        let region_span = tracing::debug_span!("region", %region);
+                        let region_span = tracing::debug_span!("region", region = %region);
                         async move { rl.terminate_all().await }.instrument(region_span)
                     }))
                     .await;
