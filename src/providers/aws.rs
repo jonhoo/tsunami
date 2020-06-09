@@ -90,7 +90,6 @@
 //! }
 //! ```
 
-use crate::ssh;
 use color_eyre::Report;
 use educe::Educe;
 use eyre::{eyre, WrapErr};
@@ -159,7 +158,7 @@ pub struct Setup {
     setup_fn: Option<
         Arc<
             dyn for<'r> Fn(
-                    &'r mut ssh::Session,
+                    &'r mut crate::Machine<'_>,
                 )
                     -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
                 + Send
@@ -267,7 +266,7 @@ impl Setup {
     pub fn setup(
         mut self,
         setup: impl for<'r> Fn(
-                &'r mut ssh::Session,
+                &'r mut crate::Machine<'_>,
             ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
             + Send
             + Sync
@@ -1448,9 +1447,9 @@ mod test {
             l.spawn(
                 vec![(
                     String::from("my machine"),
-                    super::Setup::default().setup(|ssh| {
+                    super::Setup::default().setup(|vm| {
                         Box::pin(async move {
-                            if ssh.command("whoami").status().await?.success() {
+                            if vm.ssh.command("whoami").status().await?.success() {
                                 Ok(())
                             } else {
                                 Err(eyre!("failed"))

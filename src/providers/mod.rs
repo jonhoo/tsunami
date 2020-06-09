@@ -176,7 +176,7 @@ async fn setup_machine(
     max_wait: Option<std::time::Duration>,
     private_key: Option<&std::path::Path>,
     f: &(dyn for<'r> Fn(
-        &'r mut crate::ssh::Session,
+        &'r mut crate::Machine<'_>,
     ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
           + Send
           + Sync),
@@ -192,7 +192,7 @@ async fn setup_machine(
     let mut m = m.connect_ssh(username, private_key, max_wait, 22).await?;
 
     tracing::debug!("setting up instance");
-    f(&mut m.ssh).await.wrap_err("setup procedure failed")?;
+    f(&mut m).await.wrap_err("setup procedure failed")?;
     tracing::info!("instance ready");
     Ok(())
 }
