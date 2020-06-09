@@ -184,6 +184,9 @@ pub struct Machine<'tsunami> {
     /// An established SSH session to this host.
     pub ssh: ssh::Session,
 
+    /// Private key that can be used to SSH into the host.
+    pub private_key: Option<std::path::PathBuf>,
+
     // tie the lifetime of the machine to the Tsunami.
     _tsunami: std::marker::PhantomData<&'tsunami ()>,
 }
@@ -222,6 +225,7 @@ impl<'t> MachineDescriptor<'t> {
             _tsunami: self._tsunami,
 
             ssh: sess,
+            private_key: key_path.map(|path| path.to_path_buf()),
         })
     }
 }
