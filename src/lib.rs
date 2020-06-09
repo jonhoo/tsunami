@@ -184,6 +184,7 @@ pub struct Machine<'tsunami> {
     /// An established SSH session to this host.
     pub ssh: ssh::Session,
 
+    pub username: String,
     /// Private key that can be used to SSH into the host.
     pub private_key: Option<std::path::PathBuf>,
 
@@ -225,6 +226,7 @@ impl<'t> MachineDescriptor<'t> {
             _tsunami: self._tsunami,
 
             ssh: sess,
+            username: username.to_string(),
             private_key: key_path.map(|path| path.to_path_buf()),
         })
     }
