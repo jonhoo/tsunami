@@ -18,7 +18,7 @@ maintenance = { status = "passively-maintained" }
 
 [features]
 default = ["aws", "azure", "baremetal", "openssh"]
-aws = ["rusoto_core", "rusoto_ec2", "futures-util", "tempfile", "ubuntu-ami"]
+aws = ["rusoto_core", "rusoto_ec2", "futures-util", "tempfile", "ubuntu-ami", "tokio"]
 azure = ["serde", "serde_json", "futures-util", "tokio", "tokio/process"]
 baremetal = []
 args = ["structopt"]
@@ -36,7 +36,7 @@ rusoto_core = { version = "0.44.0", optional = true }
 rusoto_ec2 = { version = "0.44.0", optional = true }
 futures-util = { version = "0.3.4", optional = true }
 tempfile = { version = "3.0.0", optional = true }
-tokio = { version = "0.2.0", features = [ "time" ], optional = true }
+tokio = { version = "0.2.0", features = ["time"], optional = true }
 serde_json = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true}
 structopt = { version = "0.3", optional = true }
