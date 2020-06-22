@@ -143,8 +143,6 @@
 #![allow(clippy::type_complexity)]
 
 use color_eyre::Report;
-pub use openssh as ssh;
-pub use ssh::Session;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -181,8 +179,9 @@ pub struct Machine<'tsunami> {
     /// equivalent to `public_ip`.
     pub public_dns: String,
 
+    #[cfg(feature = "openssh")]
     /// An established SSH session to this host.
-    pub ssh: ssh::Session,
+    pub ssh: openssh::Session,
 
     pub username: String,
     /// Private key that can be used to SSH into the host.
@@ -202,7 +201,34 @@ impl<'t> MachineDescriptor<'t> {
         timeout: Option<std::time::Duration>,
         port: u16,
     ) -> Result<Machine<'t>, Report> {
-        let mut sess = ssh::SessionBuilder::default();
+        #[cfg(feature = "openssh")]
+        let sess = self
+            .do_connect_ssh(username, key_path, timeout, port)
+            .await?;
+
+        Ok(Machine {
+            nickname: self.nickname,
+            public_ip: self.public_ip,
+            private_ip: self.private_ip,
+            public_dns: self.public_dns,
+            _tsunami: self._tsunami,
+
+            #[cfg(feature = "openssh")]
+            ssh: sess,
+            username: username.to_string(),
+            private_key: key_path.map(|path| path.to_path_buf()),
+        })
+    }
+
+    #[cfg(feature = "openssh")]
+    async fn do_connect_ssh(
+        &self,
+        username: &str,
+        key_path: Option<&std::path::Path>,
+        timeout: Option<std::time::Duration>,
+        port: u16,
+    ) -> Result<openssh::Session, Report> {
+        let mut sess = openssh::SessionBuilder::default();
 
         sess.user(username.to_string()).port(port);
 
@@ -217,18 +243,7 @@ impl<'t> MachineDescriptor<'t> {
         tracing::trace!("connecting");
         let sess = sess.connect(&self.public_ip).await?;
         tracing::trace!("connected");
-
-        Ok(Machine {
-            nickname: self.nickname,
-            public_ip: self.public_ip,
-            private_ip: self.private_ip,
-            public_dns: self.public_dns,
-            _tsunami: self._tsunami,
-
-            ssh: sess,
-            username: username.to_string(),
-            private_key: key_path.map(|path| path.to_path_buf()),
-        })
+        Ok(sess)
     }
 }
 
