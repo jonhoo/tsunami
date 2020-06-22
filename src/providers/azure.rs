@@ -49,15 +49,15 @@
 //!     // Create a machine descriptor and add it to the Tsunami
 //!     let m = azure::Setup::default()
 //!         .region(azure::Region::FranceCentral) // default is EastUs
-//!         .setup(|ssh| {
+//!         .setup(|vm| {
 //!             // default is a no-op
 //!             Box::pin(async move {
-//!                 ssh.command("sudo")
+//!                 vm.ssh.command("sudo")
 //!                     .arg("apt")
 //!                     .arg("update")
 //!                     .status()
 //!                     .await?;
-//!                 ssh.command("bash")
+//!                 vm.ssh.command("bash")
 //!                     .arg("-c")
 //!                     .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"")
 //!                     .status()
@@ -188,9 +188,9 @@ impl Setup {
     /// ```rust
     /// use tsunami::providers::azure::Setup;
     ///
-    /// let m = Setup::default().setup(|ssh| {
+    /// let m = Setup::default().setup(|vm| {
     ///     Box::pin(async move {
-    ///         ssh.command("sudo")
+    ///         vm.ssh.command("sudo")
     ///             .arg("apt")
     ///             .arg("update")
     ///             .status()

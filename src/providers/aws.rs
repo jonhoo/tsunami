@@ -49,15 +49,15 @@
 //!         .region_with_ubuntu_ami(Region::UsWest1) // default is UsEast1
 //!         .await
 //!         .unwrap()
-//!         .setup(|ssh| {
+//!         .setup(|vm| {
 //!             // default is a no-op
 //!             Box::pin(async move {
-//!                 ssh.command("sudo")
+//!                 vm.ssh.command("sudo")
 //!                     .arg("apt")
 //!                     .arg("update")
 //!                     .status()
 //!                     .await?;
-//!                 ssh.command("bash")
+//!                 vm.ssh.command("bash")
 //!                     .arg("-c")
 //!                     .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"")
 //!                     .status()
@@ -252,9 +252,9 @@ impl Setup {
     /// ```rust
     /// use tsunami::providers::aws::Setup;
     ///
-    /// let m = Setup::default().setup(|ssh| {
+    /// let m = Setup::default().setup(|vm| {
     ///     Box::pin(async move {
-    ///         ssh.command("sudo")
+    ///         vm.ssh.command("sudo")
     ///             .arg("apt")
     ///             .arg("update")
     ///             .status()
