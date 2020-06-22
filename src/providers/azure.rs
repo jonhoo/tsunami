@@ -114,7 +114,7 @@ pub struct Setup {
     setup_fn: Option<
         Arc<
             dyn for<'r> Fn(
-                    &'r mut crate::Machine<'_>,
+                    &'r crate::Machine<'_>,
                 )
                     -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
                 + Send
@@ -202,7 +202,7 @@ impl Setup {
     pub fn setup(
         mut self,
         setup: impl for<'r> Fn(
-                &'r mut crate::Machine<'_>,
+                &'r crate::Machine<'_>,
             ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
             + Send
             + Sync

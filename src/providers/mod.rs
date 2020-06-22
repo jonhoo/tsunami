@@ -176,7 +176,7 @@ async fn setup_machine(
     max_wait: Option<std::time::Duration>,
     private_key: Option<&std::path::Path>,
     f: &(dyn for<'r> Fn(
-        &'r mut crate::Machine<'_>,
+        &'r crate::Machine<'_>,
     ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
           + Send
           + Sync),
