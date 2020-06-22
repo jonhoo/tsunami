@@ -2,7 +2,6 @@
 //!
 //! Use this to use machines that already exist.
 
-use crate::ssh;
 use color_eyre::Report;
 use educe::Educe;
 use eyre::{eyre, WrapErr};
@@ -26,7 +25,7 @@ pub struct Setup {
     setup_fn: Option<
         Arc<
             dyn for<'r> Fn(
-                    &'r mut ssh::Session,
+                    &'r mut crate::Machine<'_>,
                 )
                     -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
                 + Send
@@ -94,9 +93,9 @@ impl Setup {
     ///
     /// ```rust
     /// use tsunami::providers::baremetal::Setup;
-    /// let m = Setup::new("127.0.0.1:22", None).unwrap().setup(|ssh| {
+    /// let m = Setup::new("127.0.0.1:22", None).unwrap().setup(|vm| {
     ///     Box::pin(async move {
-    ///         ssh.command("sudo")
+    ///         vm.ssh.command("sudo")
     ///             .arg("apt")
     ///             .arg("update")
     ///             .status()
@@ -108,7 +107,7 @@ impl Setup {
     pub fn setup(
         mut self,
         setup: impl for<'r> Fn(
-                &'r mut ssh::Session,
+                &'r mut crate::Machine<'_>,
             ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
             + Send
             + Sync
@@ -228,7 +227,7 @@ impl super::Launcher for Machine {
                     .connect_ssh(&username, key_path.as_deref(), l.max_wait, addr.port())
                     .await?;
 
-                f(&mut m.ssh).await.wrap_err("setup procedure failed")?;
+                f(&mut m).await.wrap_err("setup procedure failed")?;
             }
 
             tracing::info!("instance ready");
