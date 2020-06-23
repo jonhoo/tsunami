@@ -189,7 +189,7 @@ async fn setup_machine(
         _tsunami: Default::default(),
     };
 
-    let mut m = m.connect_ssh(username, private_key, max_wait, 22).await?;
+    let mut m = m.connect(username, private_key, max_wait, 22).await?;
 
     tracing::debug!("setting up instance");
     f(&mut m).await.wrap_err("setup procedure failed")?;

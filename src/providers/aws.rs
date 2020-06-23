@@ -1074,7 +1074,7 @@ impl RegionLauncher {
                                 };
 
                                 if let Err(e) = m
-                                    .connect_ssh(
+                                    .connect(
                                         &tag_setup.setup.username,
                                         Some(private_key_path.path()),
                                         max_wait,
@@ -1183,7 +1183,7 @@ impl RegionLauncher {
                         };
 
                         let m = m
-                            .connect_ssh(&username, Some(private_key_path.path()), None, 22)
+                            .connect(&username, Some(private_key_path.path()), None, 22)
                             .await?;
                         Ok((name.clone(), m))
                     }

@@ -428,7 +428,7 @@ impl super::Launcher for RegionLauncher {
                     };
 
                     async move {
-                        let m = m.connect_ssh(username, None, None, 22).await?;
+                        let m = m.connect(username, None, None, 22).await?;
                         Ok::<_, Report>((name.clone(), m))
                     }
                     .instrument(machine_span)

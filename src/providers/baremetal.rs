@@ -139,7 +139,7 @@ async fn try_addrs(
             };
 
             match m
-                .connect_ssh(&s.username, s.key_path.as_deref(), max_wait, addr.port())
+                .connect(&s.username, s.key_path.as_deref(), max_wait, addr.port())
                 .await
             {
                 Err(e) => {
@@ -225,7 +225,7 @@ impl super::Launcher for Machine {
                 };
 
                 let mut m = m
-                    .connect_ssh(&username, key_path.as_deref(), l.max_wait, addr.port())
+                    .connect(&username, key_path.as_deref(), l.max_wait, addr.port())
                     .await?;
 
                 f(&mut m).await.wrap_err("setup procedure failed")?;
@@ -257,7 +257,7 @@ impl super::Launcher for Machine {
             };
 
             let m = m
-                .connect_ssh(&self.username, self.key_path.as_deref(), None, addr.port())
+                .connect(&self.username, self.key_path.as_deref(), None, addr.port())
                 .await?;
 
             let mut hmap: HashMap<String, crate::Machine<'l>> = Default::default();

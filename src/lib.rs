@@ -239,7 +239,7 @@ pub struct Machine<'tsunami> {
 impl<'t> MachineDescriptor<'t> {
     #[cfg(any(feature = "aws", feature = "azure", feature = "baremetal"))]
     #[instrument(level = "debug", skip(key_path, timeout))]
-    async fn connect_ssh(
+    async fn connect(
         self,
         username: &str,
         key_path: Option<&std::path::Path>,
@@ -247,9 +247,7 @@ impl<'t> MachineDescriptor<'t> {
         port: u16,
     ) -> Result<Machine<'t>, Report> {
         #[cfg(feature = "openssh")]
-        let sess = self
-            .do_connect_ssh(username, key_path, timeout, port)
-            .await?;
+        let sess = self.connect_ssh(username, key_path, timeout, port).await?;
 
         Ok(Machine {
             nickname: self.nickname,
@@ -265,7 +263,7 @@ impl<'t> MachineDescriptor<'t> {
     }
 
     #[cfg(feature = "openssh")]
-    async fn do_connect_ssh(
+    async fn connect_ssh(
         &self,
         username: &str,
         key_path: Option<&std::path::Path>,
