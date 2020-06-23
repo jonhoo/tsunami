@@ -163,6 +163,7 @@ struct MachineDescriptor<'tsunami> {
 /// A handle to an instance currently running as part of a tsunami.
 ///
 /// Run commands on the machine using the [`ssh::Session`] via the `ssh` field.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct Machine<'tsunami> {
     /// The friendly name for this machine.
@@ -183,6 +184,7 @@ pub struct Machine<'tsunami> {
     /// An established SSH session to this host.
     pub ssh: openssh::Session,
 
+    /// Username that can be used to SSH into the host.
     pub username: String,
     /// Private key that can be used to SSH into the host.
     pub private_key: Option<std::path::PathBuf>,
@@ -212,7 +214,6 @@ impl<'t> MachineDescriptor<'t> {
             private_ip: self.private_ip,
             public_dns: self.public_dns,
             _tsunami: self._tsunami,
-
             #[cfg(feature = "openssh")]
             ssh: sess,
             username: username.to_string(),
