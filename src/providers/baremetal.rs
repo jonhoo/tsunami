@@ -2,9 +2,11 @@
 //!
 //! Use this to use machines that already exist.
 
-use color_eyre::Report;
+use color_eyre::{
+    eyre::{self, eyre, WrapErr},
+    Report,
+};
 use educe::Educe;
-use eyre::{eyre, WrapErr};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;

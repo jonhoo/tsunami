@@ -90,9 +90,11 @@
 //! }
 //! ```
 
-use color_eyre::{Help, Report};
+use color_eyre::{
+    eyre::{self, eyre, WrapErr},
+    Help, Report,
+};
 use educe::Educe;
-use eyre::{eyre, WrapErr};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;

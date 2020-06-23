@@ -90,9 +90,11 @@
 //! }
 //! ```
 
-use color_eyre::Report;
+use color_eyre::{
+    eyre::{self, eyre, WrapErr},
+    Report,
+};
 use educe::Educe;
-use eyre::{eyre, WrapErr};
 use itertools::Itertools;
 use rusoto_core::credential::{DefaultCredentialsProvider, ProvideAwsCredentials};
 use rusoto_core::request::HttpClient;

@@ -1,7 +1,6 @@
 //! Implements backend functionality to spawn machines.
 
-use color_eyre::Report;
-use eyre::WrapErr;
+use color_eyre::{eyre::WrapErr, Report};
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::future::Future;
