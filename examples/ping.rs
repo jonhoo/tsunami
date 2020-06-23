@@ -29,9 +29,15 @@ async fn main() -> Result<(), Report> {
             aws::Setup::default()
                 .region_with_ubuntu_ami(Region::UsEast1)
                 .await?
-                .setup(|ssh| {
+                .setup(|vm| {
                     Box::pin(async move {
-                        if let Err(e) = ssh.command("sudo").arg("apt").arg("update").status().await
+                        if let Err(e) = vm
+                            .ssh
+                            .command("sudo")
+                            .arg("apt")
+                            .arg("update")
+                            .status()
+                            .await
                         {
                             tracing::warn!("apt update failed: {}", e);
                         };
@@ -46,9 +52,15 @@ async fn main() -> Result<(), Report> {
                 .region_with_ubuntu_ami(Region::ApSouth1)
                 .await?
                 .instance_type("t3.small")
-                .setup(|ssh| {
+                .setup(|vm| {
                     Box::pin(async move {
-                        if let Err(e) = ssh.command("sudo").arg("apt").arg("update").status().await
+                        if let Err(e) = vm
+                            .ssh
+                            .command("sudo")
+                            .arg("apt")
+                            .arg("update")
+                            .status()
+                            .await
                         {
                             tracing::warn!("apt update failed: {}", e);
                         };

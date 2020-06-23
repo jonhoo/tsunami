@@ -36,12 +36,10 @@ jobs:
      - template: install-rust.yml@templates
        parameters:
          rust: $(rust)
-     - script: cargo check
-       displayName: cargo check
-     - script: cargo check --no-default-features
-       displayName: cargo check --no-default-features
-     - script: cargo check --all-features
-       displayName: cargo check --all-features
+     - script: cargo install cargo-hack
+       displayName: install cargo-hack
+     - script: cargo hack check --feature-powerset --no-dev-deps
+       displayName: cargo hack
      - script: cargo test --all-features
        displayName: cargo test
      - script: cargo doc --no-deps
