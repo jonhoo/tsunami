@@ -31,7 +31,13 @@ async fn main() -> Result<(), Report> {
                 .await?
                 .setup(|vm| {
                     Box::pin(async move {
-                        if let Err(e) = vm.ssh.command("sudo").arg("apt").arg("update").status().await
+                        if let Err(e) = vm
+                            .ssh
+                            .command("sudo")
+                            .arg("apt")
+                            .arg("update")
+                            .status()
+                            .await
                         {
                             tracing::warn!("apt update failed: {}", e);
                         };
@@ -48,7 +54,13 @@ async fn main() -> Result<(), Report> {
                 .instance_type("t3.small")
                 .setup(|vm| {
                     Box::pin(async move {
-                        if let Err(e) = vm.ssh.command("sudo").arg("apt").arg("update").status().await
+                        if let Err(e) = vm
+                            .ssh
+                            .command("sudo")
+                            .arg("apt")
+                            .arg("update")
+                            .status()
+                            .await
                         {
                             tracing::warn!("apt update failed: {}", e);
                         };
