@@ -190,7 +190,8 @@ impl Setup {
     ///
     /// let m = Setup::default().setup(|vm| {
     ///     Box::pin(async move {
-    ///         vm.ssh.command("sudo")
+    ///         vm.ssh
+    ///             .command("sudo")
     ///             .arg("apt")
     ///             .arg("update")
     ///             .status()

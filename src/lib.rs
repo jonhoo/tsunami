@@ -123,6 +123,49 @@
 //! documentation for [`color-eyre`](https://docs.rs/color_eyre/), which includes an example for
 //! how to set up `tracing` with [`tracing-error`](https://docs.rs/tracing-error).
 //!
+//! # Cargo features
+//!
+//! There are four features: one for each of the three providers (`aws`, `azure` and `baremetal`)
+//! and `openssh`. With the `openssh` feature, an SSH connection to each [`Machine`](crate::Machine)
+//! is automatically established using the [`openssh`](https://docs.rs/openssh/) crate. By default,
+//! all four features are enabled.
+//!
+//! If do not wish to use `openssh`, you can disable the default features and only declare the ones
+//! you need in your `Cargo.toml`:
+//!
+//! ```toml
+//! tsunami = { version = "...", default-features = false, features = ["aws"] }
+//! ```
+//!
+//! Then, (for example) using [`tokio::process::Command`](https://docs.rs/tokio/?search=Command),
+//! you can ssh into a `Machine` with something like this:
+//!
+//! ```rust,no_run
+//! tsunami::providers::aws::Setup::default()
+//!     .setup(|vm| {
+//!         Box::pin(async move {
+//!             let remote_command = "date +%Y-%m-%d";
+//!             let ssh_command = format!(
+//!                 "ssh -o StrictHostKeyChecking=no {}@{} -i {} {}",
+//!                 vm.username,
+//!                 vm.public_ip,
+//!                 vm.private_key.as_ref().expect("private key should be set").as_path().display(),
+//!                 remote_command,
+//!             );
+//!             let out = tokio::process::Command::new("sh")
+//!                 .arg("-c")
+//!                 .arg(ssh_command)
+//!                 .output()
+//!                 .await?;
+//!             let out = String::from_utf8(out.stdout)?
+//!                 .trim()
+//!                 .to_string();
+//!             println!("{}", out);
+//!             Ok(())
+//!         })
+//!     });
+//! ```
+//!
 //! # Live-coding
 //!
 //! An earlier version of this crate was written as part of a live-coding stream series intended
@@ -162,7 +205,7 @@ struct MachineDescriptor<'tsunami> {
 }
 /// A handle to an instance currently running as part of a tsunami.
 ///
-/// Run commands on the machine using the [`ssh::Session`] via the `ssh` field.
+/// Run commands on the machine using the [`openssh::Session`] via the `ssh` field.
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct Machine<'tsunami> {
@@ -250,10 +293,11 @@ impl<'t> MachineDescriptor<'t> {
 
 /// Use this trait to launch machines into providers.
 ///
-/// Important: You must call `terminate_all` to shut down the instances once you are done. Otherwise, you
-/// may incur unexpected charges from the cloud provider.
+/// Important: You must call `terminate_all` to shut down the instances once you are done.
+/// Otherwise, you may incur unexpected charges from the cloud provider.
 ///
-/// This trait is sealed. If you want to implement support for a provider, see [`providers::Launcher`].
+/// This trait is sealed. If you want to implement support for a provider, see
+/// [`providers::Launcher`].
 pub trait Tsunami: sealed::Sealed {
     /// A type describing a single instance to launch.
     type MachineDescriptor: providers::MachineSetup;

@@ -95,7 +95,8 @@ impl Setup {
     /// use tsunami::providers::baremetal::Setup;
     /// let m = Setup::new("127.0.0.1:22", None).unwrap().setup(|vm| {
     ///     Box::pin(async move {
-    ///         vm.ssh.command("sudo")
+    ///         vm.ssh
+    ///             .command("sudo")
     ///             .arg("apt")
     ///             .arg("update")
     ///             .status()
