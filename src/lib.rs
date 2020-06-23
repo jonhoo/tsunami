@@ -35,15 +35,15 @@
 //!                 .region_with_ubuntu_ami(AWSRegion::UsWest1) // default is UsEast1
 //!                 .await
 //!                 .unwrap()
-//!                 .setup(|ssh| {
+//!                 .setup(|vm| {
 //!                     // default is a no-op
 //!                     Box::pin(async move {
-//!                         ssh.command("sudo")
+//!                         vm.ssh.command("sudo")
 //!                             .arg("apt")
 //!                             .arg("update")
 //!                             .status()
 //!                             .await?;
-//!                         ssh.command("bash")
+//!                         vm.ssh.command("bash")
 //!                             .arg("-c")
 //!                             .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"")
 //!                             .status()
@@ -65,15 +65,15 @@
 //!                 String::from("azure_vm"),
 //!                 azure::Setup::default()
 //!                     .region(AzureRegion::FranceCentral) // default is EastUs
-//!                     .setup(|ssh| {
+//!                     .setup(|vm| {
 //!                         // default is a no-op
 //!                         Box::pin(async move {
-//!                             ssh.command("sudo")
+//!                             vm.ssh.command("sudo")
 //!                                 .arg("apt")
 //!                                 .arg("update")
 //!                                 .status()
 //!                                 .await?;
-//!                             ssh.command("bash")
+//!                             vm.ssh.command("bash")
 //!                                 .arg("-c")
 //!                                 .arg("\"curl https://sh.rustup.rs -sSf | sh -- -y\"")
 //!                                 .status()
@@ -123,6 +123,39 @@
 //! documentation for [`color-eyre`](https://docs.rs/color_eyre/), which includes an example for
 //! how to set up `tracing` with [`tracing-error`](https://docs.rs/tracing-error).
 //!
+//! # SSH without `openssh`
+//!
+//! An SSH connection to each [`Machine`](crate::Machine) is automatically established using the
+//! [`openssh`](https://docs.rs/openssh/) crate. However, it's possible to SSH into [`Machine`]'s
+//! without `openssh`. For example, using [`tokio::process::Command`](https://docs.rs/tokio/?search=Command),
+//! you can ssh into a `Machine` with something like this:
+//!
+//! ```rust,no_run
+//! tsunami::providers::aws::Setup::default()
+//!     .setup(|vm| {
+//!         Box::pin(async move {
+//!             let remote_command = "date +%Y-%m-%d";
+//!             let ssh_command = format!(
+//!                 "ssh -o StrictHostKeyChecking=no {}@{} -i {} {}",
+//!                 vm.username,
+//!                 vm.public_ip,
+//!                 vm.private_key.as_ref().expect("private key should be set").as_path().display(),
+//!                 remote_command,
+//!             );
+//!             let out = tokio::process::Command::new("sh")
+//!                 .arg("-c")
+//!                 .arg(ssh_command)
+//!                 .output()
+//!                 .await?;
+//!             let out = String::from_utf8(out.stdout)?
+//!                 .trim()
+//!                 .to_string();
+//!             println!("{}", out);
+//!             Ok(())
+//!         })
+//!     });
+//! ```
+//!
 //! # Live-coding
 //!
 //! An earlier version of this crate was written as part of a live-coding stream series intended
@@ -143,8 +176,6 @@
 #![allow(clippy::type_complexity)]
 
 use color_eyre::Report;
-pub use openssh as ssh;
-pub use ssh::Session;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -164,7 +195,8 @@ struct MachineDescriptor<'tsunami> {
 }
 /// A handle to an instance currently running as part of a tsunami.
 ///
-/// Run commands on the machine using the [`ssh::Session`] via the `ssh` field.
+/// Run commands on the machine using the [`openssh::Session`] via the `ssh` field.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct Machine<'tsunami> {
     /// The friendly name for this machine.
@@ -182,7 +214,12 @@ pub struct Machine<'tsunami> {
     pub public_dns: String,
 
     /// An established SSH session to this host.
-    pub ssh: ssh::Session,
+    pub ssh: openssh::Session,
+
+    /// Username that can be used to SSH into the host.
+    pub username: String,
+    /// Private key that can be used to SSH into the host.
+    pub private_key: Option<std::path::PathBuf>,
 
     // tie the lifetime of the machine to the Tsunami.
     _tsunami: std::marker::PhantomData<&'tsunami ()>,
@@ -198,7 +235,7 @@ impl<'t> MachineDescriptor<'t> {
         timeout: Option<std::time::Duration>,
         port: u16,
     ) -> Result<Machine<'t>, Report> {
-        let mut sess = ssh::SessionBuilder::default();
+        let mut sess = openssh::SessionBuilder::default();
 
         sess.user(username.to_string()).port(port);
 
@@ -220,18 +257,20 @@ impl<'t> MachineDescriptor<'t> {
             private_ip: self.private_ip,
             public_dns: self.public_dns,
             _tsunami: self._tsunami,
-
             ssh: sess,
+            username: username.to_string(),
+            private_key: key_path.map(|path| path.to_path_buf()),
         })
     }
 }
 
 /// Use this trait to launch machines into providers.
 ///
-/// Important: You must call `terminate_all` to shut down the instances once you are done. Otherwise, you
-/// may incur unexpected charges from the cloud provider.
+/// Important: You must call `terminate_all` to shut down the instances once you are done.
+/// Otherwise, you may incur unexpected charges from the cloud provider.
 ///
-/// This trait is sealed. If you want to implement support for a provider, see [`providers::Launcher`].
+/// This trait is sealed. If you want to implement support for a provider, see
+/// [`providers::Launcher`].
 pub trait Tsunami: sealed::Sealed {
     /// A type describing a single instance to launch.
     type MachineDescriptor: providers::MachineSetup;
