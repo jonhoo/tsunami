@@ -121,6 +121,8 @@ pub enum AvailabilityZoneSpec {
     /// machines should be placed in, see `AvailabilityZoneSpec::Specify`.
     Cluster(usize),
     /// `Specify` will place all the instances in the named availability zone.
+    ///
+    /// The string should give the full name of the availability zone, such as `us-east-1a`.
     Specify(String),
 }
 
