@@ -170,6 +170,7 @@ fn rand_name_sep(prefix: &str, sep: impl Into<Sep>) -> String {
 #[instrument(skip(max_wait, private_key, f))]
 async fn setup_machine(
     nickname: &str,
+    priv_ip: Option<&str>,
     pub_ip: &str,
     username: &str,
     max_wait: Option<std::time::Duration>,
@@ -184,7 +185,7 @@ async fn setup_machine(
         nickname: Default::default(),
         public_dns: pub_ip.to_string(),
         public_ip: pub_ip.to_string(),
-        private_ip: None,
+        private_ip: priv_ip.map(String::from),
         _tsunami: Default::default(),
     };
 

@@ -1129,7 +1129,11 @@ impl RegionLauncher {
                     setup,
                 },
             )| {
-                let IpInfo { public_ip, .. } = ip_info.as_ref().unwrap();
+                let IpInfo {
+                    public_ip,
+                    private_ip,
+                    ..
+                } = ip_info.as_ref().unwrap();
                 let instance_span = tracing::debug_span!("instance", %instance_id, ip = %public_ip);
                 async move {
                     if let Setup {
@@ -1140,6 +1144,7 @@ impl RegionLauncher {
                     {
                         super::setup_machine(
                             &name,
+                            Some(&private_ip),
                             &public_ip,
                             &username,
                             max_wait,

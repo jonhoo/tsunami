@@ -373,6 +373,7 @@ impl super::Launcher for RegionLauncher {
                             {
                                 super::setup_machine(
                                     &nickname,
+                                    None,
                                     &ipinfo.public_ip,
                                     &username,
                                     max_wait,
