@@ -186,9 +186,9 @@ pub mod providers;
 #[derive(Debug)]
 struct MachineDescriptor<'tsunami> {
     pub(crate) nickname: String,
+    pub(crate) public_dns: Option<String>,
     pub(crate) public_ip: String,
     pub(crate) private_ip: Option<String>,
-    pub(crate) public_dns: String,
 
     // tie the lifetime of the machine to the Tsunami.
     _tsunami: std::marker::PhantomData<&'tsunami ()>,
@@ -203,15 +203,15 @@ pub struct Machine<'tsunami> {
     ///
     /// Corresponds to the name set in [`TsunamiBuilder::add`].
     pub nickname: String,
-    /// The public IP address of the machine.
-    pub public_ip: String,
-    /// The private IP address of the machine, if available.
-    pub private_ip: Option<String>,
     /// The public DNS name of the machine.
     ///
     /// If the instance doesn't have a DNS name, this field will be
     /// equivalent to `public_ip`.
     pub public_dns: String,
+    /// The public IP address of the machine.
+    pub public_ip: String,
+    /// The private IP address of the machine, if available.
+    pub private_ip: Option<String>,
 
     /// An established SSH session to this host.
     pub ssh: openssh::Session,
@@ -253,9 +253,13 @@ impl<'t> MachineDescriptor<'t> {
 
         Ok(Machine {
             nickname: self.nickname,
+            // if not defined, set public dns to be the public ip
+            public_dns: self
+                .public_dns
+                .map(String::from)
+                .unwrap_or(self.public_ip.to_string()),
             public_ip: self.public_ip,
             private_ip: self.private_ip,
-            public_dns: self.public_dns,
             _tsunami: self._tsunami,
             ssh: sess,
             username: username.to_string(),

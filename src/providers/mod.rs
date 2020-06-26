@@ -170,8 +170,9 @@ fn rand_name_sep(prefix: &str, sep: impl Into<Sep>) -> String {
 #[instrument(skip(max_wait, private_key, f))]
 async fn setup_machine(
     nickname: &str,
-    priv_ip: Option<&str>,
-    pub_ip: &str,
+    public_dns: Option<&str>,
+    public_ip: &str,
+    private_ip: Option<&str>,
     username: &str,
     max_wait: Option<std::time::Duration>,
     private_key: Option<&std::path::Path>,
@@ -183,9 +184,9 @@ async fn setup_machine(
 ) -> Result<(), Report> {
     let m = crate::MachineDescriptor {
         nickname: Default::default(),
-        public_dns: pub_ip.to_string(),
-        public_ip: pub_ip.to_string(),
-        private_ip: priv_ip.map(String::from),
+        public_dns: public_dns.map(String::from),
+        public_ip: public_ip.to_string(),
+        private_ip: private_ip.map(String::from),
         _tsunami: Default::default(),
     };
 

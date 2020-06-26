@@ -375,6 +375,7 @@ impl super::Launcher for RegionLauncher {
                                     &nickname,
                                     None,
                                     &ipinfo.public_ip,
+                                    Some(&ipinfo.private_ip),
                                     &username,
                                     max_wait,
                                     None,
@@ -424,7 +425,7 @@ impl super::Launcher for RegionLauncher {
                     } = desc;
                     let m = crate::MachineDescriptor {
                         nickname: name.clone(),
-                        public_dns: public_ip.clone(),
+                        public_dns: None,
                         public_ip: public_ip.clone(),
                         private_ip: Some(private_ip.clone()),
                         _tsunami: Default::default(),
