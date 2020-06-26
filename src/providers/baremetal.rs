@@ -134,7 +134,7 @@ async fn try_addrs(
 
             let m = crate::MachineDescriptor {
                 nickname: Default::default(),
-                public_dns: addr.ip().to_string(),
+                public_dns: None,
                 public_ip: addr.ip().to_string(),
                 private_ip: None,
                 _tsunami: Default::default(),
@@ -220,7 +220,7 @@ impl super::Launcher for Machine {
             {
                 let m = crate::MachineDescriptor {
                     nickname: Default::default(),
-                    public_dns: addr.ip().to_string(),
+                    public_dns: None,
                     public_ip: addr.ip().to_string(),
                     private_ip: None,
                     _tsunami: Default::default(),
@@ -252,7 +252,7 @@ impl super::Launcher for Machine {
             let addr = self.addr.ok_or_else(|| eyre!("Address uninitialized"))?;
             let m = crate::MachineDescriptor {
                 nickname: self.name.clone(),
-                public_dns: addr.ip().to_string(),
+                public_dns: None,
                 public_ip: addr.ip().to_string(),
                 private_ip: None,
                 _tsunami: Default::default(),

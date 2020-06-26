@@ -1069,11 +1069,12 @@ impl RegionLauncher {
                                 // try connecting. If can't, not ready.
                                 let tag_setup = instances.get_mut(&instance_id).unwrap();
 
+                                // no need to set public dns nor private ip since `connect_ssh` only uses the public ip
                                 let m = crate::MachineDescriptor {
                                     nickname: Default::default(),
                                     public_dns: Default::default(),
                                     public_ip: public_ip.to_string(),
-                                    private_ip: None,
+                                    private_ip: Default::default(),
                                     _tsunami: Default::default(),
                                 };
 
@@ -1092,8 +1093,8 @@ impl RegionLauncher {
                                     tracing::debug!("instance ready");
 
                                     tag_setup.ip_info = Some(IpInfo {
-                                        public_ip: public_ip.clone(),
                                         public_dns: public_dns.clone(),
+                                        public_ip: public_ip.clone(),
                                         private_ip: private_ip.clone(),
                                     });
                                 }
@@ -1130,9 +1131,9 @@ impl RegionLauncher {
                 },
             )| {
                 let IpInfo {
+                    public_dns,
                     public_ip,
                     private_ip,
-                    ..
                 } = ip_info.as_ref().unwrap();
                 let instance_span = tracing::debug_span!("instance", %instance_id, ip = %public_ip);
                 async move {
@@ -1144,8 +1145,9 @@ impl RegionLauncher {
                     {
                         super::setup_machine(
                             &name,
-                            Some(&private_ip),
+                            Some(&public_dns),
                             &public_ip,
+                            Some(&private_ip),
                             &username,
                             max_wait,
                             Some(private_key_path.path()),
@@ -1184,8 +1186,8 @@ impl RegionLauncher {
                             }),
                     } => {
                         let m = crate::MachineDescriptor {
+                            public_dns: Some(public_dns.clone()),
                             public_ip: public_ip.clone(),
-                            public_dns: public_dns.clone(),
                             private_ip: Some(private_ip.clone()),
                             nickname: name.clone(),
                             _tsunami: Default::default(),
