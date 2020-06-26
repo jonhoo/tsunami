@@ -251,14 +251,16 @@ impl<'t> MachineDescriptor<'t> {
         let sess = sess.connect(&self.public_ip).await?;
         tracing::trace!("connected");
 
+        let public_ip = self.public_ip;
+        // if not defined, set public dns to be the public ip
+        let public_dns = self
+            .public_dns
+            .map(String::from)
+            .unwrap_or_else(|| public_ip.clone());
         Ok(Machine {
             nickname: self.nickname,
-            // if not defined, set public dns to be the public ip
-            public_dns: self
-                .public_dns
-                .map(String::from)
-                .unwrap_or(self.public_ip.to_string()),
-            public_ip: self.public_ip,
+            public_dns,
+            public_ip,
             private_ip: self.private_ip,
             _tsunami: self._tsunami,
             ssh: sess,
