@@ -109,6 +109,38 @@ use std::time;
 use tracing::instrument;
 use tracing_futures::Instrument;
 
+/// Dictate how a set of instances should be launched.
+#[derive(Debug, Clone)]
+#[allow(missing_copy_implementations)]
+#[non_exhaustive]
+pub enum LaunchMode {
+    /// Use AWS [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances) spot instances.
+    DefinedDuration {
+        /// The lifetime of the defined duration instances.
+        /// This value must be between 1 and 6 hours.
+        hours: usize,
+    },
+    /// Use regular AWS on-demand instances.
+    OnDemand,
+}
+
+impl LaunchMode {
+    /// Launch using AWS [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances) spot instances.
+    ///
+    /// The lifetime of such instances must be declared in advance (1-6 hours).
+    /// This method thus clamps `hours` to be between 1 and 6.
+    pub fn duration_spot(hours: usize) -> Self {
+        let hours = std::cmp::min(hours, 6);
+        let hours = std::cmp::max(hours, 1);
+        Self::DefinedDuration { hours }
+    }
+
+    /// Launch using regular AWS on-demand instances.
+    pub fn on_demand() -> Self {
+        Self::OnDemand
+    }
+}
+
 /// Available configurations of availability zone specifiers.
 ///
 /// See [the aws docs](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#using-regions-availability-zones-launching) for more information.
@@ -315,12 +347,16 @@ impl Setup {
 ///
 /// While the regions are initialized serially, the setup functions for each machine are executed
 /// in parallel (within each region).
+///
+/// By default, `Launcher` launches instances using 6-hour [defined
+/// duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+/// spot requests.
 #[derive(Educe)]
 #[educe(Debug)]
 pub struct Launcher<P = DefaultCredentialsProvider> {
     #[educe(Debug(ignore))]
     credential_provider: Box<dyn Fn() -> Result<P, Report> + Send + Sync>,
-    max_instance_duration_hours: usize,
+    mode: LaunchMode,
     use_open_ports: bool,
     regions: HashMap<<Setup as super::MachineSetup>::Region, RegionLauncher>,
 }
@@ -329,7 +365,7 @@ impl Default for Launcher {
     fn default() -> Self {
         Launcher {
             credential_provider: Box::new(|| Ok(DefaultCredentialsProvider::new()?)),
-            max_instance_duration_hours: 6,
+            mode: LaunchMode::DefinedDuration { hours: 6 },
             use_open_ports: false,
             regions: Default::default(),
         }
@@ -337,17 +373,23 @@ impl Default for Launcher {
 }
 
 impl<P> Launcher<P> {
-    /// `Launcher` uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
-    /// instances.
+    /// Set defined duration instance max instance duration.
     ///
     /// The lifetime of such instances must be declared in advance (1-6 hours).
     /// This method thus clamps `t` to be between 1 and 6.
     ///
     /// By default, we use 6 hours (the maximum).
+    ///
+    /// This method also changes the mode to [`LaunchMode::DefinedDuration`].
+    #[deprecated(note = "prefer set_mode")]
     pub fn set_max_instance_duration(&mut self, t: usize) -> &mut Self {
-        let t = std::cmp::min(t, 6);
-        let t = std::cmp::max(t, 1);
-        self.max_instance_duration_hours = t;
+        self.mode = LaunchMode::duration_spot(t);
+        self
+    }
+
+    /// Set the launch mode to use for future instances.
+    pub fn set_mode(&mut self, mode: LaunchMode) -> &mut Self {
+        self.mode = mode;
         self
     }
 
@@ -369,7 +411,7 @@ impl<P> Launcher<P> {
     ) -> Launcher<P2> {
         Launcher {
             credential_provider: Box::new(f),
-            max_instance_duration_hours: self.max_instance_duration_hours,
+            mode: self.mode,
             use_open_ports: self.use_open_ports,
             regions: self.regions,
         }
@@ -391,7 +433,7 @@ where
             let prov = (*self.credential_provider)()?;
             let Self {
                 use_open_ports,
-                max_instance_duration_hours,
+                mode,
                 ref mut regions,
                 ..
             } = self;
@@ -415,7 +457,7 @@ where
             regions
                 .get_mut(&l.region)
                 .unwrap()
-                .launch(*max_instance_duration_hours, l.max_wait, l.machines)
+                .launch(mode.clone(), l.max_wait, l.machines)
                 .instrument(region_span)
                 .await?;
             Ok(())
@@ -490,17 +532,14 @@ where
                 // So, we help it by taking the appropriate RegionLauncher out of the hashmap,
                 // running `launch()`, then putting everything back later.
                 let max_wait = max_wait;
-                let max_instance_duration_hours = self.max_instance_duration_hours;
                 let regions = futures_util::future::join_all(haves.into_iter().map(
                     |(region_name, machines)| {
                         // unwrap ok because everything is a have now
                         let mut region_launcher = self.regions.remove(&region_name).unwrap();
                         let region_span = tracing::debug_span!("region", region = %region_name);
+                        let mode = self.mode.clone();
                         async move {
-                            if let Err(e) = region_launcher
-                                .launch(max_instance_duration_hours, max_wait, machines)
-                                .await
-                            {
+                            if let Err(e) = region_launcher.launch(mode, max_wait, machines).await {
                                 Err((region_name, region_launcher, e))
                             } else {
                                 Ok((region_name, region_launcher))
@@ -684,29 +723,40 @@ impl RegionLauncher {
     ///
     /// Make spot instance requests, wait for the instances, and then call the
     /// instance setup functions.
-    #[instrument(level = "debug", skip(self, max_instance_duration_hours, max_wait))]
+    #[instrument(level = "debug", skip(self, max_wait))]
     pub async fn launch<M>(
         &mut self,
-        max_instance_duration_hours: usize,
-        max_wait: Option<time::Duration>,
+        mode: LaunchMode,
+        mut max_wait: Option<time::Duration>,
         machines: M,
     ) -> Result<(), Report>
     where
         M: IntoIterator<Item = (String, Setup)> + std::fmt::Debug,
     {
-        self.make_spot_instance_requests(
-            max_instance_duration_hours * 60, // 60 mins/hr
-            machines,
-        )
-        .await
-        .wrap_err("failed to make spot instance requests")?;
+        match mode {
+            LaunchMode::DefinedDuration {
+                hours: max_instance_duration_hours,
+            } => {
+                self.make_spot_instance_requests(
+                    max_instance_duration_hours * 60, // 60 mins/hr
+                    machines,
+                )
+                .await
+                .wrap_err("failed to make spot instance requests")?;
 
-        let start = time::Instant::now();
-        self.wait_for_spot_instance_requests(max_wait)
-            .await
-            .wrap_err("failed while waiting for spot instances fulfilment")?;
-        if let Some(mut d) = max_wait {
-            d -= time::Instant::now().duration_since(start);
+                let start = time::Instant::now();
+                self.wait_for_spot_instance_requests(max_wait)
+                    .await
+                    .wrap_err("failed while waiting for spot instances fulfilment")?;
+                if let Some(ref mut d) = max_wait {
+                    *d -= time::Instant::now().duration_since(start);
+                }
+            }
+            LaunchMode::OnDemand => {
+                self.make_on_demand_requests(machines)
+                    .await
+                    .wrap_err("failed to start on demand instances")?;
+            }
         }
 
         self.wait_for_instances(max_wait)
@@ -825,6 +875,118 @@ impl RegionLauncher {
 
         self.ssh_key_name = key_name;
         Ok(self)
+    }
+
+    #[instrument(level = "trace", skip(self))]
+    async fn make_on_demand_requests<M>(&mut self, machines: M) -> Result<(), Report>
+    where
+        M: IntoIterator<Item = (String, Setup)>,
+        M: std::fmt::Debug,
+    {
+        tracing::info!("launching on demand instances");
+
+        // minimize the number of instance requests:
+        for ((ami, instance_type), reqs) in machines
+            .into_iter()
+            .map(|(name, m)| {
+                // attach labels (ami name, instance type):
+                // the only fields that vary between tsunami spot instance requests
+                ((m.ami.clone(), m.instance_type.clone()), (name, m))
+            })
+            .into_group_map()
+        // group by the labels
+        {
+            let inst_span = tracing::debug_span!("run_instance", ?ami, ?instance_type);
+            async {
+                // and issue one spot request per group
+                let mut req = rusoto_ec2::RunInstancesRequest::default();
+                req.image_id = Some(ami);
+                req.instance_type = Some(instance_type);
+                req.placement = {
+                    if let AvailabilityZoneSpec::Any = self.availability_zone {
+                        None
+                    } else {
+                        let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
+                        tracing::trace!("creating placement group");
+                        let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
+                        let placement_name = super::rand_name("placement");
+                        req.group_name = Some(placement_name.clone());
+                        req.strategy = Some(String::from("cluster"));
+                        ec2.create_placement_group(req)
+                            .await
+                            .wrap_err("failed to create new placement group")?;
+                        tracing::trace!("created placement group");
+                        let mut placement = rusoto_ec2::Placement::default();
+                        placement.group_name = Some(placement_name);
+                        match self.availability_zone {
+                            AvailabilityZoneSpec::Cluster(_) => {
+                                placement.availability_zone = None;
+                            }
+                            AvailabilityZoneSpec::Specify(ref av) => {
+                                placement.availability_zone = Some(av.clone());
+                            }
+                            _ => unreachable!(),
+                        }
+
+                        Some(placement)
+                    }
+                };
+
+                req.security_group_ids = Some(vec![self.security_group_id.clone()]);
+                req.key_name = Some(self.ssh_key_name.clone());
+                req.min_count = reqs.len() as i64;
+                req.max_count = reqs.len() as i64;
+                req.instance_initiated_shutdown_behavior = Some("terminate".to_string());
+
+                // TODO: VPC
+
+                tracing::trace!("issuing request");
+                let res = self
+                    .client
+                    .as_mut()
+                    .unwrap()
+                    .run_instances(req)
+                    .await
+                    .wrap_err("failed to request on demand instances")?;
+
+                // collect for length check below
+                let instances: Vec<String> = res
+                    .instances
+                    .expect("run_instances should always return instances")
+                    .into_iter()
+                    .filter_map(|i| i.instance_id)
+                    .inspect(|instance_id| {
+                        tracing::trace!(id = %instance_id, "launched on-demand instance");
+                    })
+                    .collect();
+
+                // zip_eq will panic if lengths not equal, so check beforehand
+                eyre::ensure!(
+                    instances.len() == reqs.len(),
+                    "Got {} instances but expected {}",
+                    instances.len(),
+                    reqs.len(),
+                );
+
+                self.instances
+                    .extend(instances.into_iter().zip_eq(reqs.into_iter()).map(
+                        |(instance_id, (name, setup))| {
+                            let setup = TaggedSetup {
+                                name,
+                                setup,
+                                ip_info: None,
+                            };
+                            (instance_id, setup)
+                        },
+                    ));
+
+                Ok(())
+            }
+            .instrument(inst_span)
+            .await?;
+        }
+
+        Ok(())
     }
 
     /// Make one-time spot instance requests, which will automatically get terminated after
@@ -1351,6 +1513,9 @@ impl RegionLauncher {
     #[instrument(level = "debug")]
     async fn cancel_spot_instance_requests(&self) -> Result<(), Report> {
         tracing::warn!("wait time exceeded for -- cancelling run");
+        if self.spot_requests.is_empty() {
+            return Ok(());
+        }
         let request_ids = self.spot_requests.keys().cloned().collect();
         let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
         cancel.spot_instance_request_ids = request_ids;
@@ -1495,7 +1660,7 @@ mod test {
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         let mut l = super::Launcher::default();
         // make the defined-duration instances expire after 1 hour
-        l.set_max_instance_duration(1);
+        l.set_mode(LaunchMode::duration_spot(1));
         rt.block_on(async move {
             if let Err(e) = do_make_machine_and_ssh_setupfn(&mut l).await {
                 // failed test.
