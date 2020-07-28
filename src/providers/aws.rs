@@ -4,8 +4,9 @@
 //! It internally uses the lower-level, region-specific [`aws::RegionLauncher`].
 //! Both these types use [`aws::Setup`] as their descriptor type.
 //!
-//! This implementation uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
-//! instances.
+//! By default, this implementation uses 6-hour [defined
+//! duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+//! spot instances. You can switch to on-demand instances using [`Launcher::set_mode`].
 //!
 //! # Examples
 //! ```rust,no_run
@@ -16,7 +17,7 @@
 //!
 //!     let mut l = aws::Launcher::default();
 //!     // make the defined-duration instances expire after 1 hour
-//!     l.set_max_instance_duration(1);
+//!     l.set_mode(aws::LaunchMode::duration_spot(1));
 //!     l.spawn(vec![(String::from("my machine"), aws::Setup::default())], None).await.unwrap();
 //!     let vms = l.connect_all().await.unwrap();
 //!     let my_machine = vms.get("my machine").unwrap();
@@ -42,7 +43,7 @@
 //!     let mut aws = aws::Launcher::default();
 //!     // make the defined-duration instances expire after 1 hour
 //!     // default is the maximum (6 hours)
-//!     aws.set_max_instance_duration(1).open_ports();
+//!     aws.set_mode(aws::LaunchMode::duration_spot(1)).open_ports();
 //!
 //!     // Create a machine descriptor and add it to the Tsunami
 //!     let m = aws::Setup::default()
@@ -388,6 +389,8 @@ impl<P> Launcher<P> {
     }
 
     /// Set the launch mode to use for future instances.
+    ///
+    /// See [`LaunchMode`] for more details.
     pub fn set_mode(&mut self, mode: LaunchMode) -> &mut Self {
         self.mode = mode;
         self
@@ -633,16 +636,16 @@ struct TaggedSetup {
     ip_info: Option<IpInfo>,
 }
 
-/// Region specific. Launch AWS EC2 spot instances.
+/// Region specific. Launch AWS EC2 instances.
 ///
 /// This implementation uses [rusoto](https://crates.io/crates/rusoto_core) to connect to AWS.
 ///
-/// EC2 spot instances are normally subject to termination at any point. This library instead
-/// uses [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
-/// instances, which cost slightly more, but are never prematurely terminated.  The lifetime of
-/// such instances must be declared in advance (1-6 hours). By default, we use 6 hours (the
-/// maximum). To change this, RegionLauncher respects the limit specified in
-/// [`Launcher::set_max_instance_duration`](Launcher::set_max_instance_duration).
+/// By default, `RegionLauncher` launches uses AWS [defined
+/// duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+/// spot instances. These cost slightly more than regular spot instances, but are never prematurely
+/// terminated.  The lifetime of such instances must be declared in advance (1-6 hours). By
+/// default, we use 6 hours (the maximum). To change this, or to switch to on-demand instances, use
+/// [`Launcher::set_mode`].
 ///
 /// You must call [`RegionLauncher::shutdown`] to terminate the instances.
 #[derive(Educe, Default)]
