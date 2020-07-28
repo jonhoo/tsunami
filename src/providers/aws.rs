@@ -877,6 +877,53 @@ impl RegionLauncher {
         Ok(self)
     }
 
+    #[instrument(level = "trace", skip(self, mk))]
+    async fn make_placement<R>(
+        &mut self,
+        mk: impl FnOnce(String, Option<String>) -> R,
+    ) -> Result<Option<R>, Report> {
+        if let AvailabilityZoneSpec::Any = self.availability_zone {
+            Ok(None)
+        } else {
+            let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
+            tracing::trace!("creating placement group");
+            let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
+            let placement_name = super::rand_name("placement");
+            req.group_name = Some(placement_name.clone());
+            req.strategy = Some(String::from("cluster"));
+            ec2.create_placement_group(req).await?;
+            tracing::trace!("created placement group");
+
+            Ok(Some(mk(
+                placement_name,
+                match self.availability_zone {
+                    AvailabilityZoneSpec::Cluster(_) => None,
+                    AvailabilityZoneSpec::Specify(ref av) => Some(av.clone()),
+                    _ => unreachable!(),
+                },
+            )))
+        }
+    }
+
+    fn for_each_machine_group<M>(
+        machines: M,
+    ) -> impl Iterator<Item = ((String, String), Vec<(String, Setup)>)> + Send
+    where
+        M: IntoIterator<Item = (String, Setup)>,
+        M: std::fmt::Debug,
+    {
+        // minimize the number of instance requests:
+        machines
+            .into_iter()
+            .map(|(name, m)| {
+                // attach labels (ami name, instance type):
+                // the only fields that vary between tsunami spot instance requests
+                ((m.ami.clone(), m.instance_type.clone()), (name, m))
+            })
+            .into_group_map()
+            .into_iter()
+    }
+
     #[instrument(level = "trace", skip(self))]
     async fn make_on_demand_requests<M>(&mut self, machines: M) -> Result<(), Report>
     where
@@ -886,52 +933,21 @@ impl RegionLauncher {
         tracing::info!("launching on demand instances");
 
         // minimize the number of instance requests:
-        for ((ami, instance_type), reqs) in machines
-            .into_iter()
-            .map(|(name, m)| {
-                // attach labels (ami name, instance type):
-                // the only fields that vary between tsunami spot instance requests
-                ((m.ami.clone(), m.instance_type.clone()), (name, m))
-            })
-            .into_group_map()
-        // group by the labels
-        {
+        for ((ami, instance_type), reqs) in Self::for_each_machine_group(machines) {
             let inst_span = tracing::debug_span!("run_instance", ?ami, ?instance_type);
             async {
                 // and issue one spot request per group
                 let mut req = rusoto_ec2::RunInstancesRequest::default();
                 req.image_id = Some(ami);
                 req.instance_type = Some(instance_type);
-                req.placement = {
-                    if let AvailabilityZoneSpec::Any = self.availability_zone {
-                        None
-                    } else {
-                        let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
-                        tracing::trace!("creating placement group");
-                        let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
-                        let placement_name = super::rand_name("placement");
-                        req.group_name = Some(placement_name.clone());
-                        req.strategy = Some(String::from("cluster"));
-                        ec2.create_placement_group(req)
-                            .await
-                            .wrap_err("failed to create new placement group")?;
-                        tracing::trace!("created placement group");
-                        let mut placement = rusoto_ec2::Placement::default();
-                        placement.group_name = Some(placement_name);
-                        match self.availability_zone {
-                            AvailabilityZoneSpec::Cluster(_) => {
-                                placement.availability_zone = None;
-                            }
-                            AvailabilityZoneSpec::Specify(ref av) => {
-                                placement.availability_zone = Some(av.clone());
-                            }
-                            _ => unreachable!(),
-                        }
-
-                        Some(placement)
-                    }
-                };
-
+                req.placement = self
+                    .make_placement(|group_name, az| rusoto_ec2::Placement {
+                        group_name: Some(group_name),
+                        availability_zone: az,
+                        ..Default::default()
+                    })
+                    .await
+                    .wrap_err("create new placement group")?;
                 req.security_group_ids = Some(vec![self.security_group_id.clone()]);
                 req.key_name = Some(self.ssh_key_name.clone());
                 req.min_count = reqs.len() as i64;
@@ -1012,52 +1028,21 @@ impl RegionLauncher {
         tracing::info!("launching spot requests");
 
         // minimize the number of spot requests:
-        for ((ami, instance_type), reqs) in machines
-            .into_iter()
-            .map(|(name, m)| {
-                // attach labels (ami name, instance type):
-                // the only fields that vary between tsunami spot instance requests
-                ((m.ami.clone(), m.instance_type.clone()), (name, m))
-            })
-            .into_group_map()
-        // group by the labels
-        {
+        for ((ami, instance_type), reqs) in Self::for_each_machine_group(machines) {
             let spot_span = tracing::debug_span!("spot_request", ?ami, ?instance_type);
             async {
                 // and issue one spot request per group
                 let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
                 launch.image_id = Some(ami);
                 launch.instance_type = Some(instance_type);
-                launch.placement = {
-                    if let AvailabilityZoneSpec::Any = self.availability_zone {
-                        None
-                    } else {
-                        let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
-                        tracing::trace!("creating placement group");
-                        let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
-                        let placement_name = super::rand_name("placement");
-                        req.group_name = Some(placement_name.clone());
-                        req.strategy = Some(String::from("cluster"));
-                        ec2.create_placement_group(req)
-                            .await
-                            .wrap_err("failed to create new placement group")?;
-                        tracing::trace!("created placement group");
-                        let mut placement = rusoto_ec2::SpotPlacement::default();
-                        placement.group_name = Some(placement_name);
-                        match self.availability_zone {
-                            AvailabilityZoneSpec::Cluster(_) => {
-                                placement.availability_zone = None;
-                            }
-                            AvailabilityZoneSpec::Specify(ref av) => {
-                                placement.availability_zone = Some(av.clone());
-                            }
-                            _ => unreachable!(),
-                        }
-
-                        Some(placement)
-                    }
-                };
-
+                launch.placement = self
+                    .make_placement(|group_name, az| rusoto_ec2::SpotPlacement {
+                        group_name: Some(group_name),
+                        availability_zone: az,
+                        ..Default::default()
+                    })
+                    .await
+                    .wrap_err("create new placement group")?;
                 launch.security_group_ids = Some(vec![self.security_group_id.clone()]);
                 launch.key_name = Some(self.ssh_key_name.clone());
 
