@@ -880,6 +880,11 @@ impl RegionLauncher {
         Ok(self)
     }
 
+    /// Make a new placement for a launch request.
+    ///
+    /// This method takes a "placement maker" (`mk`) to allow using this method for both
+    /// `SpotPlacement` and `Placement`. The `mk` function is passed a placement name and an
+    /// availability zone, and is expected to return an appropriate placement type.
     #[instrument(level = "trace", skip(self, mk))]
     async fn make_placement<R>(
         &mut self,
