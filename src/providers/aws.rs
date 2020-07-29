@@ -759,6 +759,9 @@ impl RegionLauncher {
                 self.make_on_demand_requests(machines)
                     .await
                     .wrap_err("failed to start on demand instances")?;
+
+                // give EC2 a bit of time to discover the instances
+                tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
             }
         }
 
