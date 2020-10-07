@@ -115,8 +115,16 @@ use tracing_futures::Instrument;
 #[allow(missing_copy_implementations)]
 #[non_exhaustive]
 pub enum LaunchMode {
-    /// Use AWS [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances) spot instances.
+    /// Use AWS [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+    /// spot instances. Fails with an error if there is no spot capacity.
     DefinedDuration {
+        /// The lifetime of the defined duration instances.
+        /// This value must be between 1 and 6 hours.
+        hours: usize,
+    },
+    /// Try to use AWS [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+    /// spot instances. If that fails, e.g. due to lack of capacity, use `OnDemand` instead.
+    TrySpot {
         /// The lifetime of the defined duration instances.
         /// This value must be between 1 and 6 hours.
         hours: usize,
@@ -727,41 +735,69 @@ impl RegionLauncher {
     /// Make spot instance requests, wait for the instances, and then call the
     /// instance setup functions.
     #[instrument(level = "debug", skip(self, max_wait))]
-    pub async fn launch<M>(
-        &mut self,
-        mode: LaunchMode,
+    pub async fn launch<'l, M>(
+        &'l mut self,
+        mut mode: LaunchMode,
         mut max_wait: Option<time::Duration>,
         machines: M,
     ) -> Result<(), Report>
     where
         M: IntoIterator<Item = (String, Setup)> + std::fmt::Debug,
     {
-        match mode {
-            LaunchMode::DefinedDuration {
-                hours: max_instance_duration_hours,
-            } => {
-                self.make_spot_instance_requests(
-                    max_instance_duration_hours * 60, // 60 mins/hr
-                    machines,
-                )
-                .await
-                .wrap_err("failed to make spot instance requests")?;
+        let machines: Vec<_> = machines.into_iter().collect();
 
-                let start = time::Instant::now();
-                self.wait_for_spot_instance_requests(max_wait)
-                    .await
-                    .wrap_err("failed while waiting for spot instances fulfilment")?;
-                if let Some(ref mut d) = max_wait {
-                    *d -= time::Instant::now().duration_since(start);
+        loop {
+            let machines = machines.clone();
+            match mode {
+                LaunchMode::TrySpot {
+                    hours: max_instance_duration_hours,
                 }
-            }
-            LaunchMode::OnDemand => {
-                self.make_on_demand_requests(machines)
+                | LaunchMode::DefinedDuration {
+                    hours: max_instance_duration_hours,
+                } => {
+                    self.make_spot_instance_requests(
+                        max_instance_duration_hours * 60, // 60 mins/hr
+                        machines,
+                    )
                     .await
-                    .wrap_err("failed to start on demand instances")?;
+                    .wrap_err("failed to make spot instance requests")?;
 
-                // give EC2 a bit of time to discover the instances
-                tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
+                    let start = time::Instant::now();
+                    if let Err(e) = self
+                        .wait_for_spot_instance_requests(max_wait)
+                        .await
+                        .wrap_err(eyre!(
+                            "failed while waiting for spot instances fulfilment in {}",
+                            self.region.name()
+                        ))
+                    {
+                        if let LaunchMode::TrySpot { .. } = mode {
+                            mode = LaunchMode::OnDemand;
+                            tracing::debug!(err = ?e, "re-trying with OnDemand instace");
+                            continue;
+                        }
+
+                        Err(e)?;
+                    }
+
+                    if let Some(ref mut d) = max_wait {
+                        *d -= time::Instant::now().duration_since(start);
+                    }
+
+                    break;
+                }
+                LaunchMode::OnDemand => {
+                    self.make_on_demand_requests(machines)
+                        .await
+                        .wrap_err(eyre!(
+                            "failed to start on demand instances in {}",
+                            self.region.name()
+                        ))?;
+
+                    // give EC2 a bit of time to discover the instances
+                    tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
+                    break;
+                }
             }
         }
 
