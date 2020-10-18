@@ -144,6 +144,19 @@ impl LaunchMode {
         Self::DefinedDuration { hours }
     }
 
+    /// Try to launch using AWS [defined
+    /// duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+    /// spot instances, and fall back to OnDemand instances otherwise.
+    ///
+    /// The lifetime of such instances must be declared in advance (1-6 hours).
+    /// This method thus clamps `hours` to be between 1 and 6.
+    pub fn try_duration_spot(hours: usize) -> Self {
+        match Self::duration_spot(hours) {
+            Self::DefinedDuration { hours } => Self::TrySpot { hours },
+            _ => unreachable!(),
+        }
+    }
+
     /// Launch using regular AWS on-demand instances.
     pub fn on_demand() -> Self {
         Self::OnDemand
