@@ -755,6 +755,9 @@ impl RegionLauncher {
                 hours: max_instance_duration_hours,
             } => {
                 let machines = machines.clone();
+
+                // leave this to short-circuit: we only want to fall back to OnDemand if there is
+                // no spot capacity, not if we can't make the request in the first place.
                 self.make_spot_instance_requests(
                     max_instance_duration_hours * 60, // 60 mins/hr
                     machines,
@@ -776,9 +779,9 @@ impl RegionLauncher {
                     if let LaunchMode::TrySpot { .. } = mode {
                         tracing::debug!(err = ?e, "re-trying with OnDemand instace");
                         do_ondemand = true;
+                    } else {
+                        Err(e)?;
                     }
-
-                    Err(e)?;
                 }
 
                 if let Some(ref mut d) = max_wait {
