@@ -41,6 +41,8 @@ fn wait_for_continue() {
 #[tokio::main]
 async fn main() -> Result<(), Report> {
     let opt = Opt::from_args();
+    tracing_subscriber::fmt::init();
+    color_eyre::install()?;
 
     match opt.provider {
         Providers::AWS => {

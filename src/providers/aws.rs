@@ -115,8 +115,16 @@ use tracing_futures::Instrument;
 #[allow(missing_copy_implementations)]
 #[non_exhaustive]
 pub enum LaunchMode {
-    /// Use AWS [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances) spot instances.
+    /// Use AWS [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+    /// spot instances. Fails with an error if there is no spot capacity.
     DefinedDuration {
+        /// The lifetime of the defined duration instances.
+        /// This value must be between 1 and 6 hours.
+        hours: usize,
+    },
+    /// Try to use AWS [defined duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+    /// spot instances. If that fails, e.g. due to lack of capacity, use `OnDemand` instead.
+    TrySpot {
         /// The lifetime of the defined duration instances.
         /// This value must be between 1 and 6 hours.
         hours: usize,
@@ -134,6 +142,19 @@ impl LaunchMode {
         let hours = std::cmp::min(hours, 6);
         let hours = std::cmp::max(hours, 1);
         Self::DefinedDuration { hours }
+    }
+
+    /// Try to launch using AWS [defined
+    /// duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances)
+    /// spot instances, and fall back to OnDemand instances otherwise.
+    ///
+    /// The lifetime of such instances must be declared in advance (1-6 hours).
+    /// This method thus clamps `hours` to be between 1 and 6.
+    pub fn try_duration_spot(hours: usize) -> Self {
+        match Self::duration_spot(hours) {
+            Self::DefinedDuration { hours } => Self::TrySpot { hours },
+            _ => unreachable!(),
+        }
     }
 
     /// Launch using regular AWS on-demand instances.
@@ -736,10 +757,20 @@ impl RegionLauncher {
     where
         M: IntoIterator<Item = (String, Setup)> + std::fmt::Debug,
     {
+        let machines: Vec<_> = machines.into_iter().collect();
+        let machines = machines.clone();
+        let mut do_ondemand = false;
         match mode {
-            LaunchMode::DefinedDuration {
+            LaunchMode::TrySpot {
+                hours: max_instance_duration_hours,
+            }
+            | LaunchMode::DefinedDuration {
                 hours: max_instance_duration_hours,
             } => {
+                let machines = machines.clone();
+
+                // leave this to short-circuit: we only want to fall back to OnDemand if there is
+                // no spot capacity, not if we can't make the request in the first place.
                 self.make_spot_instance_requests(
                     max_instance_duration_hours * 60, // 60 mins/hr
                     machines,
@@ -748,21 +779,43 @@ impl RegionLauncher {
                 .wrap_err("failed to make spot instance requests")?;
 
                 let start = time::Instant::now();
-                self.wait_for_spot_instance_requests(max_wait)
+                if let Err(e) = self
+                    .wait_for_spot_instance_requests(max_wait)
                     .await
-                    .wrap_err("failed while waiting for spot instances fulfilment")?;
+                    .wrap_err(eyre!(
+                        "failed while waiting for spot instances fulfilment in {}",
+                        self.region.name()
+                    ))
+                {
+                    // if wait_for_spot_instance_requests returned an Err, it will have cleaned up
+                    // the spot instance requests already.
+                    if let LaunchMode::TrySpot { .. } = mode {
+                        tracing::debug!(err = ?e, "re-trying with OnDemand instace");
+                        do_ondemand = true;
+                    } else {
+                        Err(e)?;
+                    }
+                }
+
                 if let Some(ref mut d) = max_wait {
                     *d -= time::Instant::now().duration_since(start);
                 }
             }
             LaunchMode::OnDemand => {
-                self.make_on_demand_requests(machines)
-                    .await
-                    .wrap_err("failed to start on demand instances")?;
-
-                // give EC2 a bit of time to discover the instances
-                tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
+                do_ondemand = true;
             }
+        }
+
+        if do_ondemand {
+            self.make_on_demand_requests(machines)
+                .await
+                .wrap_err(eyre!(
+                    "failed to start on demand instances in {}",
+                    self.region.name()
+                ))?;
+
+            // give EC2 a bit of time to discover the instances
+            tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
         }
 
         self.wait_for_instances(max_wait)
