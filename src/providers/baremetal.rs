@@ -287,7 +287,7 @@ mod test {
     #[test]
     #[ignore]
     fn localhost() -> Result<(), Report> {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let s = super::Setup::new("127.0.0.1:22", None)?;
         let mut m: super::Machine = Default::default();
         let desc = crate::providers::LaunchDescriptor {

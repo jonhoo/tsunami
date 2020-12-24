@@ -815,7 +815,7 @@ impl RegionLauncher {
                 ))?;
 
             // give EC2 a bit of time to discover the instances
-            tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
 
         self.wait_for_instances(max_wait)
@@ -1226,7 +1226,7 @@ impl RegionLauncher {
             }
 
             // let's not hammer the API
-            tokio::time::delay_for(time::Duration::from_secs(1)).await;
+            tokio::time::sleep(time::Duration::from_secs(1)).await;
 
             if let Some(wait_limit) = max_wait {
                 if start.elapsed() <= wait_limit {
@@ -1321,7 +1321,7 @@ impl RegionLauncher {
             }
 
             // let's not hammer the API
-            tokio::time::delay_for(time::Duration::from_secs(1)).await;
+            tokio::time::sleep(time::Duration::from_secs(1)).await;
 
             if let Some(wait_limit) = max_wait {
                 if start.elapsed() <= wait_limit {
@@ -1483,7 +1483,7 @@ impl RegionLauncher {
                             let err = r.body_as_str();
                             if err.contains("<Code>DependencyViolation</Code>") {
                                 tracing::trace!("instances not yet shut down -- retrying");
-                                tokio::time::delay_for(tokio::time::Duration::from_secs(5)).await;
+                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                             } else {
                                 Err(Report::new(RusotoError::<
                                     rusoto_ec2::DeleteSecurityGroupError,
@@ -1526,7 +1526,7 @@ impl RegionLauncher {
                     tracing::trace!("spot instance requests not yet ready");
 
                     // let's not hammer the API
-                    tokio::time::delay_for(time::Duration::from_secs(1)).await;
+                    tokio::time::sleep(time::Duration::from_secs(1)).await;
                     continue;
                 } else {
                     res.wrap_err("failed to describe spot instances")?;
@@ -1605,7 +1605,7 @@ impl RegionLauncher {
             }
 
             // let's not hammer the API
-            tokio::time::delay_for(time::Duration::from_secs(1)).await;
+            tokio::time::sleep(time::Duration::from_secs(1)).await;
         }
         Ok(())
     }
@@ -1706,7 +1706,7 @@ mod test {
     fn make_machine_and_ssh_setupfn() {
         use crate::providers::Launcher;
         tracing_subscriber::fmt::init();
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let mut l = super::Launcher::default();
         // make the defined-duration instances expire after 1 hour
         l.set_mode(LaunchMode::duration_spot(1));
@@ -1724,7 +1724,7 @@ mod test {
     #[test]
     #[ignore]
     fn make_key() -> Result<(), Report> {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let region = Region::UsEast1;
         let provider = DefaultCredentialsProvider::new()?;
         let ec2 = RegionLauncher::connect(region, super::AvailabilityZoneSpec::Any, provider)?;
@@ -1778,7 +1778,7 @@ mod test {
         let region = "us-east-1";
         let provider = DefaultCredentialsProvider::new()?;
 
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let mut ec2 =
                 RegionLauncher::new(region, super::AvailabilityZoneSpec::Any, provider, false)
