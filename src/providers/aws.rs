@@ -793,7 +793,7 @@ impl RegionLauncher {
                         tracing::debug!(err = ?e, "re-trying with OnDemand instace");
                         do_ondemand = true;
                     } else {
-                        Err(e)?;
+                        return Err(e);
                     }
                 }
 
@@ -1469,10 +1469,9 @@ impl RegionLauncher {
                 let start = tokio::time::Instant::now();
                 loop {
                     if start.elapsed() > tokio::time::Duration::from_secs(5 * 60) {
-                        Err(Report::msg(
+                        return Err(Report::msg(
                             "failed to clean up temporary security group after 5 minutes.",
-                        ))?;
-                        unreachable!();
+                        ));
                     }
 
                     let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
@@ -1493,9 +1492,8 @@ impl RegionLauncher {
                             }
                         }
                         Err(e) => {
-                            Err(Report::new(e)
-                                .wrap_err("failed to clean up temporary security group"))?;
-                            unreachable!();
+                            return Err(Report::new(e)
+                                .wrap_err("failed to clean up temporary security group"));
                         }
                     }
                 }
@@ -1650,9 +1648,9 @@ impl UbuntuAmi {
     }
 }
 
-impl Into<String> for UbuntuAmi {
-    fn into(self) -> String {
-        self.0
+impl From<UbuntuAmi> for String {
+    fn from(s: UbuntuAmi) -> String {
+        s.0
     }
 }
 

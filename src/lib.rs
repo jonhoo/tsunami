@@ -174,6 +174,7 @@
     missing_debug_implementations
 )]
 #![allow(clippy::type_complexity)]
+#![allow(clippy::field_reassign_with_default)]
 
 use color_eyre::Report;
 use std::collections::HashMap;

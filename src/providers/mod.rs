@@ -170,6 +170,7 @@ fn rand_name_sep(prefix: &str, sep: impl Into<Sep>) -> String {
     name
 }
 
+#[allow(clippy::too_many_arguments)]
 #[cfg(any(feature = "aws", feature = "azure"))]
 #[instrument(skip(max_wait, private_key, f))]
 async fn setup_machine(
