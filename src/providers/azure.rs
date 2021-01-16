@@ -116,9 +116,9 @@ pub struct Setup {
     setup_fn: Option<
         Arc<
             dyn for<'r> Fn(
-                    &'r crate::Machine<'_>,
-                )
-                    -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
+                &'r crate::Machine<'_>,
+            )
+                -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
                 + Send
                 + Sync
                 + 'static,
@@ -205,8 +205,8 @@ impl Setup {
     pub fn setup(
         mut self,
         setup: impl for<'r> Fn(
-                &'r crate::Machine<'_>,
-            ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
+            &'r crate::Machine<'_>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
             + Send
             + Sync
             + 'static,
@@ -721,7 +721,7 @@ mod test {
     #[test]
     #[ignore]
     fn azure_resource_group() {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         static TEST_RG_NAME: &str = "test";
         rt.block_on(async move {
             azcmd::create_resource_group(Region::EastUs, TEST_RG_NAME)
@@ -779,7 +779,7 @@ mod test {
     #[ignore]
     fn azure_launch_with_setupfn() {
         use crate::providers::Launcher;
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let mut azure = super::Launcher::default();
         rt.block_on(async move {
             if let Err(e) = do_make_machine_and_ssh_setupfn(&mut azure).await {

@@ -162,10 +162,15 @@ fn rand_name_sep(prefix: &str, sep: impl Into<Sep>) -> String {
     let sep = sep.into();
 
     let mut name = format!("tsunami{}{}{}", sep.0, prefix, sep.0);
-    name.extend(rng.sample_iter(&rand::distributions::Alphanumeric).take(10));
+    name.extend(
+        rng.sample_iter(&rand::distributions::Alphanumeric)
+            .take(10)
+            .map(char::from),
+    );
     name
 }
 
+#[allow(clippy::too_many_arguments)]
 #[cfg(any(feature = "aws", feature = "azure"))]
 #[instrument(skip(max_wait, private_key, f))]
 async fn setup_machine(

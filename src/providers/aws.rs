@@ -216,9 +216,9 @@ pub struct Setup {
     setup_fn: Option<
         Arc<
             dyn for<'r> Fn(
-                    &'r crate::Machine<'_>,
-                )
-                    -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
+                &'r crate::Machine<'_>,
+            )
+                -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
                 + Send
                 + Sync
                 + 'static,
@@ -325,8 +325,8 @@ impl Setup {
     pub fn setup(
         mut self,
         setup: impl for<'r> Fn(
-                &'r crate::Machine<'_>,
-            ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
+            &'r crate::Machine<'_>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
             + Send
             + Sync
             + 'static,
@@ -793,7 +793,7 @@ impl RegionLauncher {
                         tracing::debug!(err = ?e, "re-trying with OnDemand instace");
                         do_ondemand = true;
                     } else {
-                        Err(e)?;
+                        return Err(e);
                     }
                 }
 
@@ -815,7 +815,7 @@ impl RegionLauncher {
                 ))?;
 
             // give EC2 a bit of time to discover the instances
-            tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
 
         self.wait_for_instances(max_wait)
@@ -831,9 +831,11 @@ impl RegionLauncher {
         // set up network firewall for machines
         let group_name = super::rand_name("security");
         tracing::debug!(name = %group_name, "creating security group");
-        let mut req = rusoto_ec2::CreateSecurityGroupRequest::default();
-        req.group_name = group_name;
-        req.description = "temporary access group for tsunami VMs".to_string();
+        let req = rusoto_ec2::CreateSecurityGroupRequest {
+            group_name,
+            description: "temporary access group for tsunami VMs".to_string(),
+            ..Default::default()
+        };
         let res = ec2
             .create_security_group(req)
             .await
@@ -843,14 +845,15 @@ impl RegionLauncher {
             .expect("aws created security group with no group id");
         tracing::trace!(id = %group_id, "security group created");
 
-        let mut req = rusoto_ec2::AuthorizeSecurityGroupIngressRequest::default();
-        req.group_id = Some(group_id.clone());
-
-        // icmp access
-        req.ip_protocol = Some("icmp".to_string());
-        req.from_port = Some(-1);
-        req.to_port = Some(-1);
-        req.cidr_ip = Some("0.0.0.0/0".to_string());
+        let mut req = rusoto_ec2::AuthorizeSecurityGroupIngressRequest {
+            group_id: Some(group_id.clone()),
+            // icmp access
+            ip_protocol: Some("icmp".to_string()),
+            from_port: Some(-1),
+            to_port: Some(-1),
+            cidr_ip: Some("0.0.0.0/0".to_string()),
+            ..Default::default()
+        };
         tracing::trace!("adding icmp access");
         ec2.authorize_security_group_ingress(req.clone())
             .await
@@ -911,9 +914,11 @@ impl RegionLauncher {
 
         // construct keypair for ssh access
         tracing::debug!("creating keypair");
-        let mut req = rusoto_ec2::CreateKeyPairRequest::default();
         let key_name = super::rand_name("key");
-        req.key_name = key_name.clone();
+        let req = rusoto_ec2::CreateKeyPairRequest {
+            key_name: key_name.clone(),
+            ..Default::default()
+        };
         let res = ec2
             .create_key_pair(req)
             .await
@@ -951,10 +956,12 @@ impl RegionLauncher {
         } else {
             let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
             tracing::trace!("creating placement group");
-            let mut req = rusoto_ec2::CreatePlacementGroupRequest::default();
             let placement_name = super::rand_name("placement");
-            req.group_name = Some(placement_name.clone());
-            req.strategy = Some(String::from("cluster"));
+            let req = rusoto_ec2::CreatePlacementGroupRequest {
+                group_name: Some(placement_name.clone()),
+                strategy: Some(String::from("cluster")),
+                ..Default::default()
+            };
             ec2.create_placement_group(req).await?;
             tracing::trace!("created placement group");
 
@@ -1001,10 +1008,7 @@ impl RegionLauncher {
             let inst_span = tracing::debug_span!("run_instance", ?ami, ?instance_type);
             async {
                 // and issue one spot request per group
-                let mut req = rusoto_ec2::RunInstancesRequest::default();
-                req.image_id = Some(ami);
-                req.instance_type = Some(instance_type);
-                req.placement = self
+                let placement = self
                     .make_placement(|group_name, az| rusoto_ec2::Placement {
                         group_name: Some(group_name),
                         availability_zone: az,
@@ -1012,11 +1016,17 @@ impl RegionLauncher {
                     })
                     .await
                     .wrap_err("create new placement group")?;
-                req.security_group_ids = Some(vec![self.security_group_id.clone()]);
-                req.key_name = Some(self.ssh_key_name.clone());
-                req.min_count = reqs.len() as i64;
-                req.max_count = reqs.len() as i64;
-                req.instance_initiated_shutdown_behavior = Some("terminate".to_string());
+                let req = rusoto_ec2::RunInstancesRequest {
+                    image_id: Some(ami),
+                    instance_type: Some(instance_type),
+                    placement,
+                    security_group_ids: Some(vec![self.security_group_id.clone()]),
+                    key_name: Some(self.ssh_key_name.clone()),
+                    min_count: reqs.len() as i64,
+                    max_count: reqs.len() as i64,
+                    instance_initiated_shutdown_behavior: Some("terminate".to_string()),
+                    ..Default::default()
+                };
 
                 // TODO: VPC
 
@@ -1096,10 +1106,7 @@ impl RegionLauncher {
             let spot_span = tracing::debug_span!("spot_request", ?ami, ?instance_type);
             async {
                 // and issue one spot request per group
-                let mut launch = rusoto_ec2::RequestSpotLaunchSpecification::default();
-                launch.image_id = Some(ami);
-                launch.instance_type = Some(instance_type);
-                launch.placement = self
+                let placement = self
                     .make_placement(|group_name, az| rusoto_ec2::SpotPlacement {
                         group_name: Some(group_name),
                         availability_zone: az,
@@ -1107,8 +1114,14 @@ impl RegionLauncher {
                     })
                     .await
                     .wrap_err("create new placement group")?;
-                launch.security_group_ids = Some(vec![self.security_group_id.clone()]);
-                launch.key_name = Some(self.ssh_key_name.clone());
+                let launch = rusoto_ec2::RequestSpotLaunchSpecification {
+                    image_id: Some(ami),
+                    instance_type: Some(instance_type),
+                    placement,
+                    security_group_ids: Some(vec![self.security_group_id.clone()]),
+                    key_name: Some(self.ssh_key_name.clone()),
+                    ..Default::default()
+                };
 
                 // TODO: VPC
 
@@ -1226,7 +1239,7 @@ impl RegionLauncher {
             }
 
             // let's not hammer the API
-            tokio::time::delay_for(time::Duration::from_secs(1)).await;
+            tokio::time::sleep(time::Duration::from_secs(1)).await;
 
             if let Some(wait_limit) = max_wait {
                 if start.elapsed() <= wait_limit {
@@ -1244,11 +1257,13 @@ impl RegionLauncher {
     #[instrument(level = "trace", skip(self, max_wait))]
     async fn wait_for_instances(&mut self, max_wait: Option<time::Duration>) -> Result<(), Report> {
         let start = time::Instant::now();
-        let mut desc_req = rusoto_ec2::DescribeInstancesRequest::default();
+        let desc_req = rusoto_ec2::DescribeInstancesRequest {
+            instance_ids: Some(self.instances.keys().cloned().collect()),
+            ..Default::default()
+        };
         let client = self.client.as_ref().unwrap();
         let private_key_path = self.private_key_path.as_ref().unwrap();
         let mut all_ready = self.instances.is_empty();
-        desc_req.instance_ids = Some(self.instances.keys().cloned().collect());
         while !all_ready {
             all_ready = true;
 
@@ -1321,7 +1336,7 @@ impl RegionLauncher {
             }
 
             // let's not hammer the API
-            tokio::time::delay_for(time::Duration::from_secs(1)).await;
+            tokio::time::sleep(time::Duration::from_secs(1)).await;
 
             if let Some(wait_limit) = max_wait {
                 if start.elapsed() <= wait_limit {
@@ -1436,8 +1451,10 @@ impl RegionLauncher {
             let key_span = tracing::trace_span!("key", name = %self.ssh_key_name);
             async {
                 tracing::trace!("removing keypair");
-                let mut req = rusoto_ec2::DeleteKeyPairRequest::default();
-                req.key_name = Some(self.ssh_key_name.clone());
+                let req = rusoto_ec2::DeleteKeyPairRequest {
+                    key_name: Some(self.ssh_key_name.clone()),
+                    ..Default::default()
+                };
                 if let Err(e) = client.delete_key_pair(req).await {
                     tracing::warn!("failed to clean up temporary SSH key: {}", e);
                 }
@@ -1469,21 +1486,22 @@ impl RegionLauncher {
                 let start = tokio::time::Instant::now();
                 loop {
                     if start.elapsed() > tokio::time::Duration::from_secs(5 * 60) {
-                        Err(Report::msg(
+                        return Err(Report::msg(
                             "failed to clean up temporary security group after 5 minutes.",
-                        ))?;
-                        unreachable!();
+                        ));
                     }
 
-                    let mut req = rusoto_ec2::DeleteSecurityGroupRequest::default();
-                    req.group_id = Some(self.security_group_id.clone());
+                    let req = rusoto_ec2::DeleteSecurityGroupRequest {
+                        group_id: Some(self.security_group_id.clone()),
+                        ..Default::default()
+                    };
                     match client.delete_security_group(req).await {
                         Ok(_) => break,
                         Err(RusotoError::Unknown(r)) => {
                             let err = r.body_as_str();
                             if err.contains("<Code>DependencyViolation</Code>") {
                                 tracing::trace!("instances not yet shut down -- retrying");
-                                tokio::time::delay_for(tokio::time::Duration::from_secs(5)).await;
+                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                             } else {
                                 Err(Report::new(RusotoError::<
                                     rusoto_ec2::DeleteSecurityGroupError,
@@ -1493,9 +1511,8 @@ impl RegionLauncher {
                             }
                         }
                         Err(e) => {
-                            Err(Report::new(e)
-                                .wrap_err("failed to clean up temporary security group"))?;
-                            unreachable!();
+                            return Err(Report::new(e)
+                                .wrap_err("failed to clean up temporary security group"));
                         }
                     }
                 }
@@ -1516,8 +1533,10 @@ impl RegionLauncher {
     ) -> Result<Vec<(String, String, String, Option<String>)>, Report> {
         let client = self.client.as_ref().unwrap();
         let request_ids = self.spot_requests.keys().cloned().collect();
-        let mut req = rusoto_ec2::DescribeSpotInstanceRequestsRequest::default();
-        req.spot_instance_request_ids = Some(request_ids);
+        let req = rusoto_ec2::DescribeSpotInstanceRequestsRequest {
+            spot_instance_request_ids: Some(request_ids),
+            ..Default::default()
+        };
         loop {
             let res = client.describe_spot_instance_requests(req.clone()).await;
             if let Err(ref e) = res {
@@ -1526,7 +1545,7 @@ impl RegionLauncher {
                     tracing::trace!("spot instance requests not yet ready");
 
                     // let's not hammer the API
-                    tokio::time::delay_for(time::Duration::from_secs(1)).await;
+                    tokio::time::sleep(time::Duration::from_secs(1)).await;
                     continue;
                 } else {
                     res.wrap_err("failed to describe spot instances")?;
@@ -1566,8 +1585,10 @@ impl RegionLauncher {
             return Ok(());
         }
         let request_ids = self.spot_requests.keys().cloned().collect();
-        let mut cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest::default();
-        cancel.spot_instance_request_ids = request_ids;
+        let cancel = rusoto_ec2::CancelSpotInstanceRequestsRequest {
+            spot_instance_request_ids: request_ids,
+            ..Default::default()
+        };
         self.client
             .as_ref()
             .unwrap()
@@ -1605,7 +1626,7 @@ impl RegionLauncher {
             }
 
             // let's not hammer the API
-            tokio::time::delay_for(time::Duration::from_secs(1)).await;
+            tokio::time::sleep(time::Duration::from_secs(1)).await;
         }
         Ok(())
     }
@@ -1616,8 +1637,10 @@ impl RegionLauncher {
             return Ok(());
         }
         let client = self.client.as_ref().unwrap();
-        let mut termination_req = rusoto_ec2::TerminateInstancesRequest::default();
-        termination_req.instance_ids = instance_ids;
+        let termination_req = rusoto_ec2::TerminateInstancesRequest {
+            instance_ids,
+            ..Default::default()
+        };
         while let Err(e) = client.terminate_instances(termination_req.clone()).await {
             let msg = e.to_string();
             if msg.contains("Pooled stream disconnected") || msg.contains("broken pipe") {
@@ -1650,9 +1673,9 @@ impl UbuntuAmi {
     }
 }
 
-impl Into<String> for UbuntuAmi {
-    fn into(self) -> String {
-        self.0
+impl From<UbuntuAmi> for String {
+    fn from(s: UbuntuAmi) -> String {
+        s.0
     }
 }
 
@@ -1706,7 +1729,7 @@ mod test {
     fn make_machine_and_ssh_setupfn() {
         use crate::providers::Launcher;
         tracing_subscriber::fmt::init();
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let mut l = super::Launcher::default();
         // make the defined-duration instances expire after 1 hour
         l.set_mode(LaunchMode::duration_spot(1));
@@ -1724,7 +1747,7 @@ mod test {
     #[test]
     #[ignore]
     fn make_key() -> Result<(), Report> {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let region = Region::UsEast1;
         let provider = DefaultCredentialsProvider::new()?;
         let ec2 = RegionLauncher::connect(region, super::AvailabilityZoneSpec::Any, provider)?;
@@ -1778,7 +1801,7 @@ mod test {
         let region = "us-east-1";
         let provider = DefaultCredentialsProvider::new()?;
 
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let mut ec2 =
                 RegionLauncher::new(region, super::AvailabilityZoneSpec::Any, provider, false)

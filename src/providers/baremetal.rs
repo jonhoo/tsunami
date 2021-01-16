@@ -27,9 +27,9 @@ pub struct Setup {
     setup_fn: Option<
         Arc<
             dyn for<'r> Fn(
-                    &'r crate::Machine<'_>,
-                )
-                    -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
+                &'r crate::Machine<'_>,
+            )
+                -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
                 + Send
                 + Sync
                 + 'static,
@@ -110,8 +110,8 @@ impl Setup {
     pub fn setup(
         mut self,
         setup: impl for<'r> Fn(
-                &'r crate::Machine<'_>,
-            ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
+            &'r crate::Machine<'_>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Report>> + Send + 'r>>
             + Send
             + Sync
             + 'static,
@@ -287,7 +287,7 @@ mod test {
     #[test]
     #[ignore]
     fn localhost() -> Result<(), Report> {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let s = super::Setup::new("127.0.0.1:22", None)?;
         let mut m: super::Machine = Default::default();
         let desc = crate::providers::LaunchDescriptor {
