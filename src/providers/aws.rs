@@ -795,10 +795,10 @@ impl RegionLauncher {
                     } else {
                         return Err(e);
                     }
-                }
-
-                if let Some(ref mut d) = max_wait {
-                    *d -= time::Instant::now().duration_since(start);
+                } else {
+                    if let Some(ref mut d) = max_wait {
+                        *d -= time::Instant::now().duration_since(start);
+                    }
                 }
             }
             LaunchMode::OnDemand => {
