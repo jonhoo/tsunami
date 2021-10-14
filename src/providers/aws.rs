@@ -224,6 +224,7 @@ pub struct Setup {
                 + 'static,
         >,
     >,
+    default_vpc_cidr_block: String,
 }
 
 impl super::MachineSetup for Setup {
@@ -247,6 +248,7 @@ impl Default for Setup {
             ami: String::from("ami-085925f297f89fce1"),
             username: "ubuntu".into(),
             setup_fn: None,
+            default_vpc_cidr_block: String::from("172.16.0.0/24"),
         }
     }
 }
@@ -471,6 +473,7 @@ where
                     l.machines[0].1.availability_zone.clone(),
                     prov,
                     *use_open_ports,
+                    l.machines[0].1.default_vpc_cidr_block.clone(),
                 )
                 .instrument(region_span)
                 .await?;
@@ -533,6 +536,7 @@ where
                                 s[0].1.availability_zone.clone(),
                                 prov,
                                 use_open_ports,
+                                s[0].1.default_vpc_cidr_block.clone(),
                             )
                             .await?;
                             Ok::<_, Report>((region_name.clone(), awsregion))
@@ -676,6 +680,7 @@ pub struct RegionLauncher {
     pub region: rusoto_core::region::Region,
     availability_zone: AvailabilityZoneSpec,
     security_group_id: String,
+    vpc_id: String,
     ssh_key_name: String,
     private_key_path: Option<tempfile::NamedTempFile>,
     #[educe(Debug(ignore))]
@@ -695,6 +700,7 @@ impl RegionLauncher {
         availability_zone: AvailabilityZoneSpec,
         provider: P,
         use_open_ports: bool,
+        default_vpc_cidr_block: String,
     ) -> Result<Self, Report>
     where
         P: ProvideAwsCredentials + Send + Sync + 'static,
@@ -702,7 +708,7 @@ impl RegionLauncher {
         let region = region.parse()?;
         let ec2 = RegionLauncher::connect(region, availability_zone, provider)
             .wrap_err("failed to connect to region")?
-            .make_security_group(use_open_ports)
+            .make_security_group(use_open_ports, default_vpc_cidr_block)
             .await
             .wrap_err("failed to make security groups")?
             .make_ssh_key()
@@ -732,6 +738,7 @@ impl RegionLauncher {
             region,
             availability_zone,
             security_group_id: Default::default(),
+            vpc_id: Default::default(),
             ssh_key_name: Default::default(),
             private_key_path: Some(
                 tempfile::NamedTempFile::new()
@@ -825,15 +832,36 @@ impl RegionLauncher {
     }
 
     #[instrument(level = "trace", skip(self))]
-    async fn make_security_group(mut self, use_open_ports: bool) -> Result<Self, Report> {
+    async fn make_security_group(
+        mut self,
+        use_open_ports: bool,
+        default_vpc_cidr_block: String,
+    ) -> Result<Self, Report> {
         let ec2 = self.client.as_mut().expect("RegionLauncher unconnected");
 
         // set up network firewall for machines
         let group_name = super::rand_name("security");
+
+        tracing::debug!("creating default vpc");
+        let req = rusoto_ec2::CreateVpcRequest {
+            cidr_block: default_vpc_cidr_block,
+            ..Default::default()
+        };
+        let res = ec2
+            .create_vpc(req)
+            .await
+            .wrap_err("failed to create vpc for new machines")?;
+        let mut vpc_id = String::new();
+        let vpc: rusoto_ec2::Vpc = res.vpc.expect("aws created vpc, with unexpected error");
+        if let Some(id) = &vpc.vpc_id {
+            vpc_id = id.to_string()
+        };
+
         tracing::debug!(name = %group_name, "creating security group");
         let req = rusoto_ec2::CreateSecurityGroupRequest {
             group_name,
             description: "temporary access group for tsunami VMs".to_string(),
+            vpc_id: Some(vpc_id.clone()),
             ..Default::default()
         };
         let res = ec2
@@ -901,6 +929,7 @@ impl RegionLauncher {
             .wrap_err("failed to fill in security group for new machines")?;
 
         self.security_group_id = group_id;
+        self.vpc_id = vpc_id;
         Ok(self)
     }
 
@@ -1524,6 +1553,49 @@ impl RegionLauncher {
             .await?;
         }
 
+        if !self.vpc_id.trim().is_empty() {
+            let vpc_span = tracing::trace_span!("removing vpc", id = %self.vpc_id);
+            async {
+                tracing::trace!("removing vpc.");
+
+                let start = tokio::time::Instant::now();
+                loop {
+                    if start.elapsed() > tokio::time::Duration::from_secs(5 * 60) {
+                        return Err(Report::msg("failed to clean up vpc after 5 minutes."));
+                    }
+
+                    let req = rusoto_ec2::DeleteVpcRequest {
+                        vpc_id: self.vpc_id.clone(),
+                        ..Default::default()
+                    };
+                    match client.delete_vpc(req).await {
+                        Ok(_) => break,
+                        Err(RusotoError::Unknown(r)) => {
+                            let err = r.body_as_str();
+                            if err.contains("<Code>DependencyViolation</Code>") {
+                                tracing::trace!("instances not yet shut down -- retrying");
+                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                            } else {
+                                Err(Report::new(
+                                    RusotoError::<rusoto_ec2::DeleteVpcError>::Unknown(r),
+                                ))
+                                .wrap_err("failed to clean up vpc")?;
+                                unreachable!();
+                            }
+                        }
+                        Err(e) => {
+                            return Err(Report::new(e).wrap_err("failed to clean up vpc"));
+                        }
+                    }
+                }
+
+                tracing::trace!("cleaned up vpc");
+                Ok::<_, Report>(())
+            }
+            .instrument(vpc_span)
+            .await?;
+        }
+
         Ok(())
     }
 
@@ -1799,13 +1871,19 @@ mod test {
     #[ignore]
     fn multi_instance_spot_request() -> Result<(), Report> {
         let region = "us-east-1";
+        let default_vpc_cidr_block = String::from("172.16.0.0/24");
         let provider = DefaultCredentialsProvider::new()?;
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let mut ec2 =
-                RegionLauncher::new(region, super::AvailabilityZoneSpec::Any, provider, false)
-                    .await?;
+            let mut ec2 = RegionLauncher::new(
+                region,
+                super::AvailabilityZoneSpec::Any,
+                provider,
+                false,
+                default_vpc_cidr_block,
+            )
+            .await?;
 
             if let Err(e) = do_multi_instance_spot_request(&mut ec2).await {
                 ec2.terminate_all().await.unwrap();
