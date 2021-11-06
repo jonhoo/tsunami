@@ -1,3 +1,8 @@
+**This project has been deprecated as I no longer use it myself, and
+better (and maintained) alternatives exist like
+[Terraform](https://www.terraform.io/). If you'd like to revive the
+project, please reach out!**
+
 # tsunami
 
 [![Crates.io](https://img.shields.io/crates/v/tsunami.svg)](https://crates.io/crates/tsunami)
